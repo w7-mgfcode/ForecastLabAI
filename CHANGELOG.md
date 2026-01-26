@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.1.1...v0.1.2) (2026-01-26)
+
+
+### Bug Fixes
+
+* **ci:** use uv build instead of python -m build ([#9](https://github.com/w7-mgfcode/ForecastLabAI/issues/9)) ([c2b22d3](https://github.com/w7-mgfcode/ForecastLabAI/commit/c2b22d3c760df5bbeae6bb745a25801fb8a20f4c))
+
 ## [0.1.1](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.1.0...v0.1.1) (2026-01-26)
 
 
