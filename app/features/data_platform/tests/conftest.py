@@ -1,4 +1,10 @@
-"""Fixtures for data platform integration tests."""
+"""Fixtures for data platform integration tests.
+
+Note: The db_session fixture is duplicated here because pytest fixtures are discovered
+based on conftest.py files in the directory path. Tests in app/features/*/tests/ cannot
+see fixtures in tests/conftest.py since it's not in their parent path. This is intentional
+pytest behavior to allow feature tests to be self-contained.
+"""
 
 from datetime import date
 from decimal import Decimal

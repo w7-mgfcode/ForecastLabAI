@@ -81,7 +81,7 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('date', 'store_id', 'product_id', name='uq_inventory_snapshot_daily_grain')
     )
-    op.create_index(op.f('ix_inventory_snapshot_daily_date'), 'inventory_snapshot_daily', ['date'], unique=False)
+    # Note: Single-column index on 'date' is omitted - covered by composite index below
     op.create_index(op.f('ix_inventory_snapshot_daily_product_id'), 'inventory_snapshot_daily', ['product_id'], unique=False)
     op.create_index(op.f('ix_inventory_snapshot_daily_store_id'), 'inventory_snapshot_daily', ['store_id'], unique=False)
     op.create_index('ix_inventory_snapshot_date_store', 'inventory_snapshot_daily', ['date', 'store_id'], unique=False)
@@ -145,7 +145,7 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('date', 'store_id', 'product_id', name='uq_sales_daily_grain')
     )
-    op.create_index(op.f('ix_sales_daily_date'), 'sales_daily', ['date'], unique=False)
+    # Note: Single-column index on 'date' is omitted - covered by composite indexes below
     op.create_index('ix_sales_daily_date_product', 'sales_daily', ['date', 'product_id'], unique=False)
     op.create_index('ix_sales_daily_date_store', 'sales_daily', ['date', 'store_id'], unique=False)
     op.create_index(op.f('ix_sales_daily_product_id'), 'sales_daily', ['product_id'], unique=False)
@@ -160,7 +160,6 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_sales_daily_product_id'), table_name='sales_daily')
     op.drop_index('ix_sales_daily_date_store', table_name='sales_daily')
     op.drop_index('ix_sales_daily_date_product', table_name='sales_daily')
-    op.drop_index(op.f('ix_sales_daily_date'), table_name='sales_daily')
     op.drop_table('sales_daily')
     op.drop_index(op.f('ix_promotion_store_id'), table_name='promotion')
     op.drop_index(op.f('ix_promotion_start_date'), table_name='promotion')
@@ -175,7 +174,6 @@ def downgrade() -> None:
     op.drop_index('ix_inventory_snapshot_date_store', table_name='inventory_snapshot_daily')
     op.drop_index(op.f('ix_inventory_snapshot_daily_store_id'), table_name='inventory_snapshot_daily')
     op.drop_index(op.f('ix_inventory_snapshot_daily_product_id'), table_name='inventory_snapshot_daily')
-    op.drop_index(op.f('ix_inventory_snapshot_daily_date'), table_name='inventory_snapshot_daily')
     op.drop_table('inventory_snapshot_daily')
     op.drop_index(op.f('ix_store_code'), table_name='store')
     op.drop_table('store')

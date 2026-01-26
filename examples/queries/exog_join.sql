@@ -12,9 +12,10 @@ SELECT
     s.unit_price AS sale_price,
     ph.price AS list_price,
     CASE
-        WHEN ph.price > 0 THEN
+        WHEN ph.price IS NULL THEN NULL
+        WHEN ph.price = 0 THEN 0
+        ELSE
             ROUND((ph.price - s.unit_price) / ph.price * 100, 2)
-        ELSE 0
     END AS discount_pct
 FROM sales_daily s
 LEFT JOIN price_history ph ON

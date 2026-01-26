@@ -240,6 +240,29 @@ class TestProductConstraints:
 class TestCalendarConstraints:
     """Integration tests for Calendar constraints."""
 
+    async def test_valid_calendar_inserts_successfully(self, db_session: AsyncSession):
+        """A valid Calendar row should insert and query back successfully."""
+        cal = Calendar(
+            date=date(2024, 3, 15),
+            day_of_week=4,  # Friday
+            month=3,
+            quarter=1,
+            year=2024,
+            is_holiday=False,
+        )
+        db_session.add(cal)
+        await db_session.commit()
+        await db_session.refresh(cal)
+
+        # Query back to verify
+        result = await db_session.get(Calendar, date(2024, 3, 15))
+        assert result is not None
+        assert result.day_of_week == 4
+        assert result.month == 3
+        assert result.quarter == 1
+        assert result.year == 2024
+        assert result.is_holiday is False
+
     async def test_check_constraint_day_of_week(self, db_session: AsyncSession):
         """Invalid day_of_week should raise IntegrityError."""
         cal = Calendar(

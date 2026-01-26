@@ -7,6 +7,8 @@ This module defines dimension and fact tables following star schema patterns:
 Grain: SalesDaily uniquely keyed by (date, store_id, product_id).
 """
 
+from __future__ import annotations
+
 import datetime
 from decimal import Decimal
 
@@ -53,10 +55,10 @@ class Store(TimestampMixin, Base):
     store_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
     # Relationships (one-to-many)
-    sales: Mapped[list["SalesDaily"]] = relationship(back_populates="store")
-    price_history: Mapped[list["PriceHistory"]] = relationship(back_populates="store")
-    promotions: Mapped[list["Promotion"]] = relationship(back_populates="store")
-    inventory_snapshots: Mapped[list["InventorySnapshotDaily"]] = relationship(
+    sales: Mapped[list[SalesDaily]] = relationship(back_populates="store")
+    price_history: Mapped[list[PriceHistory]] = relationship(back_populates="store")
+    promotions: Mapped[list[Promotion]] = relationship(back_populates="store")
+    inventory_snapshots: Mapped[list[InventorySnapshotDaily]] = relationship(
         back_populates="store"
     )
 
@@ -85,10 +87,10 @@ class Product(TimestampMixin, Base):
     base_cost: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
 
     # Relationships (one-to-many)
-    sales: Mapped[list["SalesDaily"]] = relationship(back_populates="product")
-    price_history: Mapped[list["PriceHistory"]] = relationship(back_populates="product")
-    promotions: Mapped[list["Promotion"]] = relationship(back_populates="product")
-    inventory_snapshots: Mapped[list["InventorySnapshotDaily"]] = relationship(
+    sales: Mapped[list[SalesDaily]] = relationship(back_populates="product")
+    price_history: Mapped[list[PriceHistory]] = relationship(back_populates="product")
+    promotions: Mapped[list[Promotion]] = relationship(back_populates="product")
+    inventory_snapshots: Mapped[list[InventorySnapshotDaily]] = relationship(
         back_populates="product"
     )
 
@@ -119,8 +121,8 @@ class Calendar(TimestampMixin, Base):
     holiday_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # Relationships
-    sales: Mapped[list["SalesDaily"]] = relationship(back_populates="calendar")
-    inventory_snapshots: Mapped[list["InventorySnapshotDaily"]] = relationship(
+    sales: Mapped[list[SalesDaily]] = relationship(back_populates="calendar")
+    inventory_snapshots: Mapped[list[InventorySnapshotDaily]] = relationship(
         back_populates="calendar"
     )
 
@@ -155,7 +157,8 @@ class SalesDaily(TimestampMixin, Base):
     __tablename__ = "sales_daily"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    date: Mapped[datetime.date] = mapped_column(Date, ForeignKey("calendar.date"), index=True)
+    # Note: date column is covered by composite indexes (ix_sales_daily_date_store, ix_sales_daily_date_product)
+    date: Mapped[datetime.date] = mapped_column(Date, ForeignKey("calendar.date"))
     store_id: Mapped[int] = mapped_column(Integer, ForeignKey("store.id"), index=True)
     product_id: Mapped[int] = mapped_column(Integer, ForeignKey("product.id"), index=True)
     quantity: Mapped[int] = mapped_column(Integer)
@@ -163,9 +166,9 @@ class SalesDaily(TimestampMixin, Base):
     total_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
 
     # Relationships
-    store: Mapped["Store"] = relationship(back_populates="sales")
-    product: Mapped["Product"] = relationship(back_populates="sales")
-    calendar: Mapped["Calendar"] = relationship(back_populates="sales")
+    store: Mapped[Store] = relationship(back_populates="sales")
+    product: Mapped[Product] = relationship(back_populates="sales")
+    calendar: Mapped[Calendar] = relationship(back_populates="sales")
 
     __table_args__ = (
         # GRAIN PROTECTION: Unique constraint prevents duplicate rows
@@ -208,8 +211,8 @@ class PriceHistory(TimestampMixin, Base):
     valid_to: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
 
     # Relationships
-    product: Mapped["Product"] = relationship(back_populates="price_history")
-    store: Mapped["Store | None"] = relationship(back_populates="price_history")
+    product: Mapped[Product] = relationship(back_populates="price_history")
+    store: Mapped[Store | None] = relationship(back_populates="price_history")
 
     __table_args__ = (
         Index("ix_price_history_product_validity", "product_id", "valid_from", "valid_to"),
@@ -251,8 +254,8 @@ class Promotion(TimestampMixin, Base):
     end_date: Mapped[datetime.date] = mapped_column(Date)
 
     # Relationships
-    product: Mapped["Product"] = relationship(back_populates="promotions")
-    store: Mapped["Store | None"] = relationship(back_populates="promotions")
+    product: Mapped[Product] = relationship(back_populates="promotions")
+    store: Mapped[Store | None] = relationship(back_populates="promotions")
 
     __table_args__ = (
         Index("ix_promotion_product_dates", "product_id", "start_date", "end_date"),
@@ -286,7 +289,8 @@ class InventorySnapshotDaily(TimestampMixin, Base):
     __tablename__ = "inventory_snapshot_daily"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    date: Mapped[datetime.date] = mapped_column(Date, ForeignKey("calendar.date"), index=True)
+    # Note: date column is covered by composite index (ix_inventory_snapshot_date_store)
+    date: Mapped[datetime.date] = mapped_column(Date, ForeignKey("calendar.date"))
     store_id: Mapped[int] = mapped_column(Integer, ForeignKey("store.id"), index=True)
     product_id: Mapped[int] = mapped_column(Integer, ForeignKey("product.id"), index=True)
     on_hand_qty: Mapped[int] = mapped_column(Integer)
@@ -294,9 +298,9 @@ class InventorySnapshotDaily(TimestampMixin, Base):
     is_stockout: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Relationships
-    calendar: Mapped["Calendar"] = relationship(back_populates="inventory_snapshots")
-    store: Mapped["Store"] = relationship(back_populates="inventory_snapshots")
-    product: Mapped["Product"] = relationship(back_populates="inventory_snapshots")
+    calendar: Mapped[Calendar] = relationship(back_populates="inventory_snapshots")
+    store: Mapped[Store] = relationship(back_populates="inventory_snapshots")
+    product: Mapped[Product] = relationship(back_populates="inventory_snapshots")
 
     __table_args__ = (
         UniqueConstraint(
