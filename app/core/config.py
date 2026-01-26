@@ -1,0 +1,48 @@
+"""Application configuration via Pydantic Settings v2."""
+
+from functools import lru_cache
+from typing import Literal
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """Application settings loaded from environment variables."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # Application
+    app_name: str = "ForecastLabAI"
+    app_env: Literal["development", "staging", "production"] = "development"
+    debug: bool = False
+
+    # Database
+    database_url: str = "postgresql+asyncpg://forecastlab:forecastlab@localhost:5432/forecastlab"
+
+    # Logging
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    log_format: Literal["json", "console"] = "json"
+
+    # API
+    api_host: str = "0.0.0.0"  # noqa: S104
+    api_port: int = 8123
+
+    @property
+    def is_development(self) -> bool:
+        """Check if running in development mode."""
+        return self.app_env == "development"
+
+    @property
+    def is_production(self) -> bool:
+        """Check if running in production mode."""
+        return self.app_env == "production"
+
+
+@lru_cache
+def get_settings() -> Settings:
+    """Get cached settings singleton."""
+    return Settings()

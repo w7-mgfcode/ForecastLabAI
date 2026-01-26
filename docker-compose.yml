@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: forecastlab-postgres
+    environment:
+      POSTGRES_USER: forecastlab
+      POSTGRES_PASSWORD: forecastlab
+      POSTGRES_DB: forecastlab
+    ports:
+      - "5432:5432"
+    volumes:
+      - forecastlab_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forecastlab -d forecastlab"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  forecastlab_pgdata:

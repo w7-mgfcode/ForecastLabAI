@@ -1,0 +1,17 @@
+# ForecastLabAI Health Check Examples
+# For use with VS Code REST Client extension or similar
+
+@baseUrl = http://localhost:8123
+
+### Basic health check
+GET {{baseUrl}}/health
+
+### Health check with custom request ID
+GET {{baseUrl}}/health
+X-Request-ID: my-custom-request-123
+
+### Readiness check (requires database)
+GET {{baseUrl}}/health/ready
+
+### OpenAPI documentation
+GET {{baseUrl}}/docs
