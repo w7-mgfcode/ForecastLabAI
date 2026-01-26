@@ -1,0 +1,27 @@
+# ForecastLabAI Code Owners
+# These owners will be requested for review when PRs touch their areas
+#
+# Format: path @username or @org/team
+# Note: Replace placeholder usernames with actual GitHub usernames
+
+# Default owners for everything
+* @your-username
+
+# Core infrastructure
+/app/core/ @your-username
+
+# Feature modules (add specific owners as team grows)
+/app/features/ @your-username
+
+# CI/CD configuration
+/.github/ @your-username
+
+# Database migrations
+/alembic/ @your-username
+
+# Documentation
+/docs/ @your-username
+
+# Configuration files
+/pyproject.toml @your-username
+/docker-compose.yml @your-username
