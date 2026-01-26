@@ -201,7 +201,19 @@ Request ID correlation: generates UUID if no X-Request-ID header, preserves clie
 
 #### Exceptions (`exceptions.py`)
 
-Custom hierarchy: `ForecastLabError` base class with `NotFoundError` (404), `ValidationError` (422), `DatabaseError` (500). JSON error response includes code, message, details, request_id.
+Custom hierarchy: `ForecastLabError` base class with `NotFoundError` (404), `ValidationError` (422), `DatabaseError` (500).
+
+**Error Response Format**:
+```json
+{
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "Resource not found",
+    "details": {"resource_id": "123"},
+    "request_id": "550e8400-e29b-41d4-a716-446655440000"
+  }
+}
+```
 
 #### Health Check (`health.py`)
 
@@ -215,8 +227,24 @@ Custom hierarchy: `ForecastLabError` base class with `NotFoundError` (404), `Val
 ### 4. Shared Utilities (`app/shared/`)
 
 - **TimestampMixin**: `created_at` and `updated_at` with server defaults
-- **PaginationParams**: `page`, `page_size`, computed `offset`
-- **PaginatedResponse[T]**: Generic paginated list with `items`, `total`, `pages`
+
+**Pagination Types** (`schemas.py`):
+```python
+class PaginationParams(BaseModel):
+    page: int = Field(1, ge=1)
+    page_size: int = Field(50, ge=1, le=1000)
+
+    @property
+    def offset(self) -> int:
+        return (self.page - 1) * self.page_size
+
+class PaginatedResponse[T](BaseModel):
+    items: list[T]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+```
 
 ---
 
@@ -439,74 +467,61 @@ Runs on push/PR to main and dev branches:
 
 #### Schema Validation (`schema-validation.yml`)
 
-Triggers on changes to `alembic/**` or `app/**/models.py`:
+Triggers on changes to `alembic/**` or `app/**/models.py`.
 
-```yaml
-steps:
-  - Fresh DB migration test (alembic upgrade head)
-  - Migration chain integrity (single head enforcement)
-  - Schema drift detection (alembic check)
-  - Downgrade/upgrade cycle test
-  - Schema report generation
-```
+**Steps:**
+1. Fresh DB migration test (`alembic upgrade head`)
+2. Migration chain integrity (single head enforcement)
+3. Schema drift detection (`alembic check`)
+4. Downgrade/upgrade cycle test
+5. Schema report generation
 
 **Purpose**: Catches migration drift and schema issues before merge.
 
 #### Dependency Security Check (`dependency-check.yml`)
 
-Triggers weekly (Sunday 00:00 UTC) or manual dispatch:
+Triggers weekly (Sunday 00:00 UTC) or manual dispatch.
 
-```yaml
-steps:
-  - Export requirements from uv lock
-  - Run pip-audit (JSON + SARIF output)
-  - Upload SARIF to GitHub Security tab
-  - Upload JSON artifact (90-day retention)
-  - Analyze and optionally fail on vulnerabilities
-```
+**Steps:**
+1. Export requirements from uv lock
+2. Run pip-audit (JSON + SARIF output)
+3. Upload SARIF to GitHub Security tab
+4. Upload JSON artifact (90-day retention)
+5. Analyze and optionally fail on vulnerabilities
 
-**Features**:
-- SARIF integration with GitHub Security tab
-- Configurable `fail_on_vulnerabilities` toggle
-- Audit trail artifacts
+**Features**: SARIF integration, configurable `fail_on_vulnerabilities` toggle, audit trail artifacts.
 
 #### Phase Snapshot (`phase-snapshot.yml`)
 
-Triggers on push to `phase-*` branches:
+Triggers on push to `phase-*` branches.
 
-```yaml
-jobs:
-  validate:
-    - Lint, typecheck, test, migrations
-    - Expose status outputs
+**Job: validate**
+- Run lint, typecheck, test, migrations
+- Expose status outputs for downstream job
 
-  create-snapshot:
-    - Extract phase number from branch
-    - Generate audit-data.json + requirements-frozen.txt
-    - Create SNAPSHOT-REPORT.md
-    - Upload artifacts (365-day retention)
-    - Create annotated git tag: phase-{N}-snapshot-{YYYYMMDD}-{sha}
-```
+**Job: create-snapshot**
+- Extract phase number from branch name
+- Generate `audit-data.json` + `requirements-frozen.txt`
+- Create `SNAPSHOT-REPORT.md`
+- Upload artifacts (365-day retention)
+- Create annotated git tag: `phase-{N}-snapshot-{YYYYMMDD}-{sha}`
 
 **Purpose**: Creates audit snapshots at phase milestones.
 
 #### CD Release (`cd-release.yml`)
 
-Triggers on push to main:
+Triggers on push to main.
 
-```yaml
-jobs:
-  release-please:
-    - Parse conventional commits
-    - Create/update release PR
-    - Outputs: release_created, tag_name, version
+**Job: release-please**
+- Parse conventional commits
+- Create/update release PR
+- Outputs: `release_created`, `tag_name`, `version`
 
-  build-package:
-    - Checkout at release tag
-    - Build Python package (python -m build)
-    - Upload to GitHub Release
-    - Store as workflow artifact
-```
+**Job: build-package** (runs if release created)
+- Checkout at release tag
+- Build Python package (`python -m build`)
+- Upload to GitHub Release
+- Store as workflow artifact
 
 **Supporting Files**:
 | File | Purpose |
