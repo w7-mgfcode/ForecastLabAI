@@ -3,8 +3,14 @@
 from app.core.config import Settings, get_settings
 
 
-def test_settings_has_defaults():
+def test_settings_has_defaults(monkeypatch):
     """Settings should have sensible defaults."""
+    # Clear environment variables that could override defaults
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("DEBUG", raising=False)
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    monkeypatch.delenv("LOG_FORMAT", raising=False)
+
     settings = Settings()
 
     assert settings.app_name == "ForecastLabAI"
@@ -22,10 +28,19 @@ def test_settings_is_development_property():
     assert settings.is_production is False
 
 
+def test_settings_is_testing_property():
+    """is_testing should return True for testing env."""
+    settings = Settings(app_env="testing")
+    assert settings.is_testing is True
+    assert settings.is_development is False
+    assert settings.is_production is False
+
+
 def test_settings_is_production_property():
     """is_production should return True for production env."""
     settings = Settings(app_env="production")
     assert settings.is_development is False
+    assert settings.is_testing is False
     assert settings.is_production is True
 
 
