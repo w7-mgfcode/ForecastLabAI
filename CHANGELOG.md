@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.1.2...v0.1.3) (2026-01-26)
+
+
+### Features
+
+* **data-platform:** implement PRP-2 schema and migrations ([#12](https://github.com/w7-mgfcode/ForecastLabAI/issues/12)) ([c392942](https://github.com/w7-mgfcode/ForecastLabAI/commit/c39294249a628fdcc2567f622a65e71dafa24d62))
+
 ## [0.1.2](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.1.1...v0.1.2) (2026-01-26)
 
 
