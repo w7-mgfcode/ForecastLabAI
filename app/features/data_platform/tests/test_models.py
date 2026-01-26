@@ -115,7 +115,7 @@ class TestCalendarModel:
 
     def test_calendar_has_check_constraints(self):
         """Calendar should have check constraints for date fields."""
-        constraints = [c.name for c in Calendar.__table__.constraints if hasattr(c, "name")]
+        constraints = [c.name for c in Calendar.__table__.constraints if hasattr(c, "name")]  # type: ignore[attr-defined]
         assert "ck_calendar_day_of_week" in constraints
         assert "ck_calendar_month" in constraints
         assert "ck_calendar_quarter" in constraints
@@ -146,7 +146,7 @@ class TestSalesDailyModel:
 
     def test_sales_daily_has_grain_constraint(self):
         """SalesDaily should have unique constraint on grain."""
-        constraints = [c.name for c in SalesDaily.__table__.constraints]
+        constraints = [c.name for c in SalesDaily.__table__.constraints]  # type: ignore[attr-defined]
         assert "uq_sales_daily_grain" in constraints
 
     def test_sales_daily_has_foreign_keys(self):
@@ -156,7 +156,7 @@ class TestSalesDailyModel:
 
     def test_sales_daily_has_check_constraints(self):
         """SalesDaily should have check constraints for data quality."""
-        constraints = [c.name for c in SalesDaily.__table__.constraints if hasattr(c, "name")]
+        constraints = [c.name for c in SalesDaily.__table__.constraints if hasattr(c, "name")]  # type: ignore[attr-defined]
         assert "ck_sales_daily_quantity_positive" in constraints
         assert "ck_sales_daily_price_positive" in constraints
         assert "ck_sales_daily_amount_positive" in constraints
@@ -183,7 +183,7 @@ class TestPriceHistoryModel:
 
     def test_price_history_has_check_constraints(self):
         """PriceHistory should have check constraints."""
-        constraints = [c.name for c in PriceHistory.__table__.constraints if hasattr(c, "name")]
+        constraints = [c.name for c in PriceHistory.__table__.constraints if hasattr(c, "name")]  # type: ignore[attr-defined]
         assert "ck_price_history_price_positive" in constraints
         assert "ck_price_history_valid_dates" in constraints
 
@@ -214,7 +214,7 @@ class TestPromotionModel:
 
     def test_promotion_has_check_constraints(self):
         """Promotion should have check constraints."""
-        constraints = [c.name for c in Promotion.__table__.constraints if hasattr(c, "name")]
+        constraints = [c.name for c in Promotion.__table__.constraints if hasattr(c, "name")]  # type: ignore[attr-defined]
         assert "ck_promotion_valid_dates" in constraints
         assert "ck_promotion_discount_pct_range" in constraints
         assert "ck_promotion_discount_amount_positive" in constraints
@@ -245,13 +245,15 @@ class TestInventorySnapshotDailyModel:
 
     def test_inventory_has_grain_constraint(self):
         """InventorySnapshotDaily should have unique constraint on grain."""
-        constraints = [c.name for c in InventorySnapshotDaily.__table__.constraints]
+        constraints = [c.name for c in InventorySnapshotDaily.__table__.constraints]  # type: ignore[attr-defined]
         assert "uq_inventory_snapshot_daily_grain" in constraints
 
     def test_inventory_has_check_constraints(self):
         """InventorySnapshotDaily should have check constraints."""
         constraints = [
-            c.name for c in InventorySnapshotDaily.__table__.constraints if hasattr(c, "name")
+            c.name
+            for c in InventorySnapshotDaily.__table__.constraints  # type: ignore[attr-defined]
+            if hasattr(c, "name")
         ]
         assert "ck_inventory_on_hand_positive" in constraints
         assert "ck_inventory_on_order_positive" in constraints

@@ -58,9 +58,7 @@ class Store(TimestampMixin, Base):
     sales: Mapped[list[SalesDaily]] = relationship(back_populates="store")
     price_history: Mapped[list[PriceHistory]] = relationship(back_populates="store")
     promotions: Mapped[list[Promotion]] = relationship(back_populates="store")
-    inventory_snapshots: Mapped[list[InventorySnapshotDaily]] = relationship(
-        back_populates="store"
-    )
+    inventory_snapshots: Mapped[list[InventorySnapshotDaily]] = relationship(back_populates="store")
 
 
 class Product(TimestampMixin, Base):
