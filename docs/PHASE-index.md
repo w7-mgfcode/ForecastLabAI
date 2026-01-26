@@ -42,6 +42,12 @@ This document indexes all implementation phases of the ForecastLabAI project.
 - `app/shared/` - Shared utilities (3 modules)
 - `app/main.py` - FastAPI application entry point
 - `alembic/` - Async migration setup
+- `.github/workflows/` - CI/CD pipelines (5 workflows)
+  - `ci.yml` - Lint, typecheck, test, migration check
+  - `schema-validation.yml` - Migration drift detection
+  - `dependency-check.yml` - Weekly vulnerability scanning
+  - `phase-snapshot.yml` - Audit snapshots for phase-* branches
+  - `cd-release.yml` - Automated semantic versioning releases
 
 **Validation Results**:
 - Ruff: All checks passed
@@ -102,6 +108,8 @@ Each phase document (`docs/PHASE/X-PHASE_NAME.md`) contains:
 
 - [Architecture Overview](./ARCHITECTURE.md)
 - [ADR Index](./ADR/ADR-INDEX.md)
+- [GitHub Workflows Guide](./github/github-quickstart.md)
+- [GitHub Workflow Diagrams](./github/diagrams/README.md)
 - [Logging Standard](./validation/logging-standard.md)
 - [MyPy Standard](./validation/mypy-standard.md)
 - [Pyright Standard](./validation/pyright-standard.md)
@@ -115,3 +123,4 @@ Each phase document (`docs/PHASE/X-PHASE_NAME.md`) contains:
 | Date | Phase | Action |
 |------|-------|--------|
 | 2026-01-26 | 0 | Initial project foundation completed |
+| 2026-01-26 | 0 | Added CI/CD infrastructure (5 GitHub Actions workflows) |
