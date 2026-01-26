@@ -17,7 +17,7 @@ class Settings(BaseSettings):
 
     # Application
     app_name: str = "ForecastLabAI"
-    app_env: Literal["development", "staging", "production"] = "development"
+    app_env: Literal["development", "testing", "staging", "production"] = "development"
     debug: bool = False
 
     # Database
@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     def is_development(self) -> bool:
         """Check if running in development mode."""
         return self.app_env == "development"
+
+    @property
+    def is_testing(self) -> bool:
+        """Check if running in testing mode."""
+        return self.app_env == "testing"
 
     @property
     def is_production(self) -> bool:
