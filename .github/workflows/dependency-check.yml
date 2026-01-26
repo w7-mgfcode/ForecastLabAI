@@ -6,16 +6,11 @@ on:
     - cron: '0 0 * * 0'
   workflow_dispatch:
     inputs:
-      fail_on_severity:
-        description: 'Minimum severity to fail on'
+      fail_on_vulnerabilities:
+        description: 'Fail workflow if vulnerabilities are found'
         required: false
-        default: 'high'
-        type: choice
-        options:
-          - low
-          - medium
-          - high
-          - critical
+        default: true
+        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -59,12 +54,12 @@ jobs:
           uv export --format requirements-txt --all-extras > requirements-audit.txt
 
           # Run pip-audit with JSON output for artifact
+          # Note: continue-on-error allows workflow to proceed; exit code preserved in step outcome
           uv run pip-audit \
             --requirement requirements-audit.txt \
             --format json \
             --output audit-results.json \
-            --desc on \
-            || true
+            --desc on
 
           echo "Audit complete. Results saved to audit-results.json"
 
@@ -77,8 +72,7 @@ jobs:
             --requirement requirements-audit.txt \
             --format sarif \
             --output audit-results.sarif \
-            --desc on \
-            || true
+            --desc on
 
       - name: Upload SARIF to GitHub Security
         if: always()
@@ -101,23 +95,22 @@ jobs:
       - name: Analyze vulnerabilities
         id: analyze
         run: |
-          # Parse JSON and check for HIGH/CRITICAL vulnerabilities
-          SEVERITY_THRESHOLD="${{ github.event.inputs.fail_on_severity || 'high' }}"
+          # Determine if we should fail on vulnerabilities (default: true for scheduled runs)
+          FAIL_ON_VULNS="${{ github.event.inputs.fail_on_vulnerabilities || 'true' }}"
 
           if [ ! -f audit-results.json ]; then
-            echo "No audit results found"
-            echo "has_critical=false" >> $GITHUB_OUTPUT
-            exit 0
+            echo "::error::Audit results file not found - pip-audit may have failed to run"
+            echo "has_vulnerabilities=false" >> $GITHUB_OUTPUT
+            exit 1
           fi
 
-          # Count vulnerabilities by severity
-          CRITICAL_COUNT=$(jq '[.dependencies[].vulns[]? | select(.fix_versions != null)] | map(select(.id | startswith("GHSA") or startswith("CVE") or startswith("PYSEC"))) | length' audit-results.json 2>/dev/null || echo "0")
+          # Count total vulnerabilities
           TOTAL_VULNS=$(jq '[.dependencies[].vulns[]?] | length' audit-results.json 2>/dev/null || echo "0")
 
           echo "## Dependency Audit Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Total vulnerabilities found:** $TOTAL_VULNS" >> $GITHUB_STEP_SUMMARY
-          echo "- **Severity threshold:** $SEVERITY_THRESHOLD" >> $GITHUB_STEP_SUMMARY
+          echo "- **Fail on vulnerabilities:** $FAIL_ON_VULNS" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ "$TOTAL_VULNS" -gt 0 ]; then
@@ -126,13 +119,12 @@ jobs:
             jq '.dependencies[] | select(.vulns | length > 0) | {name, version, vulns: [.vulns[].id]}' audit-results.json >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
 
-            # Check if we should fail based on severity
-            # pip-audit doesn't provide severity, so we fail on any vulnerability for high/critical threshold
-            if [ "$SEVERITY_THRESHOLD" = "high" ] || [ "$SEVERITY_THRESHOLD" = "critical" ]; then
-              if [ "$TOTAL_VULNS" -gt 0 ]; then
-                echo "::warning::Vulnerabilities detected. Review audit-results.json for details."
-                echo "has_vulnerabilities=true" >> $GITHUB_OUTPUT
-              fi
+            echo "::warning::$TOTAL_VULNS vulnerability(ies) detected. Review audit-results.json for details."
+
+            if [ "$FAIL_ON_VULNS" = "true" ]; then
+              echo "has_vulnerabilities=true" >> $GITHUB_OUTPUT
+            else
+              echo "has_vulnerabilities=false" >> $GITHUB_OUTPUT
             fi
           else
             echo "No vulnerabilities found." >> $GITHUB_STEP_SUMMARY
@@ -142,6 +134,5 @@ jobs:
       - name: Fail on vulnerabilities
         if: steps.analyze.outputs.has_vulnerabilities == 'true'
         run: |
-          echo "::error::Vulnerabilities detected that meet or exceed the severity threshold."
-          echo "Review the Security tab or download the audit artifact for details."
+          echo "::error::Vulnerabilities detected. Review the Security tab or download the audit artifact for details."
           exit 1
