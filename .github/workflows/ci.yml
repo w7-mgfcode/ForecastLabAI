@@ -5,6 +5,7 @@ on:
     branches: [main, dev]
   pull_request:
     branches: [main, dev]
+  workflow_dispatch:  # Allow manual trigger for release-please PRs
 
 # Cancel in-progress runs on same branch
 concurrency:
