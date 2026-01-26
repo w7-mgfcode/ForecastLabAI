@@ -1,0 +1,312 @@
+### ForecastLabAI - Ingest Sales Daily API Examples
+### Using VS Code REST Client or JetBrains HTTP Client
+###
+### Prerequisites:
+### 1. Start PostgreSQL: docker-compose up -d
+### 2. Run migrations: uv run alembic upgrade head
+### 3. Seed demo data: uv run python examples/seed_demo_data.py
+### 4. Start API: uv run uvicorn app.main:app --reload --port 8123
+
+@API_BASE_URL = http://localhost:8123
+
+
+### ============================================================================
+### Ingest Sales Daily - Happy Path
+### ============================================================================
+### Ingest multiple valid sales records
+POST {{API_BASE_URL}}/ingest/sales-daily
+Content-Type: application/json
+
+{
+  "records": [
+    {
+      "date": "2024-01-15",
+      "store_code": "S001",
+      "sku": "SKU-001",
+      "quantity": 10,
+      "unit_price": 9.99,
+      "total_amount": 99.90
+    },
+    {
+      "date": "2024-01-15",
+      "store_code": "S001",
+      "sku": "SKU-002",
+      "quantity": 5,
+      "unit_price": 19.99,
+      "total_amount": 99.95
+    }
+  ]
+}
+
+### Expected Response:
+# HTTP/1.1 200 OK
+# {
+#   "inserted_count": 2,
+#   "updated_count": 0,
+#   "rejected_count": 0,
+#   "total_processed": 2,
+#   "errors": [],
+#   "duration_ms": 45.23
+# }
+
+
+### ============================================================================
+### Ingest Sales Daily - Idempotent Replay
+### ============================================================================
+### Running the same request again should update, not duplicate
+### Notice the updated quantity (15 instead of 10)
+POST {{API_BASE_URL}}/ingest/sales-daily
+Content-Type: application/json
+
+{
+  "records": [
+    {
+      "date": "2024-01-15",
+      "store_code": "S001",
+      "sku": "SKU-001",
+      "quantity": 15,
+      "unit_price": 9.99,
+      "total_amount": 149.85
+    }
+  ]
+}
+
+### Expected Response:
+# HTTP/1.1 200 OK
+# {
+#   "inserted_count": 1,
+#   "updated_count": 0,
+#   "rejected_count": 0,
+#   "total_processed": 1,
+#   "errors": [],
+#   "duration_ms": 32.15
+# }
+# Note: The row is updated (not duplicated) due to ON CONFLICT DO UPDATE
+
+
+### ============================================================================
+### Ingest Sales Daily - Partial Success
+### ============================================================================
+### Mix of valid and invalid rows - valid rows succeed, invalid rows return errors
+POST {{API_BASE_URL}}/ingest/sales-daily
+Content-Type: application/json
+
+{
+  "records": [
+    {
+      "date": "2024-01-15",
+      "store_code": "S001",
+      "sku": "SKU-001",
+      "quantity": 10,
+      "unit_price": 9.99,
+      "total_amount": 99.90
+    },
+    {
+      "date": "2024-01-15",
+      "store_code": "UNKNOWN_STORE",
+      "sku": "SKU-001",
+      "quantity": 5,
+      "unit_price": 9.99,
+      "total_amount": 49.95
+    }
+  ]
+}
+
+### Expected Response:
+# HTTP/1.1 200 OK
+# {
+#   "inserted_count": 1,
+#   "updated_count": 0,
+#   "rejected_count": 1,
+#   "total_processed": 2,
+#   "errors": [
+#     {
+#       "row_index": 1,
+#       "store_code": "UNKNOWN_STORE",
+#       "sku": "SKU-001",
+#       "date": "2024-01-15",
+#       "error_code": "UNKNOWN_STORE",
+#       "error_message": "Store code 'UNKNOWN_STORE' not found"
+#     }
+#   ],
+#   "duration_ms": 38.45
+# }
+
+
+### ============================================================================
+### Ingest Sales Daily - Unknown Product
+### ============================================================================
+### Row with unknown SKU is rejected
+POST {{API_BASE_URL}}/ingest/sales-daily
+Content-Type: application/json
+
+{
+  "records": [
+    {
+      "date": "2024-01-15",
+      "store_code": "S001",
+      "sku": "NONEXISTENT-SKU",
+      "quantity": 10,
+      "unit_price": 9.99,
+      "total_amount": 99.90
+    }
+  ]
+}
+
+### Expected Response:
+# HTTP/1.1 200 OK
+# {
+#   "inserted_count": 0,
+#   "updated_count": 0,
+#   "rejected_count": 1,
+#   "total_processed": 1,
+#   "errors": [
+#     {
+#       "row_index": 0,
+#       "store_code": "S001",
+#       "sku": "NONEXISTENT-SKU",
+#       "date": "2024-01-15",
+#       "error_code": "UNKNOWN_PRODUCT",
+#       "error_message": "SKU 'NONEXISTENT-SKU' not found"
+#     }
+#   ],
+#   "duration_ms": 25.10
+# }
+
+
+### ============================================================================
+### Ingest Sales Daily - Unknown Date
+### ============================================================================
+### Row with date not in calendar is rejected
+POST {{API_BASE_URL}}/ingest/sales-daily
+Content-Type: application/json
+
+{
+  "records": [
+    {
+      "date": "2099-12-31",
+      "store_code": "S001",
+      "sku": "SKU-001",
+      "quantity": 10,
+      "unit_price": 9.99,
+      "total_amount": 99.90
+    }
+  ]
+}
+
+### Expected Response:
+# HTTP/1.1 200 OK
+# {
+#   "inserted_count": 0,
+#   "updated_count": 0,
+#   "rejected_count": 1,
+#   "total_processed": 1,
+#   "errors": [
+#     {
+#       "row_index": 0,
+#       "store_code": "S001",
+#       "sku": "SKU-001",
+#       "date": "2099-12-31",
+#       "error_code": "UNKNOWN_DATE",
+#       "error_message": "Date '2099-12-31' not found in calendar"
+#     }
+#   ],
+#   "duration_ms": 20.50
+# }
+
+
+### ============================================================================
+### Ingest Sales Daily - Validation Error
+### ============================================================================
+### Empty records list returns 422 Validation Error
+POST {{API_BASE_URL}}/ingest/sales-daily
+Content-Type: application/json
+
+{
+  "records": []
+}
+
+### Expected Response:
+# HTTP/1.1 422 Unprocessable Entity
+# {
+#   "detail": [
+#     {
+#       "type": "too_short",
+#       "loc": ["body", "records"],
+#       "msg": "List should have at least 1 item after validation, not 0",
+#       ...
+#     }
+#   ]
+# }
+
+
+### ============================================================================
+### Ingest Sales Daily - Large Batch
+### ============================================================================
+### Example with multiple stores and products
+POST {{API_BASE_URL}}/ingest/sales-daily
+Content-Type: application/json
+
+{
+  "records": [
+    {
+      "date": "2024-01-15",
+      "store_code": "S001",
+      "sku": "SKU-001",
+      "quantity": 100,
+      "unit_price": 9.99,
+      "total_amount": 999.00
+    },
+    {
+      "date": "2024-01-15",
+      "store_code": "S001",
+      "sku": "SKU-002",
+      "quantity": 50,
+      "unit_price": 19.99,
+      "total_amount": 999.50
+    },
+    {
+      "date": "2024-01-15",
+      "store_code": "S002",
+      "sku": "SKU-001",
+      "quantity": 75,
+      "unit_price": 9.99,
+      "total_amount": 749.25
+    },
+    {
+      "date": "2024-01-15",
+      "store_code": "S002",
+      "sku": "SKU-002",
+      "quantity": 25,
+      "unit_price": 19.99,
+      "total_amount": 499.75
+    },
+    {
+      "date": "2024-01-16",
+      "store_code": "S001",
+      "sku": "SKU-001",
+      "quantity": 110,
+      "unit_price": 9.99,
+      "total_amount": 1098.90
+    },
+    {
+      "date": "2024-01-16",
+      "store_code": "S001",
+      "sku": "SKU-002",
+      "quantity": 55,
+      "unit_price": 19.99,
+      "total_amount": 1099.45
+    }
+  ]
+}
+
+### Expected Response:
+# HTTP/1.1 200 OK
+# {
+#   "inserted_count": 6,
+#   "updated_count": 0,
+#   "rejected_count": 0,
+#   "total_processed": 6,
+#   "errors": [],
+#   "duration_ms": 85.50
+# }

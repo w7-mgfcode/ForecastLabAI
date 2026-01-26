@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"  # noqa: S104
     api_port: int = 8123
 
+    # Ingest
+    ingest_batch_size: int = 1000
+    ingest_timeout_seconds: int = 60
+
     @property
     def is_development(self) -> bool:
         """Check if running in development mode."""
