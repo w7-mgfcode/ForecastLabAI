@@ -10,7 +10,7 @@ This document indexes all implementation phases of the ForecastLabAI project.
 |-------|------|--------|-----|---------------|
 | 0 | Project Foundation | Completed | PRP-0, PRP-1 | [0-INIT_PHASE.md](./PHASE/0-INIT_PHASE.md) |
 | 1 | Data Platform | Completed | PRP-2 | [1-DATA_PLATFORM.md](./PHASE/1-DATA_PLATFORM.md) |
-| 2 | Ingest Layer | Pending | PRP-3 | - |
+| 2 | Ingest Layer | Completed | PRP-3 | [2-INGEST_LAYER.md](./PHASE/2-INGEST_LAYER.md) |
 | 3 | Feature Engineering | Pending | PRP-4 | - |
 | 4 | Forecasting | Pending | PRP-5 | - |
 | 5 | Backtesting | Pending | PRP-6 | - |
@@ -81,12 +81,53 @@ This document indexes all implementation phases of the ForecastLabAI project.
 - Pyright: 0 errors
 - Pytest: 43 tests passed (32 unit + 11 integration)
 
+### [Phase 2: Ingest Layer](./PHASE/2-INGEST_LAYER.md)
+
+**Date Completed**: 2026-01-26
+
+**Summary**: Idempotent batch upsert endpoint for sales data ingestion with:
+- `POST /ingest/sales-daily` endpoint for batch upserts
+- Natural key resolution (store_code -> store_id, sku -> product_id)
+- PostgreSQL `ON CONFLICT DO UPDATE` for replay-safe idempotency
+- Partial success handling (valid rows processed, invalid rows returned with errors)
+- Calendar date validation (FK constraint enforcement)
+- Structured logging with duration metrics
+
+**Key Deliverables**:
+- `app/features/ingest/routes.py` - POST /ingest/sales-daily endpoint
+- `app/features/ingest/schemas.py` - Request/response Pydantic schemas
+- `app/features/ingest/service.py` - KeyResolver and upsert_sales_daily_batch logic
+- `app/core/config.py` - Added ingest_batch_size, ingest_timeout_seconds settings
+- `examples/api/ingest_sales_daily.http` - HTTP client examples
+
+**Error Codes**:
+- `UNKNOWN_STORE` - Store code not found in database
+- `UNKNOWN_PRODUCT` - SKU not found in database
+- `UNKNOWN_DATE` - Date not found in calendar table
+
+**API Response Schema**:
+```json
+{
+  "processed_count": 10,
+  "rejected_count": 2,
+  "total_received": 12,
+  "errors": [
+    {
+      "row_index": 5,
+      "store_code": "INVALID",
+      "sku": "SKU-001",
+      "date": "2024-01-15",
+      "error_code": "UNKNOWN_STORE",
+      "error_message": "Store code 'INVALID' not found"
+    }
+  ],
+  "duration_ms": 45.23
+}
+```
+
 ---
 
 ## Pending Phases
-
-### Phase 2: Ingest Layer
-Idempotent upsert endpoints for sales_daily and sales_txn data.
 
 ### Phase 3: Feature Engineering
 Time-safe feature computation with lag, rolling, and exogenous features.
@@ -148,3 +189,4 @@ Each phase document (`docs/PHASE/X-PHASE_NAME.md`) contains:
 | 2026-01-26 | 0 | Initial project foundation completed |
 | 2026-01-26 | 0 | Added CI/CD infrastructure (5 GitHub Actions workflows) |
 | 2026-01-26 | 1 | Data Platform schema and migrations completed (v0.1.3) |
+| 2026-01-26 | 2 | Ingest Layer with POST /ingest/sales-daily endpoint completed |
