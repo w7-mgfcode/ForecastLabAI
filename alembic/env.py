@@ -11,6 +11,9 @@ from alembic import context
 from app.core.config import get_settings
 from app.core.database import Base
 
+# Import all models for Alembic autogenerate detection
+from app.features.data_platform import models as data_platform_models  # noqa: F401
+
 # Alembic Config object
 config = context.config
 

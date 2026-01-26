@@ -39,19 +39,25 @@ uv sync
 # or: pip install -e ".[dev]"
 ```
 
-4. **Verify database connectivity**
+4. **Run database migrations**
+
+```bash
+uv run alembic upgrade head
+```
+
+5. **Verify database connectivity**
 
 ```bash
 uv run python scripts/check_db.py
 ```
 
-5. **Start the API server**
+6. **Start the API server**
 
 ```bash
 uv run uvicorn app.main:app --reload --port 8123
 ```
 
-6. **Verify the API is running**
+7. **Verify the API is running**
 
 ```bash
 curl http://localhost:8123/health
@@ -85,14 +91,26 @@ uv run alembic upgrade head
 app/
 ├── core/           # Config, database, logging, middleware, exceptions
 ├── shared/         # Pagination, timestamps, error schemas
-├── features/       # Vertical slices (ingest, forecasting, etc.)
+├── features/
+│   └── data_platform/  # Store, product, calendar, sales tables
 └── main.py         # FastAPI entry point
 
 tests/              # Test fixtures and helpers
 alembic/            # Database migrations
-examples/           # Runnable examples
+examples/
+├── schema/         # Table documentation
+└── queries/        # Example SQL queries
 scripts/            # Utility scripts
 ```
+
+### Database Schema
+
+The data platform includes 7 tables for retail demand forecasting:
+
+**Dimensions**: `store`, `product`, `calendar`
+**Facts**: `sales_daily`, `price_history`, `promotion`, `inventory_snapshot_daily`
+
+See [examples/schema/README.md](examples/schema/README.md) for detailed schema documentation.
 
 ## API Documentation
 
