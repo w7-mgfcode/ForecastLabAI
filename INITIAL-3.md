@@ -20,6 +20,11 @@
 - FastAPI request models + validation patterns
 - Postgres upsert (ON CONFLICT) + uniqueness constraints
 
+## KEY RESOLUTION
+- Ingest payloads accept natural keys (`store_code`, `sku`) instead of internal IDs.
+- Service resolves codes → IDs before upsert.
+- Unknown codes: reject individual row with error detail; continue processing valid rows.
+
 ## OTHER CONSIDERATIONS:
 - Logging: inserted/updated counts + dedupe stats.
 - Batch sizing/timeouts must be configurable.
