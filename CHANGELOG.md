@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.5](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.1.4...v0.1.5) (2026-01-26)
+
+
+### Features
+
+* **ingest:** implement idempotent batch upsert endpoint for sales_daily ([#19](https://github.com/w7-mgfcode/ForecastLabAI/issues/19)) ([0e15cb3](https://github.com/w7-mgfcode/ForecastLabAI/commit/0e15cb34587c744c41e20c554c82adf3ff27f853))
+
+
+### Bug Fixes
+
+* **docs:** address CodeRabbit review comments ([3fb1b06](https://github.com/w7-mgfcode/ForecastLabAI/commit/3fb1b06b584b7f0e39019de49d68ebc456ec02a7))
+
+
+### Documentation
+
+* add DAILY-FLOW and PHASE-FLOW documentation ([292e8c6](https://github.com/w7-mgfcode/ForecastLabAI/commit/292e8c67957488de981da27686bbd20f03040ed0))
+* add Phase 2 (Ingest Layer) documentation ([#20](https://github.com/w7-mgfcode/ForecastLabAI/issues/20)) ([3249bf6](https://github.com/w7-mgfcode/ForecastLabAI/commit/3249bf61387501c38a7455479457ef6cfe778323))
+
 ## [0.1.4](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.1.3...v0.1.4) (2026-01-26)
 
 
