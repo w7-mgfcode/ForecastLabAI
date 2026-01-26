@@ -91,10 +91,14 @@ class KeyResolver:
 
 @dataclass
 class UpsertResult:
-    """Result of batch upsert operation."""
+    """Result of batch upsert operation.
 
-    inserted_count: int = 0
-    updated_count: int = 0
+    Note: Due to PostgreSQL ON CONFLICT semantics, we cannot distinguish
+    inserts from updates without additional complexity (xmax check).
+    The processed_count represents all rows successfully written.
+    """
+
+    processed_count: int = 0
     rejected_count: int = 0
     errors: list[IngestRowError] = field(  # pyright: ignore[reportUnknownVariableType]
         default_factory=list
@@ -195,8 +199,7 @@ async def upsert_sales_daily_batch(
         )
 
     # Perform upsert for valid rows
-    inserted = 0
-    updated = 0
+    processed = 0
 
     if valid_rows:
         # Use PostgreSQL INSERT...ON CONFLICT DO UPDATE
@@ -209,30 +212,23 @@ async def upsert_sales_daily_batch(
                 "total_amount": insert_stmt.excluded.total_amount,
                 "updated_at": func.now(),
             },
-        ).returning(SalesDaily.id)
+        )
 
-        # Execute and get results
-        result = await db.execute(upsert_stmt)
-        rows_affected = len(result.fetchall())
-
-        # Note: Distinguishing inserted vs updated accurately requires xmax check
-        # For simplicity, count all as processed (could enhance later)
-        # A row is "inserted" if xmax = 0, "updated" if xmax > 0
-        # For now, we report total as "inserted" for new batches
-        inserted = rows_affected
-        updated = 0
+        # Execute and get row count (more efficient than fetchall)
+        # Note: rowcount exists on CursorResult but SQLAlchemy's generic Result type
+        # doesn't expose it in its type stubs (available at runtime for DML operations)
+        cursor_result = await db.execute(upsert_stmt)
+        processed = int(cursor_result.rowcount) if cursor_result.rowcount else 0  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType,reportUnknownArgumentType]
 
     logger.info(
         "ingest.sales_daily.upsert_completed",
-        inserted=inserted,
-        updated=updated,
+        processed=processed,
         rejected=len(errors),
         total_valid=len(valid_rows),
     )
 
     return UpsertResult(
-        inserted_count=inserted,
-        updated_count=updated,
+        processed_count=processed,
         rejected_count=len(errors),
         errors=errors,
     )

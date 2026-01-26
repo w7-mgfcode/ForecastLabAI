@@ -109,11 +109,25 @@ async def seed_data(db_session: AsyncSession):
 
 
 @pytest.fixture
-async def client():
-    """Create async test client."""
+async def client(db_session: AsyncSession):
+    """Create async test client with shared database session.
+
+    Overrides the get_db dependency to use the test session,
+    ensuring test data is visible to the API.
+    """
+    from app.core.database import get_db
+
+    async def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+
+    # Clean up override after test
+    app.dependency_overrides.clear()
 
 
 @pytest.mark.integration
@@ -148,9 +162,9 @@ class TestIngestSalesDaily:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["inserted_count"] == 2
+        assert data["processed_count"] == 2
         assert data["rejected_count"] == 0
-        assert data["total_processed"] == 2
+        assert data["total_received"] == 2
         assert data["errors"] == []
         assert data["duration_ms"] >= 0
 
@@ -179,7 +193,7 @@ class TestIngestSalesDaily:
         response1 = await client.post("/ingest/sales-daily", json=payload)
         assert response1.status_code == 200
         data1 = response1.json()
-        assert data1["inserted_count"] == 1
+        assert data1["processed_count"] == 1
 
         # Verify one record exists
         result = await db_session.execute(select(SalesDaily))
@@ -229,9 +243,9 @@ class TestIngestSalesDaily:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["inserted_count"] == 1
+        assert data["processed_count"] == 1
         assert data["rejected_count"] == 1
-        assert data["total_processed"] == 2
+        assert data["total_received"] == 2
         assert len(data["errors"]) == 1
         assert data["errors"][0]["error_code"] == "UNKNOWN_STORE"
         assert data["errors"][0]["row_index"] == 1
@@ -256,7 +270,7 @@ class TestIngestSalesDaily:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["inserted_count"] == 0
+        assert data["processed_count"] == 0
         assert data["rejected_count"] == 1
         assert data["errors"][0]["error_code"] == "UNKNOWN_STORE"
 
@@ -280,7 +294,7 @@ class TestIngestSalesDaily:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["inserted_count"] == 0
+        assert data["processed_count"] == 0
         assert data["rejected_count"] == 1
         assert data["errors"][0]["error_code"] == "UNKNOWN_PRODUCT"
 
@@ -304,12 +318,12 @@ class TestIngestSalesDaily:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["inserted_count"] == 0
+        assert data["processed_count"] == 0
         assert data["rejected_count"] == 1
         assert data["errors"][0]["error_code"] == "UNKNOWN_DATE"
 
     @pytest.mark.asyncio
-    async def test_ingest_empty_records_rejected(self, client):
+    async def test_ingest_empty_records_rejected(self, client, db_session, seed_data):
         """Test that empty records list returns 422."""
         payload: dict[str, list[dict[str, str]]] = {"records": []}
 
@@ -318,7 +332,7 @@ class TestIngestSalesDaily:
         assert response.status_code == 422  # Validation error
 
     @pytest.mark.asyncio
-    async def test_ingest_negative_quantity_rejected(self, client):
+    async def test_ingest_negative_quantity_rejected(self, client, db_session, seed_data):
         """Test that negative quantity returns 422."""
         payload = {
             "records": [

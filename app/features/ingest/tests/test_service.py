@@ -106,21 +106,18 @@ class TestUpsertResult:
     def test_default_values(self):
         """Test UpsertResult default values."""
         result = UpsertResult()
-        assert result.inserted_count == 0
-        assert result.updated_count == 0
+        assert result.processed_count == 0
         assert result.rejected_count == 0
         assert result.errors == []
 
     def test_with_values(self):
         """Test UpsertResult with values."""
         result = UpsertResult(
-            inserted_count=5,
-            updated_count=2,
+            processed_count=5,
             rejected_count=1,
             errors=[],
         )
-        assert result.inserted_count == 5
-        assert result.updated_count == 2
+        assert result.processed_count == 5
         assert result.rejected_count == 1
 
 
@@ -132,7 +129,7 @@ class TestUpsertSalesDailyBatch:
         """Test that all valid rows are processed."""
         mock_session = AsyncMock()
         mock_execute_result = MagicMock()
-        mock_execute_result.fetchall.return_value = [MagicMock(id=1), MagicMock(id=2)]
+        mock_execute_result.rowcount = 2
         mock_session.execute.return_value = mock_execute_result
 
         records = [
@@ -156,7 +153,7 @@ class TestUpsertSalesDailyBatch:
 
         result = await upsert_sales_daily_batch(mock_session, records, mock_key_resolver)
 
-        assert result.inserted_count == 2
+        assert result.processed_count == 2
         assert result.rejected_count == 0
         assert len(result.errors) == 0
 
@@ -165,7 +162,7 @@ class TestUpsertSalesDailyBatch:
         """Test that rows with unknown store codes are rejected."""
         mock_session = AsyncMock()
         mock_execute_result = MagicMock()
-        mock_execute_result.fetchall.return_value = [MagicMock(id=1)]
+        mock_execute_result.rowcount = 1
         mock_session.execute.return_value = mock_execute_result
 
         records = [
@@ -189,7 +186,7 @@ class TestUpsertSalesDailyBatch:
 
         result = await upsert_sales_daily_batch(mock_session, records, mock_key_resolver)
 
-        assert result.inserted_count == 1
+        assert result.processed_count == 1
         assert result.rejected_count == 1
         assert len(result.errors) == 1
         assert result.errors[0].error_code == "UNKNOWN_STORE"
@@ -200,7 +197,7 @@ class TestUpsertSalesDailyBatch:
         """Test that rows with unknown SKUs are rejected."""
         mock_session = AsyncMock()
         mock_execute_result = MagicMock()
-        mock_execute_result.fetchall.return_value = [MagicMock(id=1)]
+        mock_execute_result.rowcount = 1
         mock_session.execute.return_value = mock_execute_result
 
         records = [
@@ -224,7 +221,7 @@ class TestUpsertSalesDailyBatch:
 
         result = await upsert_sales_daily_batch(mock_session, records, mock_key_resolver)
 
-        assert result.inserted_count == 1
+        assert result.processed_count == 1
         assert result.rejected_count == 1
         assert len(result.errors) == 1
         assert result.errors[0].error_code == "UNKNOWN_PRODUCT"
@@ -235,7 +232,7 @@ class TestUpsertSalesDailyBatch:
         """Test that rows with unknown dates are rejected."""
         mock_session = AsyncMock()
         mock_execute_result = MagicMock()
-        mock_execute_result.fetchall.return_value = [MagicMock(id=1)]
+        mock_execute_result.rowcount = 1
         mock_session.execute.return_value = mock_execute_result
 
         records = [
@@ -259,7 +256,7 @@ class TestUpsertSalesDailyBatch:
 
         result = await upsert_sales_daily_batch(mock_session, records, mock_key_resolver)
 
-        assert result.inserted_count == 1
+        assert result.processed_count == 1
         assert result.rejected_count == 1
         assert len(result.errors) == 1
         assert result.errors[0].error_code == "UNKNOWN_DATE"
@@ -271,7 +268,7 @@ class TestUpsertSalesDailyBatch:
         mock_session = AsyncMock()
         mock_execute_result = MagicMock()
         # 2 valid rows will be processed
-        mock_execute_result.fetchall.return_value = [MagicMock(id=1), MagicMock(id=2)]
+        mock_execute_result.rowcount = 2
         mock_session.execute.return_value = mock_execute_result
 
         result = await upsert_sales_daily_batch(
@@ -280,7 +277,7 @@ class TestUpsertSalesDailyBatch:
 
         # 2 valid rows (S001/SKU-001 and S002/SKU-002)
         # 2 invalid rows (UNKNOWN store, UNKNOWN-SKU product)
-        assert result.inserted_count == 2
+        assert result.processed_count == 2
         assert result.rejected_count == 2
         assert len(result.errors) == 2
 
@@ -307,7 +304,7 @@ class TestUpsertSalesDailyBatch:
 
         result = await upsert_sales_daily_batch(mock_session, records, mock_key_resolver)
 
-        assert result.inserted_count == 0
+        assert result.processed_count == 0
         assert result.rejected_count == 1
         # DB execute should not be called since no valid rows
         # (only key resolution queries, no insert)
@@ -319,7 +316,6 @@ class TestUpsertSalesDailyBatch:
 
         result = await upsert_sales_daily_batch(mock_session, [], mock_key_resolver)
 
-        assert result.inserted_count == 0
-        assert result.updated_count == 0
+        assert result.processed_count == 0
         assert result.rejected_count == 0
         assert result.errors == []

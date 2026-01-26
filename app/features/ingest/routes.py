@@ -3,6 +3,7 @@
 import time
 
 from fastapi import APIRouter, Depends, status
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -51,7 +52,7 @@ async def ingest_sales_daily(
         db: Async database session from dependency.
 
     Returns:
-        Response with inserted, updated, rejected counts and error details.
+        Response with processed, rejected counts and error details.
 
     Raises:
         DatabaseError: If database operation fails unexpectedly.
@@ -71,21 +72,19 @@ async def ingest_sales_daily(
 
         logger.info(
             "ingest.sales_daily.request_completed",
-            inserted=result.inserted_count,
-            updated=result.updated_count,
+            processed=result.processed_count,
             rejected=result.rejected_count,
             duration_ms=round(duration_ms, 2),
         )
 
         return SalesDailyIngestResponse(
-            inserted_count=result.inserted_count,
-            updated_count=result.updated_count,
+            processed_count=result.processed_count,
             rejected_count=result.rejected_count,
-            total_processed=len(request.records),
+            total_received=len(request.records),
             errors=result.errors,
             duration_ms=round(duration_ms, 2),
         )
-    except Exception as e:
+    except SQLAlchemyError as e:
         logger.error(
             "ingest.sales_daily.request_failed",
             error=str(e),

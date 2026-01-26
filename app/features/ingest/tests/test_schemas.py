@@ -239,10 +239,9 @@ class TestSalesDailyIngestResponse:
     def test_response_serialization(self):
         """Test that response can be serialized."""
         response = SalesDailyIngestResponse(
-            inserted_count=5,
-            updated_count=2,
+            processed_count=7,
             rejected_count=1,
-            total_processed=8,
+            total_received=8,
             errors=[
                 IngestRowError(
                     row_index=7,
@@ -256,20 +255,18 @@ class TestSalesDailyIngestResponse:
             duration_ms=45.23,
         )
         data = response.model_dump()
-        assert data["inserted_count"] == 5
-        assert data["updated_count"] == 2
+        assert data["processed_count"] == 7
         assert data["rejected_count"] == 1
-        assert data["total_processed"] == 8
+        assert data["total_received"] == 8
         assert len(data["errors"]) == 1
         assert data["duration_ms"] == 45.23
 
     def test_response_with_no_errors(self):
         """Test response with no errors."""
         response = SalesDailyIngestResponse(
-            inserted_count=10,
-            updated_count=0,
+            processed_count=10,
             rejected_count=0,
-            total_processed=10,
+            total_received=10,
             errors=[],
             duration_ms=30.0,
         )
@@ -280,10 +277,9 @@ class TestSalesDailyIngestResponse:
         """Test that negative counts are rejected."""
         with pytest.raises(ValidationError):
             SalesDailyIngestResponse(
-                inserted_count=-1,
-                updated_count=0,
+                processed_count=-1,
                 rejected_count=0,
-                total_processed=0,
+                total_received=0,
                 errors=[],
                 duration_ms=0.0,
             )
