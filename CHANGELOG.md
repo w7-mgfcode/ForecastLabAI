@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.1.3...v0.1.4) (2026-01-26)
+
+
+### Documentation
+
+* mark Phase 1 as completed (v0.1.3) ([#15](https://github.com/w7-mgfcode/ForecastLabAI/issues/15)) ([10601ef](https://github.com/w7-mgfcode/ForecastLabAI/commit/10601ef4f3e87ade284a4f914a422e3782e4d5d4))
+
 ## [0.1.3](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.1.2...v0.1.3) (2026-01-26)
 
 
