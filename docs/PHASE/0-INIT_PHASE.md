@@ -190,155 +190,33 @@ def add_request_id(
 
 #### Database (`database.py`)
 
-Async SQLAlchemy 2.0 setup:
-
-```python
-class Base(DeclarativeBase):
-    pass
-
-def get_engine() -> AsyncEngine:
-    settings = get_settings()
-    return create_async_engine(
-        settings.database_url,
-        echo=settings.debug,
-        pool_pre_ping=True,
-    )
-
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    session_maker = get_session_maker()
-    async with session_maker() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-```
-
-**Features**:
-- Async engine with connection pool
-- Session dependency for FastAPI
-- Auto-commit on success, rollback on failure
-- Debug mode SQL echoing
+Async SQLAlchemy 2.0 with session dependency:
+- `Base` - DeclarativeBase for models
+- `get_engine()` - Async engine with pool_pre_ping
+- `get_db()` - FastAPI dependency with auto-commit/rollback
 
 #### Middleware (`middleware.py`)
 
-Request ID correlation middleware:
-
-```python
-class RequestIdMiddleware(BaseHTTPMiddleware):
-    async def dispatch(
-        self,
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
-        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        token = request_id_ctx.set(request_id)
-
-        try:
-            logger.info("http.request_started", method=request.method, path=str(request.url.path))
-            response = await call_next(request)
-            logger.info("http.request_completed", status_code=response.status_code)
-            response.headers["X-Request-ID"] = request_id
-            return response
-        finally:
-            request_id_ctx.reset(token)
-```
-
-**Features**:
-- Generates UUID if no X-Request-ID header provided
-- Preserves client-provided request IDs
-- Injects request ID into all log entries
-- Returns request ID in response header
+Request ID correlation: generates UUID if no X-Request-ID header, preserves client-provided IDs, injects into all logs, returns in response header.
 
 #### Exceptions (`exceptions.py`)
 
-Custom exception hierarchy with handlers:
-
-```python
-class ForecastLabError(Exception):
-    def __init__(
-        self,
-        message: str,
-        code: str = "INTERNAL_ERROR",
-        status_code: int = 500,
-        details: dict[str, Any] | None = None,
-    ) -> None:
-        self.message = message
-        self.code = code
-        self.status_code = status_code
-        self.details = details or {}
-
-class NotFoundError(ForecastLabError):
-    # 404 errors
-
-class ValidationError(ForecastLabError):
-    # 422 errors
-
-class DatabaseError(ForecastLabError):
-    # 500 database errors
-```
-
-**Error Response Format**:
-```json
-{
-  "error": {
-    "code": "NOT_FOUND",
-    "message": "Resource not found",
-    "details": {"resource_id": "123"},
-    "request_id": "550e8400-e29b-41d4-a716-446655440000"
-  }
-}
-```
+Custom hierarchy: `ForecastLabError` base class with `NotFoundError` (404), `ValidationError` (422), `DatabaseError` (500). JSON error response includes code, message, details, request_id.
 
 #### Health Check (`health.py`)
 
-Health and readiness endpoints:
-
 | Endpoint | Purpose | Response |
 |----------|---------|----------|
-| `GET /health` | Basic liveness check | `{"status": "ok"}` |
-| `GET /health/ready` | Readiness with DB check | `{"status": "ok", "database": "connected"}` |
+| `GET /health` | Liveness | `{"status": "ok"}` |
+| `GET /health/ready` | Readiness + DB | `{"status": "ok", "database": "connected"}` |
 
 ---
 
 ### 4. Shared Utilities (`app/shared/`)
 
-#### TimestampMixin (`models.py`)
-
-```python
-class TimestampMixin:
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
-```
-
-#### Pagination (`schemas.py`)
-
-```python
-class PaginationParams(BaseModel):
-    page: int = Field(1, ge=1)
-    page_size: int = Field(50, ge=1, le=1000)
-
-    @property
-    def offset(self) -> int:
-        return (self.page - 1) * self.page_size
-
-class PaginatedResponse[T](BaseModel):
-    items: list[T]
-    total: int
-    page: int
-    page_size: int
-    pages: int
-```
+- **TimestampMixin**: `created_at` and `updated_at` with server defaults
+- **PaginationParams**: `page`, `page_size`, computed `offset`
+- **PaginatedResponse[T]**: Generic paginated list with `items`, `total`, `pages`
 
 ---
 
@@ -537,6 +415,121 @@ scripts/
 | Examples/Scripts | 4 |
 | Documentation | 1 (README.md) |
 | **Total** | **~32 files** |
+
+---
+
+### 9. CI/CD Infrastructure (`.github/workflows/`)
+
+#### Core CI Pipeline (`ci.yml`)
+
+Runs on push/PR to main and dev branches:
+
+| Job | Purpose | Tools |
+|-----|---------|-------|
+| `lint` | Code quality | ruff check, ruff format |
+| `typecheck` | Static analysis | mypy, pyright |
+| `test` | Unit/integration tests | pytest with PostgreSQL |
+| `migration-check` | Migration integrity | alembic upgrade head |
+
+**Key Features**:
+- Concurrency groups to cancel stale runs
+- PostgreSQL service container (pgvector:pg16)
+- uv package manager with caching
+- Python 3.12 environment
+
+#### Schema Validation (`schema-validation.yml`)
+
+Triggers on changes to `alembic/**` or `app/**/models.py`:
+
+```yaml
+steps:
+  - Fresh DB migration test (alembic upgrade head)
+  - Migration chain integrity (single head enforcement)
+  - Schema drift detection (alembic check)
+  - Downgrade/upgrade cycle test
+  - Schema report generation
+```
+
+**Purpose**: Catches migration drift and schema issues before merge.
+
+#### Dependency Security Check (`dependency-check.yml`)
+
+Triggers weekly (Sunday 00:00 UTC) or manual dispatch:
+
+```yaml
+steps:
+  - Export requirements from uv lock
+  - Run pip-audit (JSON + SARIF output)
+  - Upload SARIF to GitHub Security tab
+  - Upload JSON artifact (90-day retention)
+  - Analyze and optionally fail on vulnerabilities
+```
+
+**Features**:
+- SARIF integration with GitHub Security tab
+- Configurable `fail_on_vulnerabilities` toggle
+- Audit trail artifacts
+
+#### Phase Snapshot (`phase-snapshot.yml`)
+
+Triggers on push to `phase-*` branches:
+
+```yaml
+jobs:
+  validate:
+    - Lint, typecheck, test, migrations
+    - Expose status outputs
+
+  create-snapshot:
+    - Extract phase number from branch
+    - Generate audit-data.json + requirements-frozen.txt
+    - Create SNAPSHOT-REPORT.md
+    - Upload artifacts (365-day retention)
+    - Create annotated git tag: phase-{N}-snapshot-{YYYYMMDD}-{sha}
+```
+
+**Purpose**: Creates audit snapshots at phase milestones.
+
+#### CD Release (`cd-release.yml`)
+
+Triggers on push to main:
+
+```yaml
+jobs:
+  release-please:
+    - Parse conventional commits
+    - Create/update release PR
+    - Outputs: release_created, tag_name, version
+
+  build-package:
+    - Checkout at release tag
+    - Build Python package (python -m build)
+    - Upload to GitHub Release
+    - Store as workflow artifact
+```
+
+**Supporting Files**:
+| File | Purpose |
+|------|---------|
+| `release-please-config.json` | Package config (python type, version bumping) |
+| `.release-please-manifest.json` | Version tracker (starts at 0.1.0) |
+
+**Conventional Commits → Versions**:
+- `fix:` → patch (0.1.0 → 0.1.1)
+- `feat:` → minor (0.1.0 → 0.2.0)
+- `BREAKING CHANGE:` → major (0.1.0 → 1.0.0)
+
+#### Workflow Diagrams
+
+All workflow diagrams documented in `docs/github/diagrams/`:
+
+| Diagram | Description |
+|---------|-------------|
+| `cd-release-sequence.md` | Actor interactions during release |
+| `cd-release-flow.md` | Release workflow job flow |
+| `phase-snapshot-flow.md` | Phase-* branch snapshot flow |
+| `schema-validation-flow.md` | Migration/drift check flow |
+| `dependency-check-flow.md` | pip-audit scan flow |
 
 ---
 
