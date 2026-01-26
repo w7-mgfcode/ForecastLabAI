@@ -1,0 +1,142 @@
+name: Schema Validation
+
+on:
+  push:
+    paths:
+      - 'alembic/**'
+      - 'app/**/models.py'
+      - 'app/core/database.py'
+  pull_request:
+    paths:
+      - 'alembic/**'
+      - 'app/**/models.py'
+      - 'app/core/database.py'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  UV_VERSION: "0.5"
+  DATABASE_URL: postgresql+asyncpg://forecastlab:forecastlab@localhost:5432/forecastlab_schema_test
+
+jobs:
+  schema-validation:
+    name: Validate Database Schema
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: forecastlab
+          POSTGRES_PASSWORD: forecastlab
+          POSTGRES_DB: forecastlab_schema_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-extras --dev
+
+      - name: Fresh DB migration test
+        run: |
+          echo "::group::Applying all migrations to fresh database"
+          uv run alembic upgrade head
+          echo "::endgroup::"
+
+      - name: Check migration chain integrity
+        run: |
+          echo "::group::Verifying migration chain"
+          # Get all revision heads - should be exactly one
+          HEADS=$(uv run alembic heads 2>&1)
+          HEAD_COUNT=$(echo "$HEADS" | grep -c "^[a-f0-9]" || true)
+
+          if [ "$HEAD_COUNT" -gt 1 ]; then
+            echo "::error::Multiple migration heads detected - branched history found"
+            echo "$HEADS"
+            exit 1
+          fi
+
+          echo "Migration chain integrity: OK (single head)"
+          echo "$HEADS"
+          echo "::endgroup::"
+
+      - name: Schema drift detection
+        run: |
+          echo "::group::Checking for schema drift"
+          # alembic check compares models to current DB state
+          # Returns non-zero if autogenerate would create new migrations
+          if uv run alembic check 2>&1; then
+            echo "Schema is in sync with models"
+          else
+            echo "::error::Schema drift detected - models don't match migrations"
+            echo "Run 'alembic revision --autogenerate' to generate missing migrations"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+      - name: Downgrade/upgrade cycle test
+        run: |
+          echo "::group::Testing migration reversibility"
+          # Get current revision
+          CURRENT=$(uv run alembic current 2>&1 | grep -oE "^[a-f0-9]+" | head -1)
+
+          if [ -z "$CURRENT" ]; then
+            echo "No migrations applied, skipping cycle test"
+            exit 0
+          fi
+
+          echo "Current revision: $CURRENT"
+
+          # Downgrade one step
+          echo "Downgrading one migration..."
+          uv run alembic downgrade -1
+
+          # Upgrade back
+          echo "Upgrading back to head..."
+          uv run alembic upgrade head
+
+          # Verify we're back at head
+          FINAL=$(uv run alembic current 2>&1 | grep -oE "^[a-f0-9]+" | head -1)
+
+          if [ "$CURRENT" != "$FINAL" ]; then
+            echo "::error::Migration cycle failed - revision mismatch after downgrade/upgrade"
+            echo "Expected: $CURRENT, Got: $FINAL"
+            exit 1
+          fi
+
+          echo "Migration cycle test: PASSED"
+          echo "::endgroup::"
+
+      - name: Generate schema report
+        if: always()
+        run: |
+          echo "## Schema Validation Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Migration History" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          uv run alembic history --verbose 2>&1 | head -50 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Current State" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          uv run alembic current --verbose 2>&1 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
