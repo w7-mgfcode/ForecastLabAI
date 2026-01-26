@@ -8,16 +8,16 @@ This document indexes all implementation phases of the ForecastLabAI project.
 
 | Phase | Name | Status | PRP | Documentation |
 |-------|------|--------|-----|---------------|
-| 0 | Project Foundation | Completed | PRP-0 | [0-INIT_PHASE.md](./PHASE/0-INIT_PHASE.md) |
-| 1 | Data Platform | Pending | PRP-1 | - |
-| 2 | Ingest Layer | Pending | PRP-2 | - |
-| 3 | Feature Engineering | Pending | PRP-3 | - |
-| 4 | Forecasting | Pending | PRP-4 | - |
-| 5 | Backtesting | Pending | PRP-5 | - |
-| 6 | Model Registry | Pending | PRP-6 | - |
-| 7 | RAG Knowledge Base | Pending | PRP-7 | - |
-| 8 | Dashboard | Pending | PRP-8 | - |
-| 9 | Agentic Layer | Pending | PRP-9 | - |
+| 0 | Project Foundation | Completed | PRP-0, PRP-1 | [0-INIT_PHASE.md](./PHASE/0-INIT_PHASE.md) |
+| 1 | Data Platform | **In Progress** | PRP-2 | [1-DATA_PLATFORM.md](./PHASE/1-DATA_PLATFORM.md) |
+| 2 | Ingest Layer | Pending | PRP-3 | - |
+| 3 | Feature Engineering | Pending | PRP-4 | - |
+| 4 | Forecasting | Pending | PRP-5 | - |
+| 5 | Backtesting | Pending | PRP-6 | - |
+| 6 | Model Registry | Pending | PRP-7 | - |
+| 7 | RAG Knowledge Base | Pending | PRP-8 | - |
+| 8 | Dashboard | Pending | PRP-9 | - |
+| 9 | Agentic Layer | Pending | - | - |
 
 ---
 
@@ -57,10 +57,30 @@ This document indexes all implementation phases of the ForecastLabAI project.
 
 ---
 
-## Pending Phases
+## In Progress
 
-### Phase 1: Data Platform
-Multi-table mini warehouse with store, product, calendar, and sales tables.
+### [Phase 1: Data Platform](./PHASE/1-DATA_PLATFORM.md)
+
+**Status**: In Progress (PR #12)
+**PRP Reference**: `PRPs/PRP-2-data-platform-schema.md`
+
+**Summary**: Mini-warehouse schema for retail demand forecasting with:
+- 7 SQLAlchemy 2.0 ORM models (3 dimension + 4 fact tables)
+- Grain protection via unique constraints
+- Check constraints for data quality
+- Composite indexes for query performance
+- 32 unit tests + 11 integration tests
+
+**Key Deliverables**:
+- `app/features/data_platform/models.py` - All ORM models
+- `app/features/data_platform/schemas.py` - Pydantic validation schemas
+- `alembic/versions/e1165ebcef61_create_data_platform_tables.py` - Baseline migration
+- `examples/schema/README.md` - Table documentation
+- `examples/queries/` - KPI and join pattern examples
+
+---
+
+## Pending Phases
 
 ### Phase 2: Ingest Layer
 Idempotent upsert endpoints for sales_daily and sales_txn data.
