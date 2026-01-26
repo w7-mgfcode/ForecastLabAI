@@ -1,0 +1,253 @@
+name: Phase Snapshot
+
+on:
+  push:
+    branches:
+      - 'phase-*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  UV_VERSION: "0.5"
+  DATABASE_URL: postgresql+asyncpg://forecastlab:forecastlab@localhost:5432/forecastlab_snapshot_test
+
+jobs:
+  validate:
+    name: Full Validation
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: forecastlab
+          POSTGRES_PASSWORD: forecastlab
+          POSTGRES_DB: forecastlab_snapshot_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    outputs:
+      lint_status: ${{ steps.lint.outcome }}
+      typecheck_status: ${{ steps.typecheck.outcome }}
+      test_status: ${{ steps.test.outcome }}
+      migration_status: ${{ steps.migration.outcome }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-extras --dev
+
+      - name: Lint check
+        id: lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Type check
+        id: typecheck
+        run: |
+          uv run mypy app/
+          uv run pyright app/
+
+      - name: Run migrations
+        id: migration
+        run: uv run alembic upgrade head
+
+      - name: Run tests
+        id: test
+        env:
+          APP_ENV: testing
+        run: uv run pytest -v --tb=short
+
+  create-snapshot:
+    name: Create Audit Snapshot
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Extract phase number
+        id: phase
+        run: |
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          PHASE_NUM=$(echo "$BRANCH_NAME" | sed -n 's/phase-\([0-9]*\).*/\1/p')
+
+          if [ -z "$PHASE_NUM" ]; then
+            echo "::error::Could not extract phase number from branch: $BRANCH_NAME"
+            exit 1
+          fi
+
+          echo "phase_num=$PHASE_NUM" >> $GITHUB_OUTPUT
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
+      - name: Generate snapshot metadata
+        id: metadata
+        run: |
+          TIMESTAMP=$(date -u +%Y%m%d)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          FULL_SHA=$(git rev-parse HEAD)
+          TAG_NAME="phase-${{ steps.phase.outputs.phase_num }}-snapshot-${TIMESTAMP}-${SHORT_SHA}"
+
+          echo "timestamp=$TIMESTAMP" >> $GITHUB_OUTPUT
+          echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "full_sha=$FULL_SHA" >> $GITHUB_OUTPUT
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+
+      - name: Collect audit data
+        id: audit
+        run: |
+          # Collect comprehensive audit information
+          mkdir -p audit-output
+
+          # Git information
+          cat > audit-output/audit-data.json << EOF
+          {
+            "snapshot": {
+              "tag": "${{ steps.metadata.outputs.tag_name }}",
+              "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+              "phase": "${{ steps.phase.outputs.phase_num }}",
+              "branch": "${{ steps.phase.outputs.branch_name }}"
+            },
+            "git": {
+              "sha": "${{ steps.metadata.outputs.full_sha }}",
+              "short_sha": "${{ steps.metadata.outputs.short_sha }}",
+              "author": "$(git log -1 --format='%an')",
+              "author_email": "$(git log -1 --format='%ae')",
+              "commit_message": $(git log -1 --format='%s' | jq -Rs .),
+              "commit_date": "$(git log -1 --format='%aI')"
+            },
+            "validation": {
+              "lint": "${{ needs.validate.outputs.lint_status }}",
+              "typecheck": "${{ needs.validate.outputs.typecheck_status }}",
+              "tests": "${{ needs.validate.outputs.test_status }}",
+              "migrations": "${{ needs.validate.outputs.migration_status }}"
+            },
+            "environment": {
+              "python_version": "${{ env.PYTHON_VERSION }}",
+              "uv_version": "${{ env.UV_VERSION }}",
+              "runner_os": "${{ runner.os }}"
+            },
+            "workflow": {
+              "run_id": "${{ github.run_id }}",
+              "run_number": "${{ github.run_number }}",
+              "workflow": "${{ github.workflow }}",
+              "actor": "${{ github.actor }}"
+            }
+          }
+          EOF
+
+          # File statistics
+          echo "" >> audit-output/audit-data.json
+
+          # Dependency snapshot
+          uv pip freeze > audit-output/requirements-frozen.txt 2>/dev/null || uv export --format requirements-txt > audit-output/requirements-frozen.txt
+
+      - name: Generate markdown report
+        run: |
+          cat > audit-output/SNAPSHOT-REPORT.md << 'EOF'
+          # Phase ${{ steps.phase.outputs.phase_num }} Snapshot Report
+
+          ## Snapshot Information
+
+          | Field | Value |
+          |-------|-------|
+          | **Tag** | `${{ steps.metadata.outputs.tag_name }}` |
+          | **Branch** | `${{ steps.phase.outputs.branch_name }}` |
+          | **Commit** | `${{ steps.metadata.outputs.full_sha }}` |
+          | **Date** | ${{ steps.metadata.outputs.timestamp }} |
+          | **Triggered by** | @${{ github.actor }} |
+
+          ## Validation Results
+
+          | Check | Status |
+          |-------|--------|
+          | Lint | ${{ needs.validate.outputs.lint_status == 'success' && '✅ Passed' || '❌ Failed' }} |
+          | Type Check | ${{ needs.validate.outputs.typecheck_status == 'success' && '✅ Passed' || '❌ Failed' }} |
+          | Tests | ${{ needs.validate.outputs.test_status == 'success' && '✅ Passed' || '❌ Failed' }} |
+          | Migrations | ${{ needs.validate.outputs.migration_status == 'success' && '✅ Passed' || '❌ Failed' }} |
+
+          ## Environment
+
+          - Python: ${{ env.PYTHON_VERSION }}
+          - uv: ${{ env.UV_VERSION }}
+          - Runner: ${{ runner.os }}
+
+          ## Files
+
+          - `audit-data.json` - Machine-readable audit data
+          - `requirements-frozen.txt` - Pinned dependencies at snapshot time
+
+          ---
+          *Generated by GitHub Actions workflow `${{ github.workflow }}` run #${{ github.run_number }}*
+          EOF
+
+      - name: Upload audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-${{ steps.phase.outputs.phase_num }}-snapshot-${{ steps.metadata.outputs.timestamp }}
+          path: audit-output/
+          retention-days: 365
+
+      - name: Create annotated tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          TAG_MESSAGE="Phase ${{ steps.phase.outputs.phase_num }} snapshot
+
+          Validation Results:
+          - Lint: ${{ needs.validate.outputs.lint_status }}
+          - Type Check: ${{ needs.validate.outputs.typecheck_status }}
+          - Tests: ${{ needs.validate.outputs.test_status }}
+          - Migrations: ${{ needs.validate.outputs.migration_status }}
+
+          Workflow: ${{ github.workflow }} #${{ github.run_number }}
+          Actor: ${{ github.actor }}"
+
+          git tag -a "${{ steps.metadata.outputs.tag_name }}" -m "$TAG_MESSAGE"
+          git push origin "${{ steps.metadata.outputs.tag_name }}"
+
+      - name: Generate summary
+        run: |
+          echo "## Phase ${{ steps.phase.outputs.phase_num }} Snapshot Created" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Tag: \`${{ steps.metadata.outputs.tag_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Validation | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Lint | ${{ needs.validate.outputs.lint_status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Type Check | ${{ needs.validate.outputs.typecheck_status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tests | ${{ needs.validate.outputs.test_status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Migrations | ${{ needs.validate.outputs.migration_status }} |" >> $GITHUB_STEP_SUMMARY

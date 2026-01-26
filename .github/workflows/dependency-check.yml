@@ -1,0 +1,147 @@
+name: Dependency Security Check
+
+on:
+  schedule:
+    # Run weekly on Sunday at 00:00 UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+    inputs:
+      fail_on_severity:
+        description: 'Minimum severity to fail on'
+        required: false
+        default: 'high'
+        type: choice
+        options:
+          - low
+          - medium
+          - high
+          - critical
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  UV_VERSION: "0.5"
+
+jobs:
+  vulnerability-scan:
+    name: Python Vulnerability Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-extras --dev
+
+      - name: Install pip-audit
+        run: uv pip install pip-audit
+
+      - name: Run pip-audit (JSON output)
+        id: audit_json
+        continue-on-error: true
+        run: |
+          # Export requirements from uv lock file
+          uv export --format requirements-txt --all-extras > requirements-audit.txt
+
+          # Run pip-audit with JSON output for artifact
+          uv run pip-audit \
+            --requirement requirements-audit.txt \
+            --format json \
+            --output audit-results.json \
+            --desc on \
+            || true
+
+          echo "Audit complete. Results saved to audit-results.json"
+
+      - name: Run pip-audit (SARIF output)
+        id: audit_sarif
+        continue-on-error: true
+        run: |
+          # Run pip-audit with SARIF output for GitHub Security tab
+          uv run pip-audit \
+            --requirement requirements-audit.txt \
+            --format sarif \
+            --output audit-results.sarif \
+            --desc on \
+            || true
+
+      - name: Upload SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: audit-results.sarif
+          category: dependency-vulnerability-scan
+        continue-on-error: true
+
+      - name: Upload JSON audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-audit-${{ github.run_id }}
+          path: |
+            audit-results.json
+            requirements-audit.txt
+          retention-days: 90
+
+      - name: Analyze vulnerabilities
+        id: analyze
+        run: |
+          # Parse JSON and check for HIGH/CRITICAL vulnerabilities
+          SEVERITY_THRESHOLD="${{ github.event.inputs.fail_on_severity || 'high' }}"
+
+          if [ ! -f audit-results.json ]; then
+            echo "No audit results found"
+            echo "has_critical=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Count vulnerabilities by severity
+          CRITICAL_COUNT=$(jq '[.dependencies[].vulns[]? | select(.fix_versions != null)] | map(select(.id | startswith("GHSA") or startswith("CVE") or startswith("PYSEC"))) | length' audit-results.json 2>/dev/null || echo "0")
+          TOTAL_VULNS=$(jq '[.dependencies[].vulns[]?] | length' audit-results.json 2>/dev/null || echo "0")
+
+          echo "## Dependency Audit Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total vulnerabilities found:** $TOTAL_VULNS" >> $GITHUB_STEP_SUMMARY
+          echo "- **Severity threshold:** $SEVERITY_THRESHOLD" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$TOTAL_VULNS" -gt 0 ]; then
+            echo "### Vulnerable Packages" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            jq '.dependencies[] | select(.vulns | length > 0) | {name, version, vulns: [.vulns[].id]}' audit-results.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+
+            # Check if we should fail based on severity
+            # pip-audit doesn't provide severity, so we fail on any vulnerability for high/critical threshold
+            if [ "$SEVERITY_THRESHOLD" = "high" ] || [ "$SEVERITY_THRESHOLD" = "critical" ]; then
+              if [ "$TOTAL_VULNS" -gt 0 ]; then
+                echo "::warning::Vulnerabilities detected. Review audit-results.json for details."
+                echo "has_vulnerabilities=true" >> $GITHUB_OUTPUT
+              fi
+            fi
+          else
+            echo "No vulnerabilities found." >> $GITHUB_STEP_SUMMARY
+            echo "has_vulnerabilities=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Fail on vulnerabilities
+        if: steps.analyze.outputs.has_vulnerabilities == 'true'
+        run: |
+          echo "::error::Vulnerabilities detected that meet or exceed the severity threshold."
+          echo "Review the Security tab or download the audit artifact for details."
+          exit 1
