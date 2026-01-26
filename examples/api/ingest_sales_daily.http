@@ -41,10 +41,9 @@ Content-Type: application/json
 ### Expected Response:
 # HTTP/1.1 200 OK
 # {
-#   "inserted_count": 2,
-#   "updated_count": 0,
+#   "processed_count": 2,
 #   "rejected_count": 0,
-#   "total_processed": 2,
+#   "total_received": 2,
 #   "errors": [],
 #   "duration_ms": 45.23
 # }
@@ -74,10 +73,9 @@ Content-Type: application/json
 ### Expected Response:
 # HTTP/1.1 200 OK
 # {
-#   "inserted_count": 1,
-#   "updated_count": 0,
+#   "processed_count": 1,
 #   "rejected_count": 0,
-#   "total_processed": 1,
+#   "total_received": 1,
 #   "errors": [],
 #   "duration_ms": 32.15
 # }
@@ -115,10 +113,9 @@ Content-Type: application/json
 ### Expected Response:
 # HTTP/1.1 200 OK
 # {
-#   "inserted_count": 1,
-#   "updated_count": 0,
+#   "processed_count": 1,
 #   "rejected_count": 1,
-#   "total_processed": 2,
+#   "total_received": 2,
 #   "errors": [
 #     {
 #       "row_index": 1,
@@ -156,10 +153,9 @@ Content-Type: application/json
 ### Expected Response:
 # HTTP/1.1 200 OK
 # {
-#   "inserted_count": 0,
-#   "updated_count": 0,
+#   "processed_count": 0,
 #   "rejected_count": 1,
-#   "total_processed": 1,
+#   "total_received": 1,
 #   "errors": [
 #     {
 #       "row_index": 0,
@@ -197,10 +193,9 @@ Content-Type: application/json
 ### Expected Response:
 # HTTP/1.1 200 OK
 # {
-#   "inserted_count": 0,
-#   "updated_count": 0,
+#   "processed_count": 0,
 #   "rejected_count": 1,
-#   "total_processed": 1,
+#   "total_received": 1,
 #   "errors": [
 #     {
 #       "row_index": 0,
@@ -303,10 +298,9 @@ Content-Type: application/json
 ### Expected Response:
 # HTTP/1.1 200 OK
 # {
-#   "inserted_count": 6,
-#   "updated_count": 0,
+#   "processed_count": 6,
 #   "rejected_count": 0,
-#   "total_processed": 6,
+#   "total_received": 6,
 #   "errors": [],
 #   "duration_ms": 85.50
 # }

@@ -85,6 +85,7 @@ Batch upsert daily sales records using natural keys.
 - `total_amount`: non-negative decimal (2 decimal places)
 
 **Error Codes:**
+
 | Code | Description |
 |------|-------------|
 | `UNKNOWN_STORE` | Store code not found in database |
@@ -235,7 +236,7 @@ Following the `{domain}.{component}.{action}_{state}` naming convention:
 
 ## Directory Structure
 
-```
+```text
 app/features/ingest/
 ├── __init__.py
 ├── routes.py           # POST /ingest/sales-daily endpoint
@@ -405,7 +406,7 @@ Phase 2 provides the foundation for:
 
 3. **Rowcount Type Stubs**: SQLAlchemy's generic Result type doesn't expose `rowcount` in type stubs, but it's available at runtime for DML operations. Required type ignore comment.
 
-4. **Decimal for Money**: Always use `Decimal` with explicit `decimal_places` for monetary values to avoid floating point precision issues.
+4. **Decimal for Money**: Always use `Decimal` with explicit `decimal_places` for monetary values to avoid floating-point precision issues.
 
 ---
 
