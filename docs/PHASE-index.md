@@ -9,7 +9,7 @@ This document indexes all implementation phases of the ForecastLabAI project.
 | Phase | Name | Status | PRP | Documentation |
 |-------|------|--------|-----|---------------|
 | 0 | Project Foundation | Completed | PRP-0, PRP-1 | [0-INIT_PHASE.md](./PHASE/0-INIT_PHASE.md) |
-| 1 | Data Platform | **In Progress** | PRP-2 | [1-DATA_PLATFORM.md](./PHASE/1-DATA_PLATFORM.md) |
+| 1 | Data Platform | Completed | PRP-2 | [1-DATA_PLATFORM.md](./PHASE/1-DATA_PLATFORM.md) |
 | 2 | Ingest Layer | Pending | PRP-3 | - |
 | 3 | Feature Engineering | Pending | PRP-4 | - |
 | 4 | Forecasting | Pending | PRP-5 | - |
@@ -55,28 +55,31 @@ This document indexes all implementation phases of the ForecastLabAI project.
 - Pyright: 0 errors
 - Pytest: 14 tests passed
 
----
-
-## In Progress
-
 ### [Phase 1: Data Platform](./PHASE/1-DATA_PLATFORM.md)
 
-**Status**: In Progress (PR #12)
-**PRP Reference**: `PRPs/PRP-2-data-platform-schema.md`
+**Date Completed**: 2026-01-26
+**Release**: v0.1.3
 
 **Summary**: Mini-warehouse schema for retail demand forecasting with:
 - 7 SQLAlchemy 2.0 ORM models (3 dimension + 4 fact tables)
-- Grain protection via unique constraints
-- Check constraints for data quality
+- Star schema: Store, Product, Calendar (dimensions) + SalesDaily, PriceHistory, Promotion, InventorySnapshotDaily (facts)
+- Grain protection via unique constraints for idempotent upserts
+- Check constraints for data quality (positive quantities, valid date ranges)
 - Composite indexes for query performance
 - 32 unit tests + 11 integration tests
 
 **Key Deliverables**:
-- `app/features/data_platform/models.py` - All ORM models
+- `app/features/data_platform/models.py` - All ORM models with relationships
 - `app/features/data_platform/schemas.py` - Pydantic validation schemas
 - `alembic/versions/e1165ebcef61_create_data_platform_tables.py` - Baseline migration
-- `examples/schema/README.md` - Table documentation
+- `examples/schema/README.md` - Table documentation with ERD
 - `examples/queries/` - KPI and join pattern examples
+
+**Validation Results**:
+- Ruff: All checks passed
+- MyPy: 0 errors
+- Pyright: 0 errors
+- Pytest: 43 tests passed (32 unit + 11 integration)
 
 ---
 
@@ -144,3 +147,4 @@ Each phase document (`docs/PHASE/X-PHASE_NAME.md`) contains:
 |------|-------|--------|
 | 2026-01-26 | 0 | Initial project foundation completed |
 | 2026-01-26 | 0 | Added CI/CD infrastructure (5 GitHub Actions workflows) |
+| 2026-01-26 | 1 | Data Platform schema and migrations completed (v0.1.3) |
