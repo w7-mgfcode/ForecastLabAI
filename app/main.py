@@ -10,6 +10,7 @@ from app.core.exceptions import register_exception_handlers
 from app.core.health import router as health_router
 from app.core.logging import configure_logging, get_logger
 from app.core.middleware import RequestIdMiddleware
+from app.features.ingest.routes import router as ingest_router
 
 logger = get_logger(__name__)
 
@@ -66,6 +67,7 @@ def create_app() -> FastAPI:
 
     # Routers
     app.include_router(health_router)
+    app.include_router(ingest_router)
 
     return app
 

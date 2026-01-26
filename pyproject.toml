@@ -77,13 +77,14 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S101", "ANN", "ARG001", "D", "E731"]
-"test_*.py" = ["S101", "ANN", "ARG001", "D", "E731"]
-"**/tests/**/*.py" = ["S101", "ANN", "ARG001", "D", "E731"]
+"tests/**/*.py" = ["S101", "ANN", "ARG001", "ARG002", "ARG005", "D", "E731"]
+"test_*.py" = ["S101", "ANN", "ARG001", "ARG002", "ARG005", "D", "E731"]
+"**/tests/**/*.py" = ["S101", "ANN", "ARG001", "ARG002", "ARG005", "D", "E731"]
 "__init__.py" = ["F401"]
 "scripts/**/*.py" = ["T201", "ANN", "S101"]
 "examples/**/*.py" = ["T201", "ANN"]
 "app/core/health.py" = ["B008"]
+"app/features/*/routes.py" = ["B008"]
 "alembic/env.py" = ["ANN"]
 
 [tool.ruff.format]
