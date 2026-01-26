@@ -92,12 +92,14 @@ app/
 ├── core/           # Config, database, logging, middleware, exceptions
 ├── shared/         # Pagination, timestamps, error schemas
 ├── features/
-│   └── data_platform/  # Store, product, calendar, sales tables
+│   ├── data_platform/  # Store, product, calendar, sales tables
+│   └── ingest/         # Batch upsert endpoints for sales data
 └── main.py         # FastAPI entry point
 
 tests/              # Test fixtures and helpers
 alembic/            # Database migrations
 examples/
+├── api/            # HTTP client examples
 ├── schema/         # Table documentation
 └── queries/        # Example SQL queries
 scripts/            # Utility scripts
@@ -111,6 +113,42 @@ The data platform includes 7 tables for retail demand forecasting:
 **Facts**: `sales_daily`, `price_history`, `promotion`, `inventory_snapshot_daily`
 
 See [examples/schema/README.md](examples/schema/README.md) for detailed schema documentation.
+
+## API Endpoints
+
+### Health Check
+
+- `GET /health` - Returns `{"status": "ok"}` when the API is running
+
+### Ingest
+
+- `POST /ingest/sales-daily` - Batch upsert daily sales records
+
+**Example Request:**
+```bash
+curl -X POST http://localhost:8123/ingest/sales-daily \
+  -H "Content-Type: application/json" \
+  -d '{
+    "records": [
+      {
+        "date": "2024-01-15",
+        "store_code": "S001",
+        "sku": "SKU-001",
+        "quantity": 10,
+        "unit_price": 9.99,
+        "total_amount": 99.90
+      }
+    ]
+  }'
+```
+
+**Features:**
+- Natural key resolution (`store_code` -> `store_id`, `sku` -> `product_id`)
+- Idempotent upsert using PostgreSQL `ON CONFLICT DO UPDATE`
+- Partial success handling (valid rows processed, invalid rows returned with errors)
+- Error codes: `UNKNOWN_STORE`, `UNKNOWN_PRODUCT`, `UNKNOWN_DATE`
+
+See [examples/api/ingest_sales_daily.http](examples/api/ingest_sales_daily.http) for more examples.
 
 ## API Documentation
 
