@@ -1,0 +1,138 @@
+name: Dependency Security Check
+
+on:
+  schedule:
+    # Run weekly on Sunday at 00:00 UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+    inputs:
+      fail_on_vulnerabilities:
+        description: 'Fail workflow if vulnerabilities are found'
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  UV_VERSION: "0.5"
+
+jobs:
+  vulnerability-scan:
+    name: Python Vulnerability Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-extras --dev
+
+      - name: Install pip-audit
+        run: uv pip install pip-audit
+
+      - name: Run pip-audit (JSON output)
+        id: audit_json
+        continue-on-error: true
+        run: |
+          # Export requirements from uv lock file
+          uv export --format requirements-txt --all-extras > requirements-audit.txt
+
+          # Run pip-audit with JSON output for artifact
+          # Note: continue-on-error allows workflow to proceed; exit code preserved in step outcome
+          uv run pip-audit \
+            --requirement requirements-audit.txt \
+            --format json \
+            --output audit-results.json \
+            --desc on
+
+          echo "Audit complete. Results saved to audit-results.json"
+
+      - name: Run pip-audit (SARIF output)
+        id: audit_sarif
+        continue-on-error: true
+        run: |
+          # Run pip-audit with SARIF output for GitHub Security tab
+          uv run pip-audit \
+            --requirement requirements-audit.txt \
+            --format sarif \
+            --output audit-results.sarif \
+            --desc on
+
+      - name: Upload SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: audit-results.sarif
+          category: dependency-vulnerability-scan
+        continue-on-error: true
+
+      - name: Upload JSON audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-audit-${{ github.run_id }}
+          path: |
+            audit-results.json
+            requirements-audit.txt
+          retention-days: 90
+
+      - name: Analyze vulnerabilities
+        id: analyze
+        run: |
+          # Determine if we should fail on vulnerabilities (default: true for scheduled runs)
+          FAIL_ON_VULNS="${{ github.event.inputs.fail_on_vulnerabilities || 'true' }}"
+
+          if [ ! -f audit-results.json ]; then
+            echo "::error::Audit results file not found - pip-audit may have failed to run"
+            echo "has_vulnerabilities=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          # Count total vulnerabilities
+          TOTAL_VULNS=$(jq '[.dependencies[].vulns[]?] | length' audit-results.json 2>/dev/null || echo "0")
+
+          echo "## Dependency Audit Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total vulnerabilities found:** $TOTAL_VULNS" >> $GITHUB_STEP_SUMMARY
+          echo "- **Fail on vulnerabilities:** $FAIL_ON_VULNS" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$TOTAL_VULNS" -gt 0 ]; then
+            echo "### Vulnerable Packages" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            jq '.dependencies[] | select(.vulns | length > 0) | {name, version, vulns: [.vulns[].id]}' audit-results.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+
+            echo "::warning::$TOTAL_VULNS vulnerability(ies) detected. Review audit-results.json for details."
+
+            if [ "$FAIL_ON_VULNS" = "true" ]; then
+              echo "has_vulnerabilities=true" >> $GITHUB_OUTPUT
+            else
+              echo "has_vulnerabilities=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "No vulnerabilities found." >> $GITHUB_STEP_SUMMARY
+            echo "has_vulnerabilities=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Fail on vulnerabilities
+        if: steps.analyze.outputs.has_vulnerabilities == 'true'
+        run: |
+          echo "::error::Vulnerabilities detected. Review the Security tab or download the audit artifact for details."
+          exit 1
