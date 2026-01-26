@@ -159,26 +159,42 @@ app/
 
 ---
 
-## 5) Data Platform (Mini Warehouse)
+## 5) Data Platform (Mini Warehouse) — ✅ IMPLEMENTED
 
-### 5.1 Core Tables (Planned)
+### 5.1 Core Tables (Implemented via PRP-2)
+
 **Dimensions**
-- `store` (region/city/type)
-- `product` (SKU/category/brand/base_price/base_cost)
-- `calendar` (date, weekday/month, holiday flags)
+- `store` — id, code (unique), name, region, city, store_type
+- `product` — id, sku (unique), name, category, brand, base_price, base_cost
+- `calendar` — date (PK), day_of_week, month, quarter, year, is_holiday, holiday_name
 
 **Facts**
-- `sales_daily` (required) — grain: `(date, store_id, product_id)`
-- `price_history` — valid_from/to windows
-- `promotion` — promo windows + mechanics
-- `inventory_snapshot_daily` — on_hand, on_order, stockout signals
+- `sales_daily` (required) — grain: `UNIQUE(date, store_id, product_id)` with FK to all dimensions
+- `price_history` — valid_from/valid_to windows, nullable store_id for chain-wide prices
+- `promotion` — discount_pct, discount_amount, start_date/end_date windows
+- `inventory_snapshot_daily` — on_hand_qty, on_order_qty, is_stockout flag, grain-protected
 
-**Optional**
+**Stub-Ready (Optional)**
 - `sales_txn`, `traffic_daily`, `weather_daily`
 
-### 5.2 Grain & Idempotency (Critical)
-- Enforce uniqueness at DB-level for `sales_daily`: `(date, store_id, product_id)`.
-- Ingest must use `ON CONFLICT` upserts (replay-safe).
+### 5.2 Key Features
+
+- **SQLAlchemy 2.0**: All models use `Mapped[]` type annotations and `mapped_column()`
+- **Grain Protection**: Unique constraints on `(date, store_id, product_id)` for `sales_daily` and `inventory_snapshot_daily`
+- **Data Quality**: Check constraints enforce positive quantities, valid date ranges, valid calendar values
+- **Query Performance**: Composite indexes for time-range + store/product filtering
+- **Type Safety**: All monetary values use `Numeric(10, 2)`, dates use proper `Date` type
+
+### 5.3 Grain & Idempotency (Critical)
+- Uniqueness enforced at DB-level via `UniqueConstraint` (not just index)
+- Enables `ON CONFLICT` upserts for replay-safe ingestion
+- Migration: `alembic/versions/e1165ebcef61_create_data_platform_tables.py`
+
+### 5.4 Location
+- Models: `app/features/data_platform/models.py`
+- Schemas: `app/features/data_platform/schemas.py`
+- Tests: `app/features/data_platform/tests/` (32 unit + 11 integration tests)
+- Documentation: `examples/schema/README.md`, `examples/queries/`
 
 ---
 
