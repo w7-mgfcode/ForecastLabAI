@@ -16,6 +16,8 @@ dependencies = [
     "structlog>=24.4.0",
     "alembic>=1.14.0",
     "python-dotenv>=1.0.1",
+    "pandas>=3.0.0",
+    "numpy>=2.4.1",
 ]
 
 [project.optional-dependencies]
@@ -157,4 +159,9 @@ markers = [
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",
+]
+
+[dependency-groups]
+dev = [
+    "pandas-stubs>=2.3.3.260113",
 ]
