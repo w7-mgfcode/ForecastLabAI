@@ -5,7 +5,7 @@ import time
 from datetime import date as date_type
 
 import pandas as pd
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -127,13 +127,30 @@ async def compute_features(
             elif date_val is not None and hasattr(date_val, "date"):
                 row_date = date_val.date()
             else:
-                raise ValueError(f"Cannot extract date from {type(date_val)}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Cannot extract date from unsupported type: {type(date_val).__name__}",
+                )
+
+            # Validate store_id/product_id presence
+            store_id_val = record.get("store_id")
+            product_id_val = record.get("product_id")
+            if store_id_val is None or int(store_id_val) < 1:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Missing or invalid store_id in data record",
+                )
+            if product_id_val is None or int(product_id_val) < 1:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Missing or invalid product_id in data record",
+                )
 
             rows.append(
                 FeatureRow(
                     date=row_date,
-                    store_id=int(record.get("store_id", 0)),
-                    product_id=int(record.get("product_id", 0)),
+                    store_id=int(store_id_val),
+                    product_id=int(product_id_val),
                     features=features,
                 )
             )
@@ -264,13 +281,30 @@ async def preview_features(
             elif date_val is not None and hasattr(date_val, "date"):
                 row_date = date_val.date()
             else:
-                raise ValueError(f"Cannot extract date from {type(date_val)}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Cannot extract date from unsupported type: {type(date_val).__name__}",
+                )
+
+            # Validate store_id/product_id presence
+            store_id_val = record.get("store_id")
+            product_id_val = record.get("product_id")
+            if store_id_val is None or int(store_id_val) < 1:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Missing or invalid store_id in data record",
+                )
+            if product_id_val is None or int(product_id_val) < 1:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Missing or invalid product_id in data record",
+                )
 
             rows.append(
                 FeatureRow(
                     date=row_date,
-                    store_id=int(record.get("store_id", 0)),
-                    product_id=int(record.get("product_id", 0)),
+                    store_id=int(store_id_val),
+                    product_id=int(product_id_val),
                     features=features,
                 )
             )

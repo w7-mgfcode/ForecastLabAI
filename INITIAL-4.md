@@ -18,9 +18,9 @@
 ## DOCUMENTATION:
 - Time-series feature engineering best practices
 - scikit-learn transformers/pipelines (if used)
-- https://scikit-learn.org/stable/modules/compose.html
-- https://www.nixtla.io/blog/automated-time-series-feature-engineering-with-mlforecast?utm_source=chatgpt.com#introduction-to-mlforecast
-- https://www.sktime.net/en/stable/api_reference/transformations.html
+- [scikit-learn Pipeline Composition](https://scikit-learn.org/stable/modules/compose.html)
+- [MLForecast Feature Engineering](https://www.nixtla.io/blog/automated-time-series-feature-engineering-with-mlforecast?utm_source=chatgpt.com#introduction-to-mlforecast)
+- [sktime Transformations API](https://www.sktime.net/en/stable/api_reference/transformations.html)
 
 ## OTHER CONSIDERATIONS:
 - Feature configs must be persisted per run in the registry.

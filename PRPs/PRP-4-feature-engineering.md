@@ -8,7 +8,7 @@ Implement a time-safe feature engineering module for the ForecastLabAI forecasti
 - `FeatureSetConfig` — Pydantic-based configuration schema with versioning
 - `FeatureEngineeringService` — Core service computing features with cutoff enforcement
 - `POST /featuresets/compute` — API endpoint to compute features for a series
-- `GET /featuresets/preview` — Preview feature output for debugging/exploration
+- `POST /featuresets/preview` — Preview feature output for debugging/exploration
 - Time-safety enforced at every level (lags, rolling, calendar)
 - Comprehensive tests including **leakage-focused validation tests**
 - All validation gates passing (ruff, mypy, pyright, pytest)

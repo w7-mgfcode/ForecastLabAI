@@ -187,17 +187,18 @@ class ImputationConfig(FeatureConfigBase):
     """Configuration for missing value imputation.
 
     Imputation strategies:
-    - zero: Fill with 0 (for sales/quantity)
-    - ffill: Forward fill (for prices)
-    - bfill: Backward fill
-    - mean: Fill with group mean
-    - drop: Drop rows with missing values
+    - zero: Fill with 0 (for sales/quantity) — TIME-SAFE
+    - ffill: Forward fill (for prices) — TIME-SAFE
+    - bfill: Backward fill — WARNING: uses future data, avoid in production
+    - mean: Fill with group mean — WARNING: uses future data, avoid in production
+    - expanding_mean: Fill with expanding mean — TIME-SAFE (uses only past data)
+    - drop: Drop rows with missing values — TIME-SAFE
 
     Attributes:
         strategies: Mapping of column name to imputation strategy.
     """
 
-    strategies: dict[str, Literal["zero", "ffill", "bfill", "mean", "drop"]] = Field(
+    strategies: dict[str, Literal["zero", "ffill", "bfill", "mean", "expanding_mean", "drop"]] = Field(
         default={
             "quantity": "zero",
             "unit_price": "ffill",
@@ -333,7 +334,7 @@ class ComputeFeaturesResponse(BaseModel):
 
 
 class PreviewFeaturesRequest(BaseModel):
-    """Request for GET /featuresets/preview.
+    """Request for POST /featuresets/preview.
 
     Attributes:
         store_id: Store ID to preview features for.

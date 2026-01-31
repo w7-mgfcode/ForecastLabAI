@@ -300,6 +300,12 @@ class FeatureEngineeringService:
 
         CRITICAL: Group-aware imputation to prevent cross-series leakage.
 
+        **Leakage Warnings:**
+        - "bfill" (backward fill) uses FUTURE values to fill gaps — avoid in production
+        - "mean" uses entire series mean including FUTURE values — avoid in production
+        - Use "expanding_mean" for time-safe mean imputation (uses only past data)
+        - "ffill" (forward fill) and "zero" are safe
+
         Args:
             df: Input dataframe.
 
@@ -319,13 +325,32 @@ class FeatureEngineeringService:
             if strategy == "zero":
                 result[col] = result[col].fillna(0)
             elif strategy == "ffill":
-                # CRITICAL: Group-aware forward fill
+                # CRITICAL: Group-aware forward fill (time-safe)
                 result[col] = result.groupby(self.entity_cols, observed=True)[col].ffill()
             elif strategy == "bfill":
+                # WARNING: bfill uses future data — use only for debugging/testing
+                logger.warning(
+                    "featureops.imputation_leakage_risk",
+                    strategy="bfill",
+                    column=col,
+                    message="bfill uses future values to fill gaps; avoid in production",
+                )
                 result[col] = result.groupby(self.entity_cols, observed=True)[col].bfill()
             elif strategy == "mean":
+                # WARNING: mean uses entire series including future — use only for debugging
+                logger.warning(
+                    "featureops.imputation_leakage_risk",
+                    strategy="mean",
+                    column=col,
+                    message="mean uses entire series including future values; use 'expanding_mean' instead",
+                )
                 result[col] = result.groupby(self.entity_cols, observed=True)[col].transform(
                     lambda x: x.fillna(x.mean())
+                )
+            elif strategy == "expanding_mean":
+                # TIME-SAFE: Uses only past values via expanding window
+                result[col] = result.groupby(self.entity_cols, observed=True)[col].transform(
+                    lambda x: x.fillna(x.expanding(min_periods=1).mean().shift(1))
                 )
             elif strategy == "drop":
                 result = result.dropna(subset=[col])
@@ -360,10 +385,12 @@ class FeatureEngineeringService:
                 columns.append(col_name)
 
             if config.include_price_change:
-                # Price change vs 7 days ago
+                # CRITICAL: shift(1) before pct_change to prevent using current price
+                # This computes: (price[t-1] - price[t-8]) / price[t-8]
+                # Without shift(1), it would use current price at t, causing leakage
                 result["price_pct_change_7d"] = df.groupby(self.entity_cols, observed=True)[
                     "unit_price"
-                ].pct_change(periods=7)
+                ].transform(lambda x: x.shift(1).pct_change(periods=7))
                 columns.append("price_pct_change_7d")
 
         # Stockout flag (if inventory column exists)
