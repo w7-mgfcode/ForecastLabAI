@@ -11,6 +11,13 @@
 - Extensible “Global ML” hook:
   - regression pipeline (scikit-learn)
   - enabled/disabled via feature flags
+- Unified Estimator Pipeline:
+  - Scikit-learn Pipeline incorporating Scaling -> Encoding -> Regressor.
+  - Integration with FeatureEngineeringService for automated lag-injection.
+- Persistence Layer:
+  - Joblib-based serialization including a 'ModelBundle' (Model + Metadata + FeatureHash).
+- Multi-Horizon Support:
+  - Logic for Recursive Forecasting (predicting day-by-day and updating lags).
 
 ## EXAMPLES:
 - `examples/models/baseline_naive.py`
