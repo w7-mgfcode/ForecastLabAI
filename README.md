@@ -93,7 +93,8 @@ app/
 ├── shared/         # Pagination, timestamps, error schemas
 ├── features/
 │   ├── data_platform/  # Store, product, calendar, sales tables
-│   └── ingest/         # Batch upsert endpoints for sales data
+│   ├── ingest/         # Batch upsert endpoints for sales data
+│   └── featuresets/    # Time-safe feature engineering (lags, rolling, calendar)
 └── main.py         # FastAPI entry point
 
 tests/              # Test fixtures and helpers
@@ -101,7 +102,8 @@ alembic/            # Database migrations
 examples/
 ├── api/            # HTTP client examples
 ├── schema/         # Table documentation
-└── queries/        # Example SQL queries
+├── queries/        # Example SQL queries
+└── compute_features_demo.py  # Feature engineering demo
 scripts/            # Utility scripts
 ```
 
@@ -149,6 +151,38 @@ curl -X POST http://localhost:8123/ingest/sales-daily \
 - Error codes: `UNKNOWN_STORE`, `UNKNOWN_PRODUCT`, `UNKNOWN_DATE`
 
 See [examples/api/ingest_sales_daily.http](examples/api/ingest_sales_daily.http) for more examples.
+
+### Feature Engineering
+
+- `POST /featuresets/compute` - Compute time-safe features for a series
+- `POST /featuresets/preview` - Preview features with sample rows
+
+**Example Request:**
+```bash
+curl -X POST http://localhost:8123/featuresets/compute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "store_id": 1,
+    "product_id": 1,
+    "cutoff_date": "2024-01-31",
+    "lookback_days": 365,
+    "config": {
+      "name": "retail_forecast_v1",
+      "lag_config": {"lags": [1, 7, 14, 28]},
+      "rolling_config": {"windows": [7, 14], "aggregations": ["mean", "std"]},
+      "calendar_config": {"include_day_of_week": true, "use_cyclical_encoding": true}
+    }
+  }'
+```
+
+**Features:**
+- **Time-safe computation**: All features use only data up to cutoff_date (no future leakage)
+- **Lag features**: Past values at specified lag periods (shift with positive values only)
+- **Rolling features**: Rolling statistics with shift(1) to exclude current observation
+- **Calendar features**: Cyclical encoding (sin/cos) for day of week, month
+- **Group isolation**: Entity-aware groupby prevents cross-series leakage
+
+See [examples/compute_features_demo.py](examples/compute_features_demo.py) for a complete demo.
 
 ## API Documentation
 

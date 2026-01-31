@@ -198,22 +198,54 @@ app/
 
 ---
 
-## 6) ForecastOps (Training + Backtesting + Registry)
+## 6) Feature Engineering (Time-Safe) — ✅ IMPLEMENTED
 
-### 6.1 Model Zoo (Minimum)
+### 6.1 Core Service (Implemented via PRP-4)
+
+The `FeatureEngineeringService` provides time-safe feature computation with CRITICAL leakage prevention:
+
+**Leakage Prevention Patterns**:
+- **Lag features**: `shift(lag)` with positive lag only — ensures only past data accessed
+- **Rolling features**: `shift(1)` BEFORE `.rolling()` — excludes current observation from window
+- **Group isolation**: `groupby(entity_cols, observed=True)` — prevents cross-series contamination
+- **Cutoff enforcement**: Data filtered before feature computation — no future data in pipeline
+
+### 6.2 Feature Types
+
+| Type | Description | Output Example |
+|------|-------------|----------------|
+| Lag | Past values at specified periods | `lag_1`, `lag_7`, `lag_14` |
+| Rolling | Rolling statistics (mean, std, min, max) | `rolling_mean_7`, `rolling_std_7` |
+| Calendar | Date features with cyclical encoding | `dow_sin`, `dow_cos`, `month_sin` |
+| Imputation | Zero-fill for sales, forward-fill for prices | N/A (modifies source columns) |
+
+### 6.3 API Endpoints
+
+- `POST /featuresets/compute` — Compute features for a single series
+- `POST /featuresets/preview` — Preview features with sample rows
+
+### 6.4 Location
+
+- Schemas: `app/features/featuresets/schemas.py`
+- Service: `app/features/featuresets/service.py`
+- Routes: `app/features/featuresets/routes.py`
+- Tests: `app/features/featuresets/tests/` (55 tests including leakage prevention)
+- Demo: `examples/compute_features_demo.py`
+
+---
+
+## 7) ForecastOps (Training + Backtesting + Registry)
+
+### 7.1 Model Zoo (Minimum)
 - naive
 - seasonal naive
 - moving average (configurable window)
 
-### 6.2 Feature Engineering (Time-Safe)
-- Compute features with an explicit **cutoff**.
-- Lags/rolling windows must use history `<= cutoff` only.
-
-### 6.3 Backtesting Protocol
+### 7.2 Backtesting Protocol
 - Time-based CV only: rolling or expanding splits (no random split).
 - Metrics: MAE, sMAPE (pinball loss later if needed).
 
-### 6.4 Model Registry
+### 7.3 Model Registry
 Each run stores:
 - run_id, timestamps
 - model_type + model_config (JSON)
@@ -225,7 +257,7 @@ Each run stores:
 
 ---
 
-## 7) Typed FastAPI Contracts (Serving Layer)
+## 8) Typed FastAPI Contracts (Serving Layer)
 
 Minimum endpoint categories (planned):
 - `POST /ingest/sales-daily` (optional `/ingest/transactions`)
@@ -239,7 +271,7 @@ Contracts are Pydantic v2 validated and use `response_model` for explicit output
 
 ---
 
-## 8) Dashboard (React + Vite)
+## 9) Dashboard (React + Vite)
 
 The UI is intentionally **table-first**:
 - Data Explorer
@@ -252,22 +284,22 @@ Decision reference: `docs/ADR/ADR-0002-frontend-architecture-vite-spa-first.md`
 
 ---
 
-## 9) RAG Knowledge Base (Postgres + pgvector)
+## 10) RAG Knowledge Base (Postgres + pgvector)
 
-### 9.1 Indexed Sources (Planned)
+### 10.1 Indexed Sources (Planned)
 - `README.md`
 - `docs/*` (Architecture, ADRs, guides)
 - OpenAPI export
 - Run reports generated per training run
 
-### 9.2 Evidence-Grounded Answers
+### 10.2 Evidence-Grounded Answers
 RAG must return citations for non-trivial claims; if evidence is insufficient, it must respond “not found / insufficient evidence”.
 
 Decision reference: `docs/ADR/ADR-0003-vector-storage-pgvector-in-postgres.md`
 
 ---
 
-## 10) Quality, CI, and Review Rules
+## 11) Quality, CI, and Review Rules
 
 The repo standards live in `docs/validation/` and are treated as merge gates:
 - Ruff lint/format
@@ -278,7 +310,7 @@ The repo standards live in `docs/validation/` and are treated as merge gates:
 
 ---
 
-## 11) Roadmap (Phased Delivery)
+## 12) Roadmap (Phased Delivery)
 
 - **Phase-0**: vertical-slice demo (seed → ingest → baseline train → predict → UI tables)
 - **Phase-1**: ForecastOps core (backtesting + registry + leaderboard)
