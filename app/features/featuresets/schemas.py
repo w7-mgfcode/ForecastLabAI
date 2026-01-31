@@ -198,12 +198,14 @@ class ImputationConfig(FeatureConfigBase):
         strategies: Mapping of column name to imputation strategy.
     """
 
-    strategies: dict[str, Literal["zero", "ffill", "bfill", "mean", "expanding_mean", "drop"]] = Field(
-        default={
-            "quantity": "zero",
-            "unit_price": "ffill",
-            "total_amount": "zero",
-        }
+    strategies: dict[str, Literal["zero", "ffill", "bfill", "mean", "expanding_mean", "drop"]] = (
+        Field(
+            default={
+                "quantity": "zero",
+                "unit_price": "ffill",
+                "total_amount": "zero",
+            }
+        )
     )
 
 
