@@ -11,7 +11,7 @@ This document indexes all implementation phases of the ForecastLabAI project.
 | 0 | Project Foundation | Completed | PRP-0, PRP-1 | [0-INIT_PHASE.md](./PHASE/0-INIT_PHASE.md) |
 | 1 | Data Platform | Completed | PRP-2 | [1-DATA_PLATFORM.md](./PHASE/1-DATA_PLATFORM.md) |
 | 2 | Ingest Layer | Completed | PRP-3 | [2-INGEST_LAYER.md](./PHASE/2-INGEST_LAYER.md) |
-| 3 | Feature Engineering | Pending | PRP-4 | - |
+| 3 | Feature Engineering | Completed | PRP-4 | [3-FEATURE_ENGINEERING.md](./PHASE/3-FEATURE_ENGINEERING.md) |
 | 4 | Forecasting | Pending | PRP-5 | - |
 | 5 | Backtesting | Pending | PRP-6 | - |
 | 6 | Model Registry | Pending | PRP-7 | - |
@@ -125,12 +125,40 @@ This document indexes all implementation phases of the ForecastLabAI project.
 }
 ```
 
+### [Phase 3: Feature Engineering](./PHASE/3-FEATURE_ENGINEERING.md)
+
+**Date Completed**: 2026-01-31
+
+**Summary**: Time-safe feature engineering with CRITICAL leakage prevention:
+- FeatureEngineeringService with lag, rolling, calendar, and exogenous features
+- CRITICAL: Lag features use positive shift() only (no future data access)
+- CRITICAL: Rolling features use shift(1) BEFORE rolling to exclude current observation
+- CRITICAL: Group-aware operations prevent cross-series leakage
+- FastAPI endpoints: POST /featuresets/compute, POST /featuresets/preview
+- 55 unit tests including comprehensive leakage prevention tests
+
+**Key Deliverables**:
+- `app/features/featuresets/schemas.py` - Pydantic schemas for feature configuration
+- `app/features/featuresets/service.py` - FeatureEngineeringService
+- `app/features/featuresets/routes.py` - API endpoints
+- `app/features/featuresets/tests/` - 55 tests (schemas, service, leakage prevention)
+- `examples/compute_features_demo.py` - Demo script
+
+**Feature Types**:
+- **Lag features**: Past values at specified lag periods with optional fill_value
+- **Rolling features**: Mean, std, min, max, sum over configurable windows
+- **Calendar features**: Day of week, month, quarter with cyclical encoding (sin/cos)
+- **Imputation**: Zero-fill for sales, forward-fill for prices
+
+**Validation Results**:
+- Ruff: All checks passed
+- MyPy: 0 errors
+- Pyright: 0 errors
+- Pytest: 55 tests passed
+
 ---
 
 ## Pending Phases
-
-### Phase 3: Feature Engineering
-Time-safe feature computation with lag, rolling, and exogenous features.
 
 ### Phase 4: Forecasting
 Model zoo with unified interface for naive, seasonal, and ML models.
@@ -190,3 +218,4 @@ Each phase document (`docs/PHASE/X-PHASE_NAME.md`) contains:
 | 2026-01-26 | 0 | Added CI/CD infrastructure (5 GitHub Actions workflows) |
 | 2026-01-26 | 1 | Data Platform schema and migrations completed (v0.1.3) |
 | 2026-01-26 | 2 | Ingest Layer with POST /ingest/sales-daily endpoint completed |
+| 2026-01-31 | 3 | Feature Engineering with time-safe leakage prevention completed |

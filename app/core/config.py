@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     ingest_batch_size: int = 1000
     ingest_timeout_seconds: int = 60
 
+    # Feature Engineering
+    feature_max_lookback_days: int = 1095  # 3 years
+    feature_max_lag: int = 365
+    feature_max_window: int = 90
+
     @property
     def is_development(self) -> bool:
         """Check if running in development mode."""
