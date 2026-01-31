@@ -213,7 +213,7 @@ class FeatureEngineeringService:
         columns: list[str] = []
 
         for window in config.windows:
-            min_per = config.min_periods if config.min_periods else window
+            min_per = config.min_periods if config.min_periods is not None else window
 
             for agg in config.aggregations:
                 col_name = f"rolling_{agg}_{window}"

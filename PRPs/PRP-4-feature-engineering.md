@@ -38,7 +38,7 @@ Implement a time-safe feature engineering module for the ForecastLabAI forecasti
 - [ ] Exogenous features (price/promo/inventory) lagged appropriately
 - [ ] Imputation strategies: zero-fill for sales, forward-fill for prices
 - [ ] `POST /featuresets/compute` endpoint accepts config + data window + cutoff
-- [ ] `GET /featuresets/preview` endpoint for single-series feature inspection
+- [ ] `POST /featuresets/preview` endpoint for single-series feature inspection
 - [ ] Unit tests for each feature type
 - [ ] **Leakage tests** verify no future data used
 - [ ] Integration tests with real DB queries
@@ -150,7 +150,7 @@ app/
         ├── __init__.py         # Module exports
         ├── schemas.py          # FeatureSetConfig, LagConfig, RollingConfig, etc.
         ├── service.py          # FeatureEngineeringService
-        ├── routes.py           # POST /featuresets/compute, GET /featuresets/preview
+        ├── routes.py           # POST /featuresets/compute, POST /featuresets/preview
         └── tests/
             ├── __init__.py
             ├── conftest.py     # Feature-specific fixtures, sample time series
@@ -403,7 +403,7 @@ class ComputeFeaturesResponse(BaseModel):
 
 
 class PreviewFeaturesRequest(BaseModel):
-    """Request for GET /featuresets/preview."""
+    """Request for POST /featuresets/preview."""
 
     store_id: int = Field(..., ge=1)
     product_id: int = Field(..., ge=1)
@@ -517,7 +517,7 @@ Task 7: Implement featuresets routes
   IMPLEMENT:
     - Router with tag "featuresets"
     - POST /featuresets/compute endpoint
-    - GET /featuresets/preview endpoint
+    - POST /featuresets/preview endpoint
     - Error handling with ForecastLabError
   VALIDATION:
     - uv run mypy app/features/featuresets/routes.py
@@ -579,7 +579,7 @@ Task 13: Create integration tests for routes
   FILE: app/features/featuresets/tests/test_routes.py
   IMPLEMENT:
     - Test POST /featuresets/compute with valid payload
-    - Test GET /featuresets/preview returns sample rows
+    - Test POST /featuresets/preview returns sample rows
     - Test error handling for missing data
     - Test config_hash consistency
   REQUIRES:
@@ -916,7 +916,7 @@ ROUTES:
   - ADD: app.include_router(featuresets_router)
   - ENDPOINTS:
     - POST /featuresets/compute
-    - GET /featuresets/preview
+    - POST /featuresets/preview
 
 DEPENDENCIES:
   - pandas (add to pyproject.toml if not present)

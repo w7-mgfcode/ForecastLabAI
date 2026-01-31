@@ -126,10 +126,11 @@ class TestImputationConfig:
                 "price": "ffill",
                 "inventory": "bfill",
                 "demand": "mean",
+                "forecast": "expanding_mean",
                 "optional": "drop",
             }
         )
-        assert len(config.strategies) == 5
+        assert len(config.strategies) == 6
 
     def test_rejects_invalid_strategy(self):
         """Invalid strategy should be rejected."""
