@@ -21,6 +21,9 @@
 ## DOCUMENTATION:
 - scikit-learn estimators + pipelines
 - joblib serialization patterns
+- https://scikit-learn.org/stable/modules/compose.html
+- https://scikit-learn.org/stable/glossary.html
+- https://scikit-learn.org/stable/model_persistence.html
 
 ## OTHER CONSIDERATIONS:
 - No hardcoded horizons: driven by request/config.

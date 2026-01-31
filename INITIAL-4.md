@@ -18,7 +18,13 @@
 ## DOCUMENTATION:
 - Time-series feature engineering best practices
 - scikit-learn transformers/pipelines (if used)
+- https://scikit-learn.org/stable/modules/compose.html
+- https://www.nixtla.io/blog/automated-time-series-feature-engineering-with-mlforecast?utm_source=chatgpt.com#introduction-to-mlforecast
+- https://www.sktime.net/en/stable/api_reference/transformations.html
 
 ## OTHER CONSIDERATIONS:
 - Feature configs must be persisted per run in the registry.
 - Reproducibility: same config + same data window must be re-runnable.
+- **Imputation Logic**: Define behavior for missing price data (forward-fill) vs missing sales data (zero-fill).
+- **Agent Tooling**: Expose the Feature Pipeline as a tool for PydanticAI to "inspect" the shape of the data before suggesting ModelConfigs.
+- **Computation Overhead**: Evaluate if features should be computed on-the-fly in FastAPI or pre-computed in a materialized view for performance.
