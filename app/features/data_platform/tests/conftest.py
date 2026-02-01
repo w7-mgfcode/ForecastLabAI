@@ -10,17 +10,26 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
-from app.features.data_platform.models import Calendar, Product, Store
+from app.features.data_platform.models import (
+    Calendar,
+    InventorySnapshotDaily,
+    PriceHistory,
+    Product,
+    Promotion,
+    SalesDaily,
+    Store,
+)
 
 
 @pytest.fixture
 async def db_session():
     """Create async database session for integration tests.
 
-    Uses existing tables from migrations. Rolls back changes after each test.
+    Uses existing tables from migrations. Cleans up test data after each test.
     Requires PostgreSQL to be running (docker-compose up -d) and migrations applied.
     """
     settings = get_settings()
@@ -37,8 +46,20 @@ async def db_session():
         try:
             yield session
         finally:
-            # Clean up test data by rolling back any uncommitted changes
-            await session.rollback()
+            # Clean up test data (delete in correct order due to FK constraints)
+            await session.execute(delete(SalesDaily))
+            await session.execute(delete(InventorySnapshotDaily))
+            await session.execute(delete(PriceHistory))
+            await session.execute(delete(Promotion))
+            await session.execute(delete(Product).where(Product.sku.like("SKU-TEST%")))
+            await session.execute(delete(Product).where(Product.sku.like("TEST-%")))
+            await session.execute(delete(Store).where(Store.code.like("TEST%")))
+            await session.execute(
+                delete(Calendar).where(
+                    (Calendar.date >= date(2024, 1, 1)) & (Calendar.date <= date(2024, 12, 31))
+                )
+            )
+            await session.commit()
 
     await engine.dispose()
 
