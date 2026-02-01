@@ -1,15 +1,178 @@
 # INITIAL-11C.md — ForecastLab Dashboard (The Face)
 
-> **Part C of 3**: Components, Hooks, Configuration, Success Criteria, Integration, and Considerations
-> See also: [INITIAL-11A.md](./INITIAL-11A.md) (Overview, Tech Stack) | [INITIAL-11B.md](./INITIAL-11B.md) (Page Structure)
+> **Part C of 3**: Pages & Components
+> See also: [INITIAL-11A.md](./INITIAL-11A.md) (Setup & Config) | [INITIAL-11B.md](./INITIAL-11B.md) (Architecture & Features)
 
 ---
 
-## COMPONENTS
+## Route Overview
 
-### DataTable (shadcn/ui pattern)
+| Route | Description | API Endpoint |
+|-------|-------------|--------------|
+| `/dashboard` | KPI summary cards | GET /analytics/kpis |
+| `/explorer/sales` | Sales data table | GET /analytics/drilldowns |
+| `/explorer/runs` | Model run table | GET /registry/runs |
+| `/visualize/forecast` | Forecast chart | GET /forecasting/predict |
+| `/visualize/backtest` | Backtest folds | GET /backtesting/results/{run_id} |
+| `/chat` | Agent chat | WS /agents/stream |
+| `/admin` | Admin panel | GET /rag/sources, /registry/aliases |
 
-Uses the official [shadcn/ui Data Table pattern](https://ui.shadcn.com/docs/components/data-table) with TanStack Table for server-side operations.
+---
+
+## Page Wireframes
+
+### /dashboard
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  [Logo] ForecastLab    [Dashboard] [Explorer▼] [Visualize▼] │
+│                        [Chat] [Admin]          [Theme] [?]  │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
+│  │ Total Sales │  │ Active Runs │  │ RAG Sources │         │
+│  │   $2.4M     │  │     127     │  │      15     │         │
+│  │   +12.3%    │  │   +5 today  │  │   indexed   │         │
+│  └─────────────┘  └─────────────┘  └─────────────┘         │
+│                                                             │
+│  ┌───────────────────────────────────────────────────────┐ │
+│  │  Recent Activity                                [See All]│
+│  │  • Backtest run_abc completed (2h ago)                  │
+│  │  • Model alias "production" updated (5h ago)            │
+│  └───────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### /explorer/sales
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Sales Explorer                                    [Export] │
+├─────────────────────────────────────────────────────────────┤
+│  Filters: [Date Range] [Store ▼] [Product ▼] [Search...]    │
+├─────────────────────────────────────────────────────────────┤
+│  Date        │ Store   │ Product │ Quantity │ Revenue       │
+│  2026-01-15  │ S001    │ P001    │ 150      │ $2,250.00     │
+│  2026-01-15  │ S001    │ P002    │ 75       │ $1,125.00     │
+│  ...         │ ...     │ ...     │ ...      │ ...           │
+├─────────────────────────────────────────────────────────────┤
+│  Page 1 of 50  │  [< Prev]  [1] [2] [3] ... [50]  [Next >]  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### /explorer/runs
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Model Runs                              [Compare Selected] │
+├─────────────────────────────────────────────────────────────┤
+│  Filters: [Model Type ▼] [Status ▼] [Store ▼] [Product ▼]  │
+├─────────────────────────────────────────────────────────────┤
+│  [☐] │ Run ID    │ Model    │ Status  │ MAE   │ Created     │
+│  [☐] │ run_abc   │ MA(14)   │ SUCCESS │ 12.5  │ 2h ago      │
+│  [☐] │ run_def   │ SN(7)    │ SUCCESS │ 15.2  │ 3h ago      │
+│  [☐] │ run_ghi   │ Naive    │ SUCCESS │ 18.9  │ 5h ago      │
+├─────────────────────────────────────────────────────────────┤
+│  Showing 3 of 127 runs                                      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### /visualize/forecast
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Forecast: Store S001, Product P001                         │
+├─────────────────────────────────────────────────────────────┤
+│  [Store ▼] [Product ▼] [Model Run ▼] [Date Range]          │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  200 ─┤                               ╭──────              │
+│       │                          ╭────╯    Predicted       │
+│  150 ─┤                     ╭────╯                         │
+│       │                ╭────╯      ───── Actual            │
+│  100 ─┤           ╭────╯           - - - Confidence        │
+│       │      ╭────╯                                        │
+│   50 ─┤ ╭────╯                                             │
+│       │─╯                                                   │
+│    0 ─┼────────────────────────────────────────────────    │
+│       Jan 1     Jan 15    Feb 1     Feb 15    Mar 1        │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│  MAE: 12.5  │  sMAPE: 15.2%  │  WAPE: 8.1%  │  Bias: -2.3  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### /visualize/backtest
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Backtest: run_abc123 (5-fold Expanding Window)             │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Fold 1: ████████████░░░░  MAE: 14.2  sMAPE: 16.8%         │
+│  Fold 2: █████████████████░░░░  MAE: 13.1  sMAPE: 15.4%    │
+│  Fold 3: ███████████████████████░░░░  MAE: 12.8  sMAPE: 14.9│
+│  Fold 4: █████████████████████████████░░░░  MAE: 11.9      │
+│  Fold 5: ███████████████████████████████████░░░░  MAE: 11.2│
+│                                                             │
+│  █ Train   ░ Test                                          │
+├─────────────────────────────────────────────────────────────┤
+│  Aggregated: MAE: 12.6 ± 1.1  │  Stability: 0.91           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### /chat
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  ForecastLab Assistant                                      │
+├────────────┬────────────────────────────────────────────────┤
+│  Sessions  │                                                │
+│  ─────────│  How does backtesting prevent data leakage?    │
+│  Today     │                                                │
+│  ◉ Current │  The backtesting module prevents data leakage │
+│  ○ 10:30am │  through several mechanisms:                   │
+│  ○ 9:15am  │                                                │
+│  Yesterday │  1. **Time-based splits**: Uses expanding...   │
+│  ○ 4:45pm  │                                                │
+│            │  📚 Citations:                                  │
+│            │  [1] docs/PHASE/5-BACKTESTING.md               │
+│            │  [2] CLAUDE.md                                 │
+│            │                                                │
+│            │  ──────────────────────────────────────────    │
+│            │  🔧 Tool: retrieve_context (5 chunks found)    │
+│            │  ──────────────────────────────────────────    │
+├────────────┴────────────────────────────────────────────────┤
+│  [Type your question...]                          [Send ➤] │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### /admin
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Admin Panel                                                │
+├─────────────────────────────────────────────────────────────┤
+│  [RAG Sources] [Model Aliases] [Jobs] [Health]              │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  RAG Sources                                   [+ Index New] │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │ Source          │ Type     │ Chunks │ Indexed    │ ⋮   ││
+│  │ CLAUDE.md       │ markdown │ 45     │ 2h ago     │ [⋮] ││
+│  │ README.md       │ markdown │ 23     │ 1d ago     │ [⋮] ││
+│  │ openapi.yaml    │ openapi  │ 78     │ 3d ago     │ [⋮] ││
+│  └─────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Component Patterns
+
+### DataTable
+
+Uses [shadcn/ui Data Table](https://ui.shadcn.com/docs/components/data-table) with TanStack Table.
 
 ```tsx
 // components/data-table/data-table.tsx
@@ -21,10 +184,7 @@ import {
   getCoreRowModel,
   useReactTable,
   type PaginationState,
-  type SortingState,
-  type ColumnFiltersState,
 } from "@tanstack/react-table"
-
 import {
   Table,
   TableBody,
@@ -42,37 +202,22 @@ interface DataTableProps<TData, TValue> {
   pageCount: number
   pagination: PaginationState
   onPaginationChange: (pagination: PaginationState) => void
-  sorting?: SortingState
-  onSortingChange?: (sorting: SortingState) => void
   isLoading?: boolean
 }
 
 export function DataTable<TData, TValue>({
-  columns,
-  data,
-  pageCount,
-  pagination,
-  onPaginationChange,
-  sorting,
-  onSortingChange,
-  isLoading,
+  columns, data, pageCount, pagination, onPaginationChange, isLoading,
 }: DataTableProps<TData, TValue>) {
   const table = useReactTable({
     data,
     columns,
     pageCount,
-    state: { pagination, sorting },
+    state: { pagination },
     onPaginationChange: (updater) => {
       const next = typeof updater === "function" ? updater(pagination) : updater
       onPaginationChange(next)
     },
-    onSortingChange: (updater) => {
-      if (!onSortingChange || !sorting) return
-      const next = typeof updater === "function" ? updater(sorting) : updater
-      onSortingChange(next)
-    },
     manualPagination: true,
-    manualSorting: true,
     getCoreRowModel: getCoreRowModel(),
   })
 
@@ -85,9 +230,7 @@ export function DataTable<TData, TValue>({
               <TableRow key={headerGroup.id}>
                 {headerGroup.headers.map((header) => (
                   <TableHead key={header.id}>
-                    {header.isPlaceholder
-                      ? null
-                      : flexRender(header.column.columnDef.header, header.getContext())}
+                    {flexRender(header.column.columnDef.header, header.getContext())}
                   </TableHead>
                 ))}
               </TableRow>
@@ -102,41 +245,23 @@ export function DataTable<TData, TValue>({
                   ))}
                 </TableRow>
               ))
-            ) : table.getRowModel().rows?.length ? (
-              table.getRowModel().rows.map((row) => (
-                <TableRow key={row.id} data-state={row.getIsSelected() && "selected"}>
-                  {row.getVisibleCells().map((cell) => (
-                    <TableCell key={cell.id}>
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))
-            ) : (
-              <TableRow>
-                <TableCell colSpan={columns.length} className="h-24 text-center">
-                  No results.
-                </TableCell>
+            ) : table.getRowModel().rows.map((row) => (
+              <TableRow key={row.id}>
+                {row.getVisibleCells().map((cell) => (
+                  <TableCell key={cell.id}>
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </TableCell>
+                ))}
               </TableRow>
-            )}
+            ))}
           </TableBody>
         </Table>
       </div>
-      <div className="flex items-center justify-end space-x-2">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => table.previousPage()}
-          disabled={!table.getCanPreviousPage()}
-        >
+      <div className="flex justify-end space-x-2">
+        <Button variant="outline" size="sm" onClick={() => table.previousPage()} disabled={!table.getCanPreviousPage()}>
           Previous
         </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => table.nextPage()}
-          disabled={!table.getCanNextPage()}
-        >
+        <Button variant="outline" size="sm" onClick={() => table.nextPage()} disabled={!table.getCanNextPage()}>
           Next
         </Button>
       </div>
@@ -145,109 +270,50 @@ export function DataTable<TData, TValue>({
 }
 ```
 
-**Required shadcn components:** `table`, `button`, `skeleton`
-**Add command:** `npx shadcn@latest add table button skeleton`
-
----
-
 ### TimeSeriesChart
 
-Uses shadcn/ui `chart` component which wraps Recharts with consistent theming.
+Uses shadcn/ui `chart` wrapping Recharts.
 
 ```tsx
 // components/charts/time-series-chart.tsx
 "use client"
 
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-  type ChartConfig,
-} from "@/components/ui/chart"
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
 import { Badge } from "@/components/ui/badge"
 
-interface TimeSeriesChartProps {
-  title: string
-  description?: string
-  data: { date: string; actual: number; predicted?: number }[]
-  metrics?: { mae?: number; smape?: number; wape?: number; bias?: number }
-  height?: number
-}
-
 const chartConfig = {
-  actual: {
-    label: "Actual",
-    color: "var(--chart-1)",
-  },
-  predicted: {
-    label: "Predicted",
-    color: "var(--chart-2)",
-  },
+  actual: { label: "Actual", color: "var(--chart-1)" },
+  predicted: { label: "Predicted", color: "var(--chart-2)" },
 } satisfies ChartConfig
 
-export function TimeSeriesChart({
-  title,
-  description,
-  data,
-  metrics,
-  height = 350,
-}: TimeSeriesChartProps) {
-  const hasPredicted = data.some((d) => d.predicted !== undefined)
+interface Props {
+  title: string
+  data: { date: string; actual: number; predicted?: number }[]
+  metrics?: { mae?: number; smape?: number }
+}
 
+export function TimeSeriesChart({ title, data, metrics }: Props) {
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-        {description && <CardDescription>{description}</CardDescription>}
-      </CardHeader>
+      <CardHeader><CardTitle>{title}</CardTitle></CardHeader>
       <CardContent>
-        <ChartContainer config={chartConfig} className={`h-[${height}px] w-full`}>
-          <LineChart data={data} margin={{ left: 12, right: 12 }}>
+        <ChartContainer config={chartConfig} className="h-[350px] w-full">
+          <LineChart data={data}>
             <CartesianGrid vertical={false} />
-            <XAxis
-              dataKey="date"
-              tickLine={false}
-              axisLine={false}
-              tickMargin={8}
-              tickFormatter={(value) => new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-            />
-            <YAxis tickLine={false} axisLine={false} tickMargin={8} />
-            <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
-            <Line
-              dataKey="actual"
-              type="monotone"
-              stroke="var(--color-actual)"
-              strokeWidth={2}
-              dot={false}
-            />
-            {hasPredicted && (
-              <Line
-                dataKey="predicted"
-                type="monotone"
-                stroke="var(--color-predicted)"
-                strokeWidth={2}
-                strokeDasharray="5 5"
-                dot={false}
-              />
-            )}
+            <XAxis dataKey="date" tickLine={false} axisLine={false} />
+            <YAxis tickLine={false} axisLine={false} />
+            <ChartTooltip content={<ChartTooltipContent />} />
+            <Line dataKey="actual" stroke="var(--color-actual)" strokeWidth={2} dot={false} />
+            <Line dataKey="predicted" stroke="var(--color-predicted)" strokeWidth={2} strokeDasharray="5 5" dot={false} />
           </LineChart>
         </ChartContainer>
       </CardContent>
       {metrics && (
-        <CardFooter className="flex flex-wrap gap-2">
-          {metrics.mae !== undefined && <Badge variant="outline">MAE: {metrics.mae.toFixed(1)}</Badge>}
-          {metrics.smape !== undefined && <Badge variant="outline">sMAPE: {metrics.smape.toFixed(1)}%</Badge>}
-          {metrics.wape !== undefined && <Badge variant="outline">WAPE: {metrics.wape.toFixed(1)}%</Badge>}
-          {metrics.bias !== undefined && <Badge variant="outline">Bias: {metrics.bias.toFixed(1)}</Badge>}
+        <CardFooter className="flex gap-2">
+          {metrics.mae && <Badge variant="outline">MAE: {metrics.mae.toFixed(1)}</Badge>}
+          {metrics.smape && <Badge variant="outline">sMAPE: {metrics.smape.toFixed(1)}%</Badge>}
         </CardFooter>
       )}
     </Card>
@@ -255,14 +321,9 @@ export function TimeSeriesChart({
 }
 ```
 
-**Required shadcn components:** `chart`, `card`, `badge`
-**Add command:** `npx shadcn@latest add chart card badge`
-
----
-
 ### ChatMessage
 
-Uses shadcn/ui primitives for layout with `collapsible` for tool calls.
+Uses `collapsible` for tool calls.
 
 ```tsx
 // components/chat/chat-message.tsx
@@ -272,83 +333,45 @@ import { cn } from "@/lib/utils"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible"
-import { ChevronDown } from "lucide-react"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 
-interface Citation {
-  id: string
-  sourceType: string
-  sourcePath: string
-  snippet?: string
-}
-
-interface ToolCall {
-  id: string
-  name: string
-  args: Record<string, unknown>
-  result?: string
-}
-
-interface ChatMessageProps {
+interface Props {
   role: "user" | "assistant"
   content: string
-  citations?: Citation[]
-  toolCalls?: ToolCall[]
+  citations?: { id: string; sourcePath: string }[]
+  toolCalls?: { id: string; name: string }[]
   isStreaming?: boolean
 }
 
-export function ChatMessage({
-  role,
-  content,
-  citations,
-  toolCalls,
-  isStreaming,
-}: ChatMessageProps) {
+export function ChatMessage({ role, content, citations, toolCalls, isStreaming }: Props) {
   return (
     <div className={cn("flex", role === "user" ? "justify-end" : "justify-start")}>
       <Card className={cn("max-w-[80%]", role === "user" && "bg-primary text-primary-foreground")}>
         <CardContent className="p-4 space-y-3">
-          {/* Message content */}
           <div className="prose prose-sm dark:prose-invert">
             {content}
             {isStreaming && <span className="animate-pulse ml-1">▋</span>}
           </div>
 
-          {/* Citations */}
-          {citations && citations.length > 0 && (
-            <div className="border-t pt-2 space-y-1">
+          {citations?.length > 0 && (
+            <div className="border-t pt-2">
               <p className="text-xs font-medium text-muted-foreground">Citations:</p>
               <div className="flex flex-wrap gap-1">
                 {citations.map((c) => (
-                  <Badge key={c.id} variant="secondary" className="text-xs">
-                    [{c.id}] {c.sourcePath}
-                  </Badge>
+                  <Badge key={c.id} variant="secondary" className="text-xs">[{c.id}] {c.sourcePath}</Badge>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Tool Calls */}
-          {toolCalls && toolCalls.length > 0 && (
+          {toolCalls?.length > 0 && (
             <Collapsible>
               <CollapsibleTrigger asChild>
-                <Button variant="ghost" size="sm" className="w-full justify-between">
-                  <span>🔧 {toolCalls.length} tool call(s)</span>
-                  <ChevronDown className="h-4 w-4" />
-                </Button>
+                <Button variant="ghost" size="sm">🔧 {toolCalls.length} tool call(s)</Button>
               </CollapsibleTrigger>
               <CollapsibleContent className="space-y-2 mt-2">
                 {toolCalls.map((tc) => (
-                  <div key={tc.id} className="text-xs bg-muted rounded p-2">
-                    <p className="font-mono font-medium">{tc.name}</p>
-                    <pre className="text-muted-foreground overflow-x-auto">
-                      {JSON.stringify(tc.args, null, 2)}
-                    </pre>
-                  </div>
+                  <div key={tc.id} className="text-xs bg-muted rounded p-2 font-mono">{tc.name}</div>
                 ))}
               </CollapsibleContent>
             </Collapsible>
@@ -360,28 +383,73 @@ export function ChatMessage({
 }
 ```
 
-**Required shadcn components:** `card`, `badge`, `button`, `collapsible`
-**Add command:** `npx shadcn@latest add card badge button collapsible`
+### DateRangePicker
+
+Uses `popover` + `calendar`.
+
+```tsx
+// components/date-range-picker.tsx
+"use client"
+
+import { format } from "date-fns"
+import { CalendarIcon } from "lucide-react"
+import { type DateRange } from "react-day-picker"
+import { Button } from "@/components/ui/button"
+import { Calendar } from "@/components/ui/calendar"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+
+interface Props {
+  value?: DateRange
+  onChange: (range: DateRange | undefined) => void
+}
+
+export function DateRangePicker({ value, onChange }: Props) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="outline" className="w-[280px] justify-start text-left">
+          <CalendarIcon className="mr-2 h-4 w-4" />
+          {value?.from ? (
+            value.to ? `${format(value.from, "LLL dd")} - ${format(value.to, "LLL dd")}` : format(value.from, "LLL dd")
+          ) : "Pick a date range"}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-auto p-0" align="start">
+        <Calendar mode="range" selected={value} onSelect={onChange} numberOfMonths={2} />
+      </PopoverContent>
+    </Popover>
+  )
+}
+```
+
+### StatusBadge
+
+```tsx
+// components/status-badge.tsx
+import { Badge } from "@/components/ui/badge"
+
+const variants = {
+  SUCCESS: "default",
+  FAILED: "destructive",
+  RUNNING: "secondary",
+  PENDING: "outline",
+} as const
+
+export function StatusBadge({ status }: { status: keyof typeof variants }) {
+  return <Badge variant={variants[status]}>{status}</Badge>
+}
+```
 
 ---
 
-## API HOOKS (TanStack Query)
+## API Hooks
 
 ```tsx
 // hooks/use-sales.ts
 import { useQuery, keepPreviousData } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 
-interface SalesQueryParams {
-  page: number
-  pageSize: number
-  startDate?: string
-  endDate?: string
-  storeId?: number
-  productId?: number
-}
-
-export function useSales(params: SalesQueryParams) {
+export function useSales(params: { page: number; pageSize: number; storeId?: number }) {
   return useQuery({
     queryKey: ["sales", params],
     queryFn: () => api.get("/analytics/drilldowns", { params }),
@@ -390,19 +458,7 @@ export function useSales(params: SalesQueryParams) {
 }
 
 // hooks/use-runs.ts
-import { useQuery } from "@tanstack/react-query"
-import { api } from "@/lib/api"
-
-interface RunsQueryParams {
-  page: number
-  pageSize: number
-  modelType?: string
-  status?: string
-  storeId?: number
-  productId?: number
-}
-
-export function useRuns(params: RunsQueryParams) {
+export function useRuns(params: { page: number; pageSize: number; status?: string }) {
   return useQuery({
     queryKey: ["runs", params],
     queryFn: () => api.get("/registry/runs", { params }),
@@ -412,28 +468,18 @@ export function useRuns(params: RunsQueryParams) {
 // hooks/use-chat.ts
 import { useState, useCallback, useEffect, useRef } from "react"
 
-interface Message {
-  id: string
-  role: "user" | "assistant"
-  content: string
-  citations?: Citation[]
-  toolCalls?: ToolCall[]
-}
-
-export function useChat(sessionId?: string) {
-  const [messages, setMessages] = useState<Message[]>([])
+export function useChat() {
+  const [messages, setMessages] = useState<{ id: string; role: "user" | "assistant"; content: string }[]>([])
   const [isConnected, setIsConnected] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
-    const ws = new WebSocket(`${import.meta.env.VITE_WS_URL}`)
+    const ws = new WebSocket(import.meta.env.VITE_WS_URL)
     wsRef.current = ws
-
     ws.onopen = () => setIsConnected(true)
     ws.onclose = () => setIsConnected(false)
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data)
-      // Handle streaming tokens, complete messages, etc.
       if (data.type === "token") {
         setMessages((prev) => {
           const last = prev[prev.length - 1]
@@ -444,19 +490,13 @@ export function useChat(sessionId?: string) {
         })
       }
     }
-
     return () => ws.close()
-  }, [sessionId])
+  }, [])
 
   const sendMessage = useCallback((content: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
-
     setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "user", content }])
-    wsRef.current.send(JSON.stringify({
-      type: "query",
-      agent: "rag_assistant",
-      payload: { query: content },
-    }))
+    wsRef.current.send(JSON.stringify({ type: "query", agent: "rag_assistant", payload: { query: content } }))
   }, [])
 
   return { messages, sendMessage, isConnected }
@@ -465,133 +505,59 @@ export function useChat(sessionId?: string) {
 
 ---
 
-## CONFIGURATION (Environment)
+## Delete Confirmation Pattern
 
-```env
-# .env.example for frontend
-
-# API Configuration
-VITE_API_BASE_URL=http://localhost:8123
-VITE_WS_URL=ws://localhost:8123/agents/stream
-
-# Feature Flags
-VITE_ENABLE_AGENT_CHAT=true
-VITE_ENABLE_ADMIN_PANEL=true
-
-# Visualization
-VITE_DEFAULT_PAGE_SIZE=25
-VITE_MAX_CHART_POINTS=365
+```tsx
+// Used in Admin panel for destructive actions
+<AlertDialog>
+  <AlertDialogTrigger asChild>
+    <DropdownMenuItem className="text-destructive">Delete</DropdownMenuItem>
+  </AlertDialogTrigger>
+  <AlertDialogContent>
+    <AlertDialogHeader>
+      <AlertDialogTitle>Delete Source?</AlertDialogTitle>
+      <AlertDialogDescription>
+        This will remove "{sourceName}" and all its indexed chunks. This action cannot be undone.
+      </AlertDialogDescription>
+    </AlertDialogHeader>
+    <AlertDialogFooter>
+      <AlertDialogCancel>Cancel</AlertDialogCancel>
+      <AlertDialogAction onClick={handleDelete} className="bg-destructive">Delete</AlertDialogAction>
+    </AlertDialogFooter>
+  </AlertDialogContent>
+</AlertDialog>
 ```
 
 ---
 
-## SUCCESS CRITERIA
+## Documentation Links
 
-- [ ] Data tables handle 10k+ rows with virtual scrolling
-- [ ] Server-side pagination, sorting, filtering all functional
-- [ ] Charts render smoothly with 365+ data points
-- [ ] WebSocket chat shows streaming tokens in real-time
-- [ ] Citations render as clickable source links
-- [ ] Tool calls displayed in collapsible sections
-- [ ] Responsive design works on tablet and mobile
-- [ ] Lighthouse performance score > 90
-- [ ] Accessibility: keyboard navigation, screen reader support
-- [ ] Dark/light theme toggle
+- [shadcn/ui Data Table](https://ui.shadcn.com/docs/components/data-table)
+- [shadcn/ui Charts](https://ui.shadcn.com/docs/components/chart)
+- [TanStack Table Server-Side](https://tanstack.com/table/latest/docs/guide/pagination#manual-server-side-pagination)
+- [TanStack Query](https://tanstack.com/query/latest)
+- [Recharts](https://recharts.org/)
+- [React Day Picker](https://react-day-picker.js.org/)
 
 ---
 
-## CROSS-MODULE INTEGRATION
+## Other Considerations
 
-| Direction | Module | Integration Point |
-|-----------|--------|-------------------|
-| **← RAG Layer** | INITIAL-9 | Displays indexed sources, allows re-indexing |
-| **← Agentic Layer** | INITIAL-10 | Chat interface, experiment status display |
-| **← Registry** | Phase 6 | Run leaderboard, comparison views |
-| **← Analytics** | Phase 7 | KPI dashboard, drilldown charts |
-| **← Jobs** | Phase 7 | Job status monitoring |
-| **← Dimensions** | Phase 7 | Store/product selectors |
+- **Server-Side Operations**: All pagination, sorting, filtering is manual (server-side)
+- **Loading States**: Use `Skeleton` for all async data
+- **Error Handling**: Wrap pages in error boundaries
+- **Accessibility**: All components support keyboard navigation
+- **Mobile**: Use `sheet` for navigation, responsive tables
+- **Bundle Size**: Code split by route for fast initial load
 
 ---
 
-## OTHER CONSIDERATIONS
-
-- **No Hardcoded URLs**: API base URL from environment variable only
-- **Error Boundaries**: Graceful error handling with retry options
-- **Loading States**: Skeleton components for all async data
-- **Optimistic Updates**: Instant UI feedback for mutations
-- **Caching**: TanStack Query manages cache invalidation
-- **Bundle Size**: Code splitting per route for fast initial load
-
-### shadcn/ui Installation Checklist
-
-Run these commands to install all required components:
+## Running the Dashboard
 
 ```bash
-# Initialize shadcn/ui (if not already done)
-npx shadcn@latest init
-
-# Core layout components
-npx shadcn@latest add card tabs navigation-menu sheet scroll-area separator
-
-# Data display components
-npx shadcn@latest add table badge skeleton pagination progress
-
-# Form components
-npx shadcn@latest add button input select textarea calendar popover checkbox
-
-# Feedback components
-npx shadcn@latest add sonner tooltip alert-dialog dialog
-
-# Interactive components
-npx shadcn@latest add collapsible accordion dropdown-menu
-
-# Chart components (wraps Recharts)
-npx shadcn@latest add chart
+cd frontend
+pnpm install
+pnpm dev
 ```
 
-### Theme Configuration
-
-shadcn/ui uses CSS variables for theming. Ensure your `globals.css` includes the theme variables:
-
-```css
-@layer base {
-  :root {
-    --chart-1: 221.2 83.2% 53.3%;
-    --chart-2: 142.1 76.2% 36.3%;
-    --chart-3: 47.9 95.8% 53.1%;
-    --chart-4: 24.6 95% 53.1%;
-    --chart-5: 280.1 93.6% 53.1%;
-  }
-
-  .dark {
-    --chart-1: 217.2 91.2% 59.8%;
-    --chart-2: 142.1 70.6% 45.3%;
-    --chart-3: 47.9 95.8% 53.1%;
-    --chart-4: 24.6 95% 53.1%;
-    --chart-5: 280.1 93.6% 53.1%;
-  }
-}
-```
-
-### File Structure
-
-```
-frontend/
-├── src/
-│   ├── components/
-│   │   ├── ui/              # shadcn/ui components (auto-generated)
-│   │   ├── data-table/      # DataTable wrapper
-│   │   ├── charts/          # Chart components
-│   │   ├── chat/            # Chat components
-│   │   └── layout/          # App shell, nav
-│   ├── hooks/               # TanStack Query hooks
-│   ├── lib/
-│   │   ├── api.ts           # API client
-│   │   └── utils.ts         # cn() utility
-│   ├── pages/               # Route pages
-│   └── App.tsx
-├── .env.example
-├── package.json
-├── tailwind.config.js
-└── vite.config.ts
-```
+Open http://localhost:5173
