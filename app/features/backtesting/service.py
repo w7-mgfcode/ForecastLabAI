@@ -459,9 +459,7 @@ class BacktestingService:
                         abs_naive = abs(naive_value)
                         if abs_naive != 0:
                             # Improvement = (abs_baseline - abs_main) / abs_baseline * 100
-                            comparison["vs_naive_pct"] = (
-                                (abs_naive - abs_main) / abs_naive
-                            ) * 100
+                            comparison["vs_naive_pct"] = ((abs_naive - abs_main) / abs_naive) * 100
                     elif naive_value != 0:
                         # For unsigned metrics, use original formula
                         comparison["vs_naive_pct"] = (
