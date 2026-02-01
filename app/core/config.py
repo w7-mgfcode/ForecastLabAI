@@ -142,9 +142,7 @@ class Settings(BaseSettings):
         provider, _ = v.split(":", 1)
         valid_providers = ["anthropic", "openai", "google-gla", "google-vertex"]
         if provider not in valid_providers:
-            raise ValueError(
-                f"Unknown provider '{provider}'. Valid providers: {valid_providers}"
-            )
+            raise ValueError(f"Unknown provider '{provider}'. Valid providers: {valid_providers}")
         return v
 
     @property

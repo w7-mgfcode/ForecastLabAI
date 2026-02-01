@@ -70,13 +70,9 @@ def validate_api_key_for_model(model: str) -> None:
             "Anthropic API key not configured. Set ANTHROPIC_API_KEY environment variable."
         )
     elif provider == "openai" and not settings.openai_api_key:
-        raise ValueError(
-            "OpenAI API key not configured. Set OPENAI_API_KEY environment variable."
-        )
+        raise ValueError("OpenAI API key not configured. Set OPENAI_API_KEY environment variable.")
     elif provider in ["google-gla", "google-vertex"] and not settings.google_api_key:
-        raise ValueError(
-            "Google API key not configured. Set GOOGLE_API_KEY environment variable."
-        )
+        raise ValueError("Google API key not configured. Set GOOGLE_API_KEY environment variable.")
 
     logger.debug(
         "agents.api_key_validated",
