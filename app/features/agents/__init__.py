@@ -8,6 +8,6 @@ This module provides:
 """
 
 # Import models to register with SQLAlchemy metadata
-from app.features.agents import models  # noqa: F401
+from app.features.agents import models
 
 __all__ = ["models"]
