@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     backtest_max_gap: int = 30
     backtest_results_dir: str = "./artifacts/backtests"
 
+    # Registry
+    registry_artifact_root: str = "./artifacts/registry"
+    registry_duplicate_policy: Literal["allow", "deny", "detect"] = "detect"
+
     @property
     def is_development(self) -> bool:
         """Check if running in development mode."""

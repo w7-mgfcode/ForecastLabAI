@@ -3,16 +3,16 @@
 These tests require a running PostgreSQL database (docker-compose up -d).
 """
 
+from contextlib import suppress
 from datetime import date
 from decimal import Decimal
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
-from app.core.database import Base
 from app.features.data_platform.models import Calendar, Product, SalesDaily, Store
 from app.main import app
 
@@ -21,15 +21,11 @@ from app.main import app
 async def db_session():
     """Create async database session for integration tests.
 
-    Creates all tables, provides a session, and cleans up after.
-    Requires PostgreSQL to be running (docker-compose up -d).
+    Uses existing tables from migrations. Cleans up test data after each test.
+    Requires PostgreSQL to be running (docker-compose up -d) and migrations applied.
     """
     settings = get_settings()
     engine = create_async_engine(settings.database_url, echo=False)
-
-    # Create tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
 
     # Create session
     async_session_maker = async_sessionmaker(
@@ -42,11 +38,23 @@ async def db_session():
         try:
             yield session
         finally:
-            await session.rollback()
+            # Rollback any pending transaction first
+            with suppress(Exception):
+                await session.rollback()
 
-    # Cleanup: drop all tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+    # Use a fresh session for cleanup to avoid transaction state issues
+    async with async_session_maker() as cleanup_session:
+        with suppress(Exception):
+            # Clean up test data (delete in correct order due to FK constraints)
+            await cleanup_session.execute(delete(SalesDaily))
+            await cleanup_session.execute(delete(Product).where(Product.sku.like("SKU-%")))
+            await cleanup_session.execute(delete(Store).where(Store.code.like("S00%")))
+            await cleanup_session.execute(
+                delete(Calendar).where(
+                    (Calendar.date >= date(2024, 1, 1)) & (Calendar.date <= date(2024, 12, 31))
+                )
+            )
+            await cleanup_session.commit()
 
     await engine.dispose()
 
