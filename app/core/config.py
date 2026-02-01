@@ -64,6 +64,32 @@ class Settings(BaseSettings):
     # Jobs
     jobs_retention_days: int = 30
 
+    # RAG Embedding Configuration
+    rag_embedding_provider: Literal["openai", "ollama"] = "openai"
+    openai_api_key: str = ""
+    rag_embedding_model: str = "text-embedding-3-small"
+    rag_embedding_dimension: int = 1536
+    rag_embedding_batch_size: int = 100
+
+    # Ollama Configuration (when rag_embedding_provider = "ollama")
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_embedding_model: str = "nomic-embed-text"
+
+    # RAG Chunking Configuration
+    rag_chunk_size: int = 512  # tokens
+    rag_chunk_overlap: int = 50  # tokens
+    rag_min_chunk_size: int = 100  # minimum tokens per chunk
+
+    # RAG Retrieval Configuration
+    rag_top_k: int = 5
+    rag_similarity_threshold: float = 0.7
+    rag_max_context_tokens: int = 4000
+
+    # RAG Index Configuration
+    rag_index_type: Literal["hnsw", "ivfflat"] = "hnsw"
+    rag_hnsw_m: int = 16
+    rag_hnsw_ef_construction: int = 64
+
     @property
     def is_development(self) -> bool:
         """Check if running in development mode."""
