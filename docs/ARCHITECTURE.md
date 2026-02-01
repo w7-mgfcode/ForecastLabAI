@@ -236,16 +236,51 @@ The `FeatureEngineeringService` provides time-safe feature computation with CRIT
 
 ## 7) ForecastOps (Training + Backtesting + Registry)
 
-### 7.1 Model Zoo (Minimum)
-- naive
-- seasonal naive
-- moving average (configurable window)
+### 7.1 Model Zoo — ✅ IMPLEMENTED (Baseline Models)
 
-### 7.2 Backtesting Protocol
+**Implemented via PRP-5** - Forecasting module provides:
+
+| Model | Description | Config Parameters |
+|-------|-------------|-------------------|
+| `naive` | Last observed value | None |
+| `seasonal_naive` | Previous season value | `seasonal_period` (e.g., 7 for weekly) |
+| `moving_average` | Mean of last N observations | `window` (default: 7) |
+| `lightgbm` | LightGBM regressor | Feature-flagged, disabled by default |
+
+**Model Interface:** All models inherit from `BaseForecaster` with typed `fit()` and `predict()` methods.
+
+**Persistence:** Models saved as `ModelBundle` (joblib) containing fitted model, config, metadata, and version info.
+
+### 7.2 API Endpoints
+
+- `POST /forecasting/train` - Train model for a single series (returns model_path)
+- `POST /forecasting/predict` - Generate forecasts using saved model
+
+### 7.3 Location
+
+- Models: `app/features/forecasting/models.py`
+- Persistence: `app/features/forecasting/persistence.py`
+- Schemas: `app/features/forecasting/schemas.py`
+- Service: `app/features/forecasting/service.py`
+- Routes: `app/features/forecasting/routes.py`
+- Tests: `app/features/forecasting/tests/` (comprehensive test coverage)
+- Examples: `examples/models/` (baseline_naive.py, baseline_seasonal.py, baseline_mavg.py)
+
+### 7.4 Configuration (Settings)
+
+```python
+forecast_random_seed: int = 42
+forecast_default_horizon: int = 14
+forecast_max_horizon: int = 90
+forecast_model_artifacts_dir: str = "./artifacts/models"
+forecast_enable_lightgbm: bool = False
+```
+
+### 7.5 Backtesting Protocol (Planned)
 - Time-based CV only: rolling or expanding splits (no random split).
 - Metrics: MAE, sMAPE (pinball loss later if needed).
 
-### 7.3 Model Registry
+### 7.6 Model Registry (Planned)
 Each run stores:
 - run_id, timestamps
 - model_type + model_config (JSON)
@@ -259,13 +294,18 @@ Each run stores:
 
 ## 8) Typed FastAPI Contracts (Serving Layer)
 
-Minimum endpoint categories (planned):
-- `POST /ingest/sales-daily` (optional `/ingest/transactions`)
-- `POST /train` (returns `run_id`, optional `job_id`)
-- `POST /predict`
-- `GET /runs`, `GET /runs/{run_id}`
-- `GET /data/kpis`, `GET /data/drilldowns`
-- `POST /rag/query` (optional `/rag/index` in dev)
+**Implemented Endpoints:**
+- `GET /health` - Health check
+- `POST /ingest/sales-daily` - Batch upsert daily sales records
+- `POST /featuresets/compute` - Compute time-safe features
+- `POST /featuresets/preview` - Preview features with sample rows
+- `POST /forecasting/train` - Train forecasting model (returns model_path)
+- `POST /forecasting/predict` - Generate forecasts using saved model
+
+**Planned Endpoints:**
+- `GET /runs`, `GET /runs/{run_id}` - Model registry and leaderboard
+- `GET /data/kpis`, `GET /data/drilldowns` - Data exploration
+- `POST /rag/query` - RAG knowledge base queries (optional `/rag/index` in dev)
 
 Contracts are Pydantic v2 validated and use `response_model` for explicit output typing.
 
