@@ -94,7 +94,8 @@ app/
 ├── features/
 │   ├── data_platform/  # Store, product, calendar, sales tables
 │   ├── ingest/         # Batch upsert endpoints for sales data
-│   └── featuresets/    # Time-safe feature engineering (lags, rolling, calendar)
+│   ├── featuresets/    # Time-safe feature engineering (lags, rolling, calendar)
+│   └── forecasting/    # Model training, prediction, persistence
 └── main.py         # FastAPI entry point
 
 tests/              # Test fixtures and helpers
@@ -103,6 +104,7 @@ examples/
 ├── api/            # HTTP client examples
 ├── schema/         # Table documentation
 ├── queries/        # Example SQL queries
+├── models/         # Baseline model examples (naive, seasonal_naive, moving_average)
 └── compute_features_demo.py  # Feature engineering demo
 scripts/            # Utility scripts
 ```
@@ -183,6 +185,47 @@ curl -X POST http://localhost:8123/featuresets/compute \
 - **Group isolation**: Entity-aware groupby prevents cross-series leakage
 
 See [examples/compute_features_demo.py](examples/compute_features_demo.py) for a complete demo.
+
+### Forecasting
+
+- `POST /forecasting/train` - Train a forecasting model for a store/product series
+- `POST /forecasting/predict` - Generate forecasts using a trained model
+
+**Example Training Request:**
+```bash
+curl -X POST http://localhost:8123/forecasting/train \
+  -H "Content-Type: application/json" \
+  -d '{
+    "store_id": 1,
+    "product_id": 1,
+    "train_start_date": "2024-01-01",
+    "train_end_date": "2024-06-30",
+    "config": {
+      "model_type": "seasonal_naive",
+      "seasonal_period": 7
+    }
+  }'
+```
+
+**Example Prediction Request:**
+```bash
+curl -X POST http://localhost:8123/forecasting/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "store_id": 1,
+    "product_id": 1,
+    "horizon": 14,
+    "model_path": "./artifacts/models/store_1_product_1_seasonal_naive_20240630.pkl"
+  }'
+```
+
+**Supported Model Types:**
+- `naive` - Last observed value (simple baseline)
+- `seasonal_naive` - Same period from previous season
+- `moving_average` - Mean of last N observations
+- `lightgbm` - LightGBM regressor (requires `forecast_enable_lightgbm=True`)
+
+See [examples/models/](examples/models/) for baseline model examples.
 
 ## API Documentation
 
