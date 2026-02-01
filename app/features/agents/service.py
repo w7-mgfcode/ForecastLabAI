@@ -459,8 +459,7 @@ class AgentService:
                     "arguments": arguments,
                     "created_at": stream_now.isoformat(),
                     "expires_at": (
-                        stream_now
-                        + timedelta(minutes=self.settings.agent_approval_timeout_minutes)
+                        stream_now + timedelta(minutes=self.settings.agent_approval_timeout_minutes)
                     ).isoformat(),
                 }
                 session.status = SessionStatus.AWAITING_APPROVAL.value
@@ -475,8 +474,7 @@ class AgentService:
                     "arguments": {},
                     "created_at": stream_now.isoformat(),
                     "expires_at": (
-                        stream_now
-                        + timedelta(minutes=self.settings.agent_approval_timeout_minutes)
+                        stream_now + timedelta(minutes=self.settings.agent_approval_timeout_minutes)
                     ).isoformat(),
                 }
                 session.status = SessionStatus.AWAITING_APPROVAL.value
