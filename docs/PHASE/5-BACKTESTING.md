@@ -42,10 +42,10 @@ class TimeSeriesSplitter:
 
 **Split Strategies**:
 
-| Strategy | Training Window | Use Case |
+|Strategy|Training Window|Use Case|
 |----------|----------------|----------|
-| `expanding` | Grows from start with each fold | More training data, detect concept drift |
-| `sliding` | Fixed size, slides forward | Consistent training size, recent patterns |
+|`expanding`|Grows from start with each fold|More training data, detect concept drift|
+|`sliding`|Fixed size, slides forward|Consistent training size, recent patterns|
 
 **TimeSeriesSplit Dataclass**:
 ```python
@@ -84,13 +84,13 @@ class MetricsCalculator:
 
 **Metrics Formulas**:
 
-| Metric | Formula | Interpretation |
+|Metric|Formula|Interpretation|
 |--------|---------|----------------|
-| MAE | `mean(\|actual - predicted\|)` | Average absolute error |
-| sMAPE | `100/n * sum(2 * \|A - F\| / (\|A\| + \|F\|))` | Symmetric percentage error (0-200) |
-| WAPE | `sum(\|A - F\|) / sum(\|A\|) * 100` | Weighted error for intermittent series |
-| Bias | `mean(actual - predicted)` | Positive = under-forecast |
-| Stability | `std(metrics) / \|mean(metrics)\| * 100` | Lower = more stable |
+|MAE|`mean(\|actual - predicted\|)`|Average absolute error|
+|sMAPE|`100/n * sum(2 * \|A - F\| / (\|A\| + \|F\|))`|Symmetric percentage error (0-200)|
+|WAPE|`sum(\|A - F\|) / sum(\|A\|) * 100`|Weighted error for intermittent series|
+|Bias|`mean(actual - predicted)`|Positive = under-forecast|
+|Stability|`std(metrics) / \|mean(metrics)\| * 100`|Lower = more stable|
 
 **Edge Case Handling**:
 - Empty arrays return `NaN`
@@ -103,15 +103,15 @@ class MetricsCalculator:
 
 Pydantic v2 schemas for backtest configuration:
 
-| Schema | Purpose |
+|Schema|Purpose|
 |--------|---------|
-| `SplitConfig` | Strategy, n_splits, min_train_size, gap, horizon |
-| `BacktestConfig` | Complete config with model_config and options |
-| `SplitBoundary` | Fold boundary dates and sizes |
-| `FoldResult` | Per-fold actuals, predictions, metrics |
-| `ModelBacktestResult` | All folds + aggregated metrics |
-| `BacktestRequest` | API request schema |
-| `BacktestResponse` | API response with all results |
+|`SplitConfig`|Strategy, n_splits, min_train_size, gap, horizon|
+|`BacktestConfig`|Complete config with model_config and options|
+|`SplitBoundary`|Fold boundary dates and sizes|
+|`FoldResult`|Per-fold actuals, predictions, metrics|
+|`ModelBacktestResult`|All folds + aggregated metrics|
+|`BacktestRequest`|API request schema|
+|`BacktestResponse`|API response with all results|
 
 **SplitConfig Example**:
 ```python
@@ -169,9 +169,9 @@ class BacktestingService:
 
 **File**: `app/features/backtesting/routes.py`
 
-| Endpoint | Method | Description |
+|Endpoint|Method|Description|
 |----------|--------|-------------|
-| `/backtesting/run` | POST | Execute backtest for a series |
+|`/backtesting/run`|POST|Execute backtest for a series|
 
 **Request Example**:
 ```json
@@ -242,14 +242,14 @@ class BacktestingService:
 
 **Directory**: `app/features/backtesting/tests/`
 
-| File | Tests | Coverage |
+|File|Tests|Coverage|
 |------|-------|----------|
-| `test_schemas.py` | 18 | Schema validation, frozen models, config hash |
-| `test_splitter.py` | 32 | Expanding/sliding strategies, gap, leakage validation |
-| `test_metrics.py` | 24 | All metrics, edge cases, aggregation |
-| `test_service.py` | 25 | Service logic, mocked DB |
-| `test_routes_integration.py` | 8 | Route integration with real DB |
-| `test_service_integration.py` | 8 | Service integration with real DB |
+|`test_schemas.py`|18|Schema validation, frozen models, config hash|
+|`test_splitter.py`|32|Expanding/sliding strategies, gap, leakage validation|
+|`test_metrics.py`|24|All metrics, edge cases, aggregation|
+|`test_service.py`|25|Service logic, mocked DB|
+|`test_routes_integration.py`|8|Route integration with real DB|
+|`test_service_integration.py`|8|Service integration with real DB|
 
 **Total**: 115 tests (99 unit + 16 integration)
 
@@ -262,11 +262,11 @@ class BacktestingService:
 
 **Directory**: `examples/backtest/`
 
-| File | Description |
+|File|Description|
 |------|-------------|
-| `run_backtest.py` | Full backtest API call example |
-| `inspect_splits.py` | Visualize split boundaries |
-| `metrics_demo.py` | Metrics calculation examples |
+|`run_backtest.py`|Full backtest API call example|
+|`inspect_splits.py`|Visualize split boundaries|
+|`metrics_demo.py`|Metrics calculation examples|
 
 ---
 
@@ -284,18 +284,18 @@ backtest_max_gap: int = 30
 backtest_results_dir: str = "./artifacts/backtests"
 ```
 
-| Setting | Default | Description |
+|Setting|Default|Description|
 |---------|---------|-------------|
-| `backtest_max_splits` | 20 | Maximum allowed CV folds |
-| `backtest_default_min_train_size` | 30 | Default minimum training observations |
-| `backtest_max_gap` | 30 | Maximum allowed gap in days |
-| `backtest_results_dir` | `./artifacts/backtests` | Directory for saved results |
+|`backtest_max_splits`|20|Maximum allowed CV folds|
+|`backtest_default_min_train_size`|30|Default minimum training observations|
+|`backtest_max_gap`|30|Maximum allowed gap in days|
+|`backtest_results_dir`|`./artifacts/backtests`|Directory for saved results|
 
 ---
 
 ## Directory Structure
 
-```
+```text
 app/features/backtesting/
 ├── __init__.py          # Module exports
 ├── schemas.py           # Pydantic configuration schemas
@@ -323,7 +323,7 @@ examples/backtest/
 
 ## Validation Results
 
-```
+```bash
 $ uv run ruff check app/features/backtesting/
 All checks passed!
 
@@ -344,15 +344,15 @@ $ uv run pytest app/features/backtesting/tests/ -v -m integration
 
 ## Logging Events
 
-| Event | Description |
+|Event|Description|
 |-------|-------------|
-| `backtesting.request_received` | Backtest request received |
-| `backtesting.request_completed` | Backtest completed successfully |
-| `backtesting.request_failed` | Backtest failed |
-| `backtesting.fold_started` | CV fold started |
-| `backtesting.fold_completed` | CV fold completed |
-| `backtesting.leakage_check_passed` | Leakage validation passed |
-| `backtesting.leakage_check_failed` | Leakage validation failed |
+|`backtesting.request_received`|Backtest request received|
+|`backtesting.request_completed`|Backtest completed successfully|
+|`backtesting.request_failed`|Backtest failed|
+|`backtesting.fold_started`|CV fold started|
+|`backtesting.fold_completed`|CV fold completed|
+|`backtesting.leakage_check_passed`|Leakage validation passed|
+|`backtesting.leakage_check_failed`|Leakage validation failed|
 
 ---
 

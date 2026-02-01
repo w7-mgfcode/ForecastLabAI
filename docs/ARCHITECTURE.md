@@ -321,7 +321,7 @@ forecast_enable_lightgbm: bool = False
 - `DeploymentAlias` - Mutable pointers to successful runs for deployment
 
 **Run Lifecycle (State Machine):**
-```
+```text
 PENDING → RUNNING → SUCCESS/FAILED → ARCHIVED
 ```
 - Validated transitions prevent invalid state changes

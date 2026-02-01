@@ -182,12 +182,12 @@ class LocalFSProvider(AbstractStorageProvider):
         dest_path = self._resolve_path(artifact_uri)
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Compute hash before copy
-        file_hash = self.compute_hash(source_path)
-        file_size = source_path.stat().st_size
-
-        # Copy file
+        # Copy file first
         shutil.copy2(source_path, dest_path)
+
+        # Compute hash and size from the saved file
+        file_hash = self.compute_hash(dest_path)
+        file_size = dest_path.stat().st_size
 
         logger.info(
             "registry.artifact_saved",

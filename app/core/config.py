@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # Database
-    database_url: str = "postgresql+asyncpg://forecastlab:forecastlab@localhost:5432/forecastlab"
+    database_url: str = "postgresql+asyncpg://forecastlab:forecastlab@localhost:5433/forecastlab"
 
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"

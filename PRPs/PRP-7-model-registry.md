@@ -1050,14 +1050,14 @@ IMPLEMENT:
   - compare_runs.py: Compare two runs, show config/metrics diff
 ```
 
-### Task 18: Update module __init__.py exports
+### Task 18: Update module `__init__.py` exports
 
 ```yaml
 FILE: app/features/registry/__init__.py
 ACTION: MODIFY
 IMPLEMENT:
   - Export all public classes
-  - __all__ list (sorted alphabetically)
+  - `__all__` list (sorted alphabetically)
 VALIDATION:
   - uv run python -c "from app.features.registry import *; print('OK')"
 ```

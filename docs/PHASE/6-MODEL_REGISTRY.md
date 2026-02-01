@@ -2,7 +2,7 @@
 
 **Date Completed**: 2026-02-01
 **PRP**: [PRP-7-model-registry.md](../../PRPs/PRP-7-model-registry.md)
-**Release**: PR #35
+**Release**: PR #37
 
 ---
 
@@ -39,40 +39,40 @@ class RunStatus(str, Enum):
 
 **ModelRun Table**:
 
-| Column | Type | Description |
+|Column|Type|Description|
 |--------|------|-------------|
-| `id` | Integer | Primary key |
-| `run_id` | String(32) | Unique external identifier (UUID hex) |
-| `status` | String(20) | Current lifecycle state |
-| `model_type` | String(50) | Type of model |
-| `model_config` | JSONB | Full model configuration |
-| `feature_config` | JSONB | Feature engineering config (nullable) |
-| `config_hash` | String(16) | Hash for deduplication |
-| `data_window_start` | Date | Training data start |
-| `data_window_end` | Date | Training data end |
-| `store_id` | Integer | Store ID |
-| `product_id` | Integer | Product ID |
-| `metrics` | JSONB | Performance metrics |
-| `artifact_uri` | String(500) | Relative path to artifact |
-| `artifact_hash` | String(64) | SHA-256 checksum |
-| `artifact_size_bytes` | Integer | File size |
-| `runtime_info` | JSONB | Python/library versions |
-| `agent_context` | JSONB | Agent/session IDs |
-| `git_sha` | String(40) | Git commit hash |
-| `error_message` | String(2000) | Error details (FAILED runs) |
-| `started_at` | DateTime(tz) | Run start time |
-| `completed_at` | DateTime(tz) | Run completion time |
-| `created_at` | DateTime(tz) | Record creation (mixin) |
-| `updated_at` | DateTime(tz) | Record update (mixin) |
+|`id`|Integer|Primary key|
+|`run_id`|String(32)|Unique external identifier (UUID hex)|
+|`status`|String(20)|Current lifecycle state|
+|`model_type`|String(50)|Type of model|
+|`model_config`|JSONB|Full model configuration|
+|`feature_config`|JSONB|Feature engineering config (nullable)|
+|`config_hash`|String(16)|Hash for deduplication|
+|`data_window_start`|Date|Training data start|
+|`data_window_end`|Date|Training data end|
+|`store_id`|Integer|Store ID|
+|`product_id`|Integer|Product ID|
+|`metrics`|JSONB|Performance metrics|
+|`artifact_uri`|String(500)|Relative path to artifact|
+|`artifact_hash`|String(64)|SHA-256 checksum|
+|`artifact_size_bytes`|Integer|File size|
+|`runtime_info`|JSONB|Python/library versions|
+|`agent_context`|JSONB|Agent/session IDs|
+|`git_sha`|String(40)|Git commit hash|
+|`error_message`|String(2000)|Error details (FAILED runs)|
+|`started_at`|DateTime(tz)|Run start time|
+|`completed_at`|DateTime(tz)|Run completion time|
+|`created_at`|DateTime(tz)|Record creation (mixin)|
+|`updated_at`|DateTime(tz)|Record update (mixin)|
 
 **DeploymentAlias Table**:
 
-| Column | Type | Description |
+|Column|Type|Description|
 |--------|------|-------------|
-| `id` | Integer | Primary key |
-| `alias_name` | String(100) | Unique alias name |
-| `run_id` | Integer | Foreign key to ModelRun |
-| `description` | String(500) | Optional description |
+|`id`|Integer|Primary key|
+|`alias_name`|String(100)|Unique alias name|
+|`run_id`|Integer|Foreign key to ModelRun|
+|`description`|String(500)|Optional description|
 
 **Indexes**:
 - `ix_model_run_run_id` (unique)
@@ -97,7 +97,7 @@ VALID_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
 }
 ```
 
-```
+```text
 PENDING ──→ RUNNING ──→ SUCCESS ──→ ARCHIVED
    │           │           │            ↑
    │           └───→ FAILED ───────────→│
@@ -157,18 +157,18 @@ def _resolve_path(self, artifact_uri: str) -> Path:
 
 **File**: `app/features/registry/schemas.py`
 
-| Schema | Purpose |
+|Schema|Purpose|
 |--------|---------|
-| `RunStatus` | Enum for run lifecycle states |
-| `RuntimeInfo` | Python/library versions snapshot |
-| `AgentContext` | Agent ID and session ID |
-| `RunCreate` | Create run request |
-| `RunUpdate` | Update run (status, metrics, artifacts) |
-| `RunResponse` | Full run details response |
-| `RunListResponse` | Paginated list of runs |
-| `AliasCreate` | Create/update alias request |
-| `AliasResponse` | Alias details with run info |
-| `RunCompareResponse` | Side-by-side run comparison |
+|`RunStatus`|Enum for run lifecycle states|
+|`RuntimeInfo`|Python/library versions snapshot|
+|`AgentContext`|Agent ID and session ID|
+|`RunCreate`|Create run request|
+|`RunUpdate`|Update run (status, metrics, artifacts)|
+|`RunResponse`|Full run details response|
+|`RunListResponse`|Paginated list of runs|
+|`AliasCreate`|Create/update alias request|
+|`AliasResponse`|Alias details with run info|
+|`RunCompareResponse`|Side-by-side run comparison|
 
 **Alias Naming Rules**:
 - Pattern: `^[a-z0-9][a-z0-9\-_]*$`
@@ -219,18 +219,18 @@ RuntimeInfo(
 
 **File**: `app/features/registry/routes.py`
 
-| Endpoint | Method | Description |
+|Endpoint|Method|Description|
 |----------|--------|-------------|
-| `/registry/runs` | POST | Create a new run |
-| `/registry/runs` | GET | List runs with filters |
-| `/registry/runs/{run_id}` | GET | Get run details |
-| `/registry/runs/{run_id}` | PATCH | Update run status/metrics/artifacts |
-| `/registry/runs/{run_id}/verify` | GET | Verify artifact integrity |
-| `/registry/aliases` | POST | Create/update alias |
-| `/registry/aliases` | GET | List all aliases |
-| `/registry/aliases/{alias_name}` | GET | Get alias details |
-| `/registry/aliases/{alias_name}` | DELETE | Delete alias |
-| `/registry/compare/{run_id_a}/{run_id_b}` | GET | Compare two runs |
+|`/registry/runs`|POST|Create a new run|
+|`/registry/runs`|GET|List runs with filters|
+|`/registry/runs/{run_id}`|GET|Get run details|
+|`/registry/runs/{run_id}`|PATCH|Update run status/metrics/artifacts|
+|`/registry/runs/{run_id}/verify`|GET|Verify artifact integrity|
+|`/registry/aliases`|POST|Create/update alias|
+|`/registry/aliases`|GET|List all aliases|
+|`/registry/aliases/{alias_name}`|GET|Get alias details|
+|`/registry/aliases/{alias_name}`|DELETE|Delete alias|
+|`/registry/compare/{run_id_a}/{run_id_b}`|GET|Compare two runs|
 
 **Create Run Request**:
 ```json
@@ -293,12 +293,12 @@ Creates:
 
 **Directory**: `app/features/registry/tests/`
 
-| File | Tests | Coverage |
+|File|Tests|Coverage|
 |------|-------|----------|
-| `test_schemas.py` | 22 | Schema validation, config hash, transitions |
-| `test_storage.py` | 28 | LocalFS save/load, hash verification, path security |
-| `test_service.py` | 35 | Service operations, state machine, duplicates |
-| `test_routes.py` | 42 | All endpoints, error cases, pagination |
+|`test_schemas.py`|22|Schema validation, config hash, transitions|
+|`test_storage.py`|28|LocalFS save/load, hash verification, path security|
+|`test_service.py`|35|Service operations, state machine, duplicates|
+|`test_routes.py`|42|All endpoints, error cases, pagination|
 
 **Total**: 127 tests (103 unit + 24 integration)
 
@@ -333,16 +333,16 @@ registry_artifact_root: str = "./artifacts/registry"
 registry_duplicate_policy: Literal["allow", "deny", "detect"] = "detect"
 ```
 
-| Setting | Default | Description |
+|Setting|Default|Description|
 |---------|---------|-------------|
-| `registry_artifact_root` | `./artifacts/registry` | Root directory for artifacts |
-| `registry_duplicate_policy` | `detect` | How to handle duplicate runs |
+|`registry_artifact_root`|`./artifacts/registry`|Root directory for artifacts|
+|`registry_duplicate_policy`|`detect`|How to handle duplicate runs|
 
 ---
 
 ## Directory Structure
 
-```
+```text
 app/features/registry/
 ├── __init__.py          # Module exports
 ├── models.py            # SQLAlchemy ORM models
@@ -369,7 +369,7 @@ examples/
 
 ## Validation Results
 
-```
+```bash
 $ uv run ruff check app/features/registry/
 All checks passed!
 
@@ -390,23 +390,23 @@ $ uv run pytest app/features/registry/tests/ -v -m integration
 
 ## Logging Events
 
-| Event | Description |
+|Event|Description|
 |-------|-------------|
-| `registry.create_run_request_received` | Run creation request received |
-| `registry.create_run_request_completed` | Run created successfully |
-| `registry.create_run_request_failed` | Run creation failed |
-| `registry.update_run_request_received` | Run update request received |
-| `registry.update_run_request_completed` | Run updated successfully |
-| `registry.update_run_request_failed` | Run update failed |
-| `registry.create_alias_request_received` | Alias creation received |
-| `registry.create_alias_request_completed` | Alias created/updated |
-| `registry.delete_alias_request_received` | Alias deletion received |
-| `registry.delete_alias_request_completed` | Alias deleted |
-| `registry.artifact_saved` | Artifact saved to storage |
-| `registry.artifact_deleted` | Artifact deleted |
-| `registry.checksum_mismatch` | Artifact hash verification failed |
-| `registry.path_traversal_attempt` | Path traversal attack detected |
-| `registry.duplicate_run_detected` | Duplicate run detected (warn/deny) |
+|`registry.create_run_request_received`|Run creation request received|
+|`registry.create_run_request_completed`|Run created successfully|
+|`registry.create_run_request_failed`|Run creation failed|
+|`registry.update_run_request_received`|Run update request received|
+|`registry.update_run_request_completed`|Run updated successfully|
+|`registry.update_run_request_failed`|Run update failed|
+|`registry.create_alias_request_received`|Alias creation received|
+|`registry.create_alias_request_completed`|Alias created/updated|
+|`registry.delete_alias_request_received`|Alias deletion received|
+|`registry.delete_alias_request_completed`|Alias deleted|
+|`registry.artifact_saved`|Artifact saved to storage|
+|`registry.artifact_deleted`|Artifact deleted|
+|`registry.checksum_mismatch`|Artifact hash verification failed|
+|`registry.path_traversal_attempt`|Path traversal attack detected|
+|`registry.duplicate_run_detected`|Duplicate run detected (warn/deny)|
 
 ---
 

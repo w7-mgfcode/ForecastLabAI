@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
@@ -45,7 +45,11 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
             yield session
         finally:
             # Clean up test data (delete in correct order due to FK constraints)
-            await session.execute(delete(DeploymentAlias))
+            # Only delete aliases for test runs (those with model_type.like("test-%"))
+            test_run_ids = select(ModelRun.id).where(ModelRun.model_type.like("test-%"))
+            await session.execute(
+                delete(DeploymentAlias).where(DeploymentAlias.run_id.in_(test_run_ids))
+            )
             await session.execute(delete(ModelRun).where(ModelRun.model_type.like("test-%")))
             await session.commit()
 
@@ -57,7 +61,12 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     """Create test client with database dependency override."""
 
     async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
-        yield db_session
+        try:
+            yield db_session
+            await db_session.commit()
+        except Exception:
+            await db_session.rollback()
+            raise
 
     app.dependency_overrides[get_db] = override_get_db
 

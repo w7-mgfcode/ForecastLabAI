@@ -46,7 +46,11 @@ async def db_session():
     async with async_session_maker() as cleanup_session:
         with suppress(Exception):
             # Clean up test data (delete in correct order due to FK constraints)
-            await cleanup_session.execute(delete(SalesDaily))
+            await cleanup_session.execute(
+                delete(SalesDaily).where(
+                    (SalesDaily.date >= date(2024, 1, 1)) & (SalesDaily.date <= date(2024, 12, 31))
+                )
+            )
             await cleanup_session.execute(delete(Product).where(Product.sku.like("SKU-%")))
             await cleanup_session.execute(delete(Store).where(Store.code.like("S00%")))
             await cleanup_session.execute(

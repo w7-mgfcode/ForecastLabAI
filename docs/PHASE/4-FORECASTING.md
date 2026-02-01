@@ -38,12 +38,12 @@ class BaseForecaster(ABC):
 
 **Model Types Implemented**:
 
-| Model | Class | Description | Key Parameter |
+|Model|Class|Description|Key Parameter|
 |-------|-------|-------------|---------------|
-| `naive` | `NaiveForecaster` | Predicts last observed value for all horizons | None |
-| `seasonal_naive` | `SeasonalNaiveForecaster` | Predicts value from same season in previous cycle | `season_length` (default: 7) |
-| `moving_average` | `MovingAverageForecaster` | Predicts mean of last N observations | `window_size` (default: 7) |
-| `lightgbm` | (Placeholder) | LightGBM regressor (feature-flagged) | `n_estimators`, `max_depth`, `learning_rate` |
+|`naive`|`NaiveForecaster`|Predicts last observed value for all horizons|None|
+|`seasonal_naive`|`SeasonalNaiveForecaster`|Predicts value from same season in previous cycle|`season_length` (default: 7)|
+|`moving_average`|`MovingAverageForecaster`|Predicts mean of last N observations|`window_size` (default: 7)|
+|`lightgbm`|(Placeholder)|LightGBM regressor (feature-flagged)|`n_estimators`, `max_depth`, `learning_rate`|
 
 **FitResult Dataclass**:
 ```python
@@ -62,18 +62,18 @@ class FitResult:
 
 Pydantic v2 schemas with frozen configs for reproducibility:
 
-| Schema | Purpose |
+|Schema|Purpose|
 |--------|---------|
-| `ModelConfigBase` | Base with `schema_version` and `config_hash()` |
-| `NaiveModelConfig` | Config for naive forecaster |
-| `SeasonalNaiveModelConfig` | Config with `season_length` (1-365) |
-| `MovingAverageModelConfig` | Config with `window_size` (1-90) |
-| `LightGBMModelConfig` | Config for LightGBM (n_estimators, max_depth, learning_rate) |
-| `TrainRequest` | API request with store_id, product_id, date range, config |
-| `TrainResponse` | Response with model_path, n_observations, duration_ms |
-| `PredictRequest` | Request with horizon (1-90), model_path |
-| `PredictResponse` | Response with forecast points |
-| `ForecastPoint` | Single forecast with date, value, optional bounds |
+|`ModelConfigBase`|Base with `schema_version` and `config_hash()`|
+|`NaiveModelConfig`|Config for naive forecaster|
+|`SeasonalNaiveModelConfig`|Config with `season_length` (1-365)|
+|`MovingAverageModelConfig`|Config with `window_size` (1-90)|
+|`LightGBMModelConfig`|Config for LightGBM (n_estimators, max_depth, learning_rate)|
+|`TrainRequest`|API request with store_id, product_id, date range, config|
+|`TrainResponse`|Response with model_path, n_observations, duration_ms|
+|`PredictRequest`|Request with horizon (1-90), model_path|
+|`PredictResponse`|Response with forecast points|
+|`ForecastPoint`|Single forecast with date, value, optional bounds|
 
 **Key Features**:
 - Frozen models (`frozen=True`) for immutability
@@ -150,10 +150,10 @@ class ForecastingService:
 
 **File**: `app/features/forecasting/routes.py`
 
-| Endpoint | Method | Description |
+|Endpoint|Method|Description|
 |----------|--------|-------------|
-| `/forecasting/train` | POST | Train a forecasting model |
-| `/forecasting/predict` | POST | Generate forecasts using trained model |
+|`/forecasting/train`|POST|Train a forecasting model|
+|`/forecasting/predict`|POST|Generate forecasts using trained model|
 
 **Train Request Example**:
 ```json
@@ -204,12 +204,12 @@ class ForecastingService:
 
 **Directory**: `app/features/forecasting/tests/`
 
-| File | Tests | Coverage |
+|File|Tests|Coverage|
 |------|-------|----------|
-| `test_schemas.py` | 20 | Schema validation, config hash, frozen models |
-| `test_models.py` | 24 | Model fit/predict, edge cases, params |
-| `test_persistence.py` | 15 | Save/load bundles, version compatibility |
-| `test_service.py` | 20 | Service integration, validation, logging |
+|`test_schemas.py`|20|Schema validation, config hash, frozen models|
+|`test_models.py`|24|Model fit/predict, edge cases, params|
+|`test_persistence.py`|15|Save/load bundles, version compatibility|
+|`test_service.py`|20|Service integration, validation, logging|
 
 **Total**: 79 tests
 
@@ -223,11 +223,11 @@ class ForecastingService:
 
 **Directory**: `examples/models/`
 
-| File | Description |
+|File|Description|
 |------|-------------|
-| `baseline_naive.py` | Naive forecaster demo |
-| `baseline_seasonal.py` | Seasonal naive with weekly seasonality |
-| `baseline_mavg.py` | Moving average with configurable window |
+|`baseline_naive.py`|Naive forecaster demo|
+|`baseline_seasonal.py`|Seasonal naive with weekly seasonality|
+|`baseline_mavg.py`|Moving average with configurable window|
 
 ---
 
@@ -246,19 +246,19 @@ forecast_model_artifacts_dir: str = "./artifacts/models"
 forecast_enable_lightgbm: bool = False
 ```
 
-| Setting | Default | Description |
+|Setting|Default|Description|
 |---------|---------|-------------|
-| `forecast_random_seed` | 42 | Random seed for reproducibility |
-| `forecast_default_horizon` | 14 | Default forecast horizon in days |
-| `forecast_max_horizon` | 90 | Maximum allowed horizon |
-| `forecast_model_artifacts_dir` | `./artifacts/models` | Directory for saved models |
-| `forecast_enable_lightgbm` | False | Feature flag for LightGBM models |
+|`forecast_random_seed`|42|Random seed for reproducibility|
+|`forecast_default_horizon`|14|Default forecast horizon in days|
+|`forecast_max_horizon`|90|Maximum allowed horizon|
+|`forecast_model_artifacts_dir`|`./artifacts/models`|Directory for saved models|
+|`forecast_enable_lightgbm`|False|Feature flag for LightGBM models|
 
 ---
 
 ## Directory Structure
 
-```
+```text
 app/features/forecasting/
 ├── __init__.py          # Module exports
 ├── models.py            # BaseForecaster + implementations
@@ -284,7 +284,7 @@ examples/models/
 
 ## Validation Results
 
-```
+```bash
 $ uv run ruff check app/features/forecasting/
 All checks passed!
 
@@ -302,16 +302,16 @@ $ uv run pytest app/features/forecasting/tests/ -v
 
 ## Logging Events
 
-| Event | Description |
+|Event|Description|
 |-------|-------------|
-| `forecasting.train_request_received` | Train request received |
-| `forecasting.train_request_completed` | Training completed successfully |
-| `forecasting.train_request_failed` | Training failed |
-| `forecasting.predict_request_received` | Prediction request received |
-| `forecasting.predict_request_completed` | Prediction completed |
-| `forecasting.predict_request_failed` | Prediction failed |
-| `forecasting.model_saved` | Model bundle saved to disk |
-| `forecasting.model_loaded` | Model bundle loaded from disk |
+|`forecasting.train_request_received`|Train request received|
+|`forecasting.train_request_completed`|Training completed successfully|
+|`forecasting.train_request_failed`|Training failed|
+|`forecasting.predict_request_received`|Prediction request received|
+|`forecasting.predict_request_completed`|Prediction completed|
+|`forecasting.predict_request_failed`|Prediction failed|
+|`forecasting.model_saved`|Model bundle saved to disk|
+|`forecasting.model_loaded`|Model bundle loaded from disk|
 
 ---
 

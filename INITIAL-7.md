@@ -32,8 +32,8 @@
 ## DOCUMENTATION:
 - Postgres JSONB patterns
 - Artifact integrity (hashing) best practices
-- https://scalegrid.io/blog/using-jsonb-in-postgresql-how-to-effectively-store-index-json-data-in-postgresql/
-- https://www.fortra.com/blog/supply-chain-vulnerability
+- [Using JSONB in PostgreSQL](https://scalegrid.io/blog/using-jsonb-in-postgresql-how-to-effectively-store-index-json-data-in-postgresql/)
+- [Supply Chain Vulnerability](https://www.fortra.com/blog/supply-chain-vulnerability)
 
 ## OTHER CONSIDERATIONS:
 - No hardcoded artifact paths: derived from `ARTIFACT_ROOT` + run_id.

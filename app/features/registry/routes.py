@@ -349,6 +349,12 @@ async def verify_artifact(
             detail="Run has no associated artifact",
         )
 
+    if run.artifact_hash is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Run has no stored artifact hash",
+        )
+
     storage = LocalFSProvider()
 
     try:
