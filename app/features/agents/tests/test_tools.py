@@ -27,9 +27,7 @@ class TestRegistryTools:
         """Should call registry service list_runs."""
         mock_db = AsyncMock()
 
-        with patch(
-            "app.features.agents.tools.registry_tools.RegistryService"
-        ) as MockService:
+        with patch("app.features.agents.tools.registry_tools.RegistryService") as MockService:
             mock_service = MagicMock()
             mock_result = MagicMock()
             mock_result.model_dump.return_value = {
@@ -56,9 +54,7 @@ class TestRegistryTools:
         """Should cap page_size at 100."""
         mock_db = AsyncMock()
 
-        with patch(
-            "app.features.agents.tools.registry_tools.RegistryService"
-        ) as MockService:
+        with patch("app.features.agents.tools.registry_tools.RegistryService") as MockService:
             mock_service = MagicMock()
             mock_result = MagicMock()
             mock_result.model_dump.return_value = {"runs": [], "page_size": 100}
@@ -79,9 +75,7 @@ class TestRegistryTools:
         """Should return run when found."""
         mock_db = AsyncMock()
 
-        with patch(
-            "app.features.agents.tools.registry_tools.RegistryService"
-        ) as MockService:
+        with patch("app.features.agents.tools.registry_tools.RegistryService") as MockService:
             mock_service = MagicMock()
             mock_result = MagicMock()
             mock_result.model_dump.return_value = {
@@ -101,9 +95,7 @@ class TestRegistryTools:
         """Should return None when not found."""
         mock_db = AsyncMock()
 
-        with patch(
-            "app.features.agents.tools.registry_tools.RegistryService"
-        ) as MockService:
+        with patch("app.features.agents.tools.registry_tools.RegistryService") as MockService:
             mock_service = MagicMock()
             mock_service.get_run = AsyncMock(return_value=None)
             MockService.return_value = mock_service
@@ -117,9 +109,7 @@ class TestRegistryTools:
         """Should compare two runs."""
         mock_db = AsyncMock()
 
-        with patch(
-            "app.features.agents.tools.registry_tools.RegistryService"
-        ) as MockService:
+        with patch("app.features.agents.tools.registry_tools.RegistryService") as MockService:
             mock_service = MagicMock()
             mock_result = MagicMock()
             mock_result.model_dump.return_value = {
@@ -145,9 +135,7 @@ class TestRegistryTools:
         """Should create alias."""
         mock_db = AsyncMock()
 
-        with patch(
-            "app.features.agents.tools.registry_tools.RegistryService"
-        ) as MockService:
+        with patch("app.features.agents.tools.registry_tools.RegistryService") as MockService:
             mock_service = MagicMock()
             mock_result = MagicMock()
             mock_result.model_dump.return_value = {
@@ -170,9 +158,7 @@ class TestRegistryTools:
         """Should archive run."""
         mock_db = AsyncMock()
 
-        with patch(
-            "app.features.agents.tools.registry_tools.RegistryService"
-        ) as MockService:
+        with patch("app.features.agents.tools.registry_tools.RegistryService") as MockService:
             mock_service = MagicMock()
             mock_result = MagicMock()
             mock_result.model_dump.return_value = {

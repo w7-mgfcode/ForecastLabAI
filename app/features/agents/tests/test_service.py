@@ -29,9 +29,7 @@ class TestAgentServiceInit:
         """Should return experiment agent."""
         service = AgentService()
         # This will fail without API key, but we're testing the path validation
-        with patch(
-            "app.features.agents.agents.experiment.get_experiment_agent"
-        ) as mock_get:
+        with patch("app.features.agents.agents.experiment.get_experiment_agent") as mock_get:
             mock_agent = MagicMock()
             mock_get.return_value = mock_agent
 
@@ -42,9 +40,7 @@ class TestAgentServiceInit:
     def test_get_agent_rag_assistant(self) -> None:
         """Should return RAG assistant agent."""
         service = AgentService()
-        with patch(
-            "app.features.agents.agents.rag_assistant.get_rag_assistant_agent"
-        ) as mock_get:
+        with patch("app.features.agents.agents.rag_assistant.get_rag_assistant_agent") as mock_get:
             mock_agent = MagicMock()
             mock_get.return_value = mock_agent
 
@@ -160,9 +156,7 @@ class TestAgentServiceGetSession:
     """Tests for session retrieval."""
 
     @pytest.mark.asyncio
-    async def test_get_session_found(
-        self, sample_active_session: AgentSession
-    ) -> None:
+    async def test_get_session_found(self, sample_active_session: AgentSession) -> None:
         """Should return session when found."""
         service = AgentService()
         mock_db = AsyncMock()
@@ -220,9 +214,7 @@ class TestAgentServiceChat:
             )
 
     @pytest.mark.asyncio
-    async def test_chat_session_expired_raises(
-        self, sample_expired_session: AgentSession
-    ) -> None:
+    async def test_chat_session_expired_raises(self, sample_expired_session: AgentSession) -> None:
         """Should raise SessionExpiredError for expired session."""
         service = AgentService()
         mock_db = AsyncMock()
@@ -416,9 +408,7 @@ class TestAgentServiceCloseSession:
     """Tests for session closing."""
 
     @pytest.mark.asyncio
-    async def test_close_session_found(
-        self, sample_active_session: AgentSession
-    ) -> None:
+    async def test_close_session_found(self, sample_active_session: AgentSession) -> None:
         """Should close session and return True."""
         service = AgentService()
         mock_db = AsyncMock()

@@ -70,9 +70,7 @@ class AgentSession(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     session_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     agent_type: Mapped[str] = mapped_column(String(50), index=True)
-    status: Mapped[str] = mapped_column(
-        String(30), default=SessionStatus.ACTIVE.value, index=True
-    )
+    status: Mapped[str] = mapped_column(String(30), default=SessionStatus.ACTIVE.value, index=True)
 
     # Conversation state
     message_history: Mapped[list[dict[str, Any]]] = mapped_column(

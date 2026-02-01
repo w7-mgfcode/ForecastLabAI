@@ -147,12 +147,14 @@ async def _send_error(
     """
     from datetime import UTC, datetime
 
-    await websocket.send_json({
-        "event_type": "error",
-        "data": {
-            "error": error,
-            "error_type": error_type,
-            "recoverable": recoverable,
-        },
-        "timestamp": datetime.now(UTC).isoformat(),
-    })
+    await websocket.send_json(
+        {
+            "event_type": "error",
+            "data": {
+                "error": error,
+                "error_type": error_type,
+                "recoverable": recoverable,
+            },
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+    )

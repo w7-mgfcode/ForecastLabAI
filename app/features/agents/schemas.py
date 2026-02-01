@@ -18,6 +18,7 @@ def _utc_now() -> datetime:
     """Get current UTC datetime."""
     return datetime.now(UTC)
 
+
 # =============================================================================
 # Session Management Schemas
 # =============================================================================
@@ -97,9 +98,7 @@ class ChatMessage(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    role: Literal["user", "assistant", "tool"] = Field(
-        ..., description="Message role"
-    )
+    role: Literal["user", "assistant", "tool"] = Field(..., description="Message role")
     content: str = Field(..., description="Message content")
     timestamp: datetime | None = Field(None, description="Message timestamp")
     tool_call_id: str | None = Field(None, description="Tool call identifier")
@@ -372,10 +371,6 @@ class RAGAnswer(BaseModel):
     """
 
     answer: str = Field(..., description="Evidence-grounded answer")
-    confidence: Literal["low", "medium", "high"] = Field(
-        ..., description="Confidence level"
-    )
+    confidence: Literal["low", "medium", "high"] = Field(..., description="Confidence level")
     sources: list[dict[str, Any]] = Field(default_factory=list, description="Source citations")
-    no_evidence: bool = Field(
-        default=False, description="True if insufficient evidence"
-    )
+    no_evidence: bool = Field(default=False, description="True if insufficient evidence")

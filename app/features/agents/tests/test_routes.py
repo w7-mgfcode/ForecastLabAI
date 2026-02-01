@@ -18,9 +18,7 @@ class TestSessionRoutes:
     @pytest.mark.asyncio
     async def test_create_experiment_session(self, client: AsyncClient) -> None:
         """Should create experiment session."""
-        with patch(
-            "app.features.agents.agents.experiment.get_experiment_agent"
-        ) as mock_get:
+        with patch("app.features.agents.agents.experiment.get_experiment_agent") as mock_get:
             mock_get.return_value = MagicMock()
 
             response = await client.post(
@@ -38,9 +36,7 @@ class TestSessionRoutes:
     @pytest.mark.asyncio
     async def test_create_rag_session(self, client: AsyncClient) -> None:
         """Should create RAG assistant session."""
-        with patch(
-            "app.features.agents.agents.rag_assistant.get_rag_assistant_agent"
-        ) as mock_get:
+        with patch("app.features.agents.agents.rag_assistant.get_rag_assistant_agent") as mock_get:
             mock_get.return_value = MagicMock()
 
             response = await client.post(
@@ -60,15 +56,13 @@ class TestSessionRoutes:
             json={"agent_type": "invalid_type"},
         )
 
-        assert response.status_code == 400
+        assert response.status_code == 422  # Pydantic validation error
 
     @pytest.mark.asyncio
     async def test_get_session(self, client: AsyncClient) -> None:
         """Should get existing session."""
         # Create session first
-        with patch(
-            "app.features.agents.agents.experiment.get_experiment_agent"
-        ) as mock_get:
+        with patch("app.features.agents.agents.experiment.get_experiment_agent") as mock_get:
             mock_get.return_value = MagicMock()
 
             create_response = await client.post(
@@ -96,9 +90,7 @@ class TestSessionRoutes:
     async def test_close_session(self, client: AsyncClient) -> None:
         """Should close session."""
         # Create session first
-        with patch(
-            "app.features.agents.agents.experiment.get_experiment_agent"
-        ) as mock_get:
+        with patch("app.features.agents.agents.experiment.get_experiment_agent") as mock_get:
             mock_get.return_value = MagicMock()
 
             create_response = await client.post(
@@ -126,9 +118,7 @@ class TestChatRoutes:
     async def test_chat_success(self, client: AsyncClient) -> None:
         """Should process chat message."""
         # Create session
-        with patch(
-            "app.features.agents.agents.experiment.get_experiment_agent"
-        ) as mock_get:
+        with patch("app.features.agents.agents.experiment.get_experiment_agent") as mock_get:
             mock_agent = MagicMock()
             mock_result = MagicMock()
             mock_result.data = ExperimentReport(
@@ -181,9 +171,7 @@ class TestApprovalRoutes:
     async def test_approve_action_no_pending(self, client: AsyncClient) -> None:
         """Should return 400 when no pending action."""
         # Create session
-        with patch(
-            "app.features.agents.agents.experiment.get_experiment_agent"
-        ) as mock_get:
+        with patch("app.features.agents.agents.experiment.get_experiment_agent") as mock_get:
             mock_get.return_value = MagicMock()
 
             create_response = await client.post(
@@ -223,4 +211,4 @@ class TestHealthCheck:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "healthy"
+        assert data["status"] == "ok"

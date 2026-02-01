@@ -119,13 +119,15 @@ def format_citations(
         content = chunk.get("content", "")
         snippet = content[:200] + "..." if len(content) > 200 else content
 
-        citations.append({
-            "source_type": chunk.get("source_type", "unknown"),
-            "source_path": chunk.get("source_path", "unknown"),
-            "chunk_id": chunk.get("chunk_id", "unknown"),
-            "relevance": f"{chunk.get('relevance_score', 0):.2f}",
-            "snippet": snippet,
-        })
+        citations.append(
+            {
+                "source_type": chunk.get("source_type", "unknown"),
+                "source_path": chunk.get("source_path", "unknown"),
+                "chunk_id": chunk.get("chunk_id", "unknown"),
+                "relevance": f"{chunk.get('relevance_score', 0):.2f}",
+                "snippet": snippet,
+            }
+        )
 
     return citations
 
@@ -156,9 +158,7 @@ def has_sufficient_evidence(
 
     # Check average relevance
     if results:
-        avg_relevance = sum(
-            r.get("relevance_score", 0) for r in results
-        ) / len(results)
+        avg_relevance = sum(r.get("relevance_score", 0) for r in results) / len(results)
         if avg_relevance < min_relevance:
             return False
 
