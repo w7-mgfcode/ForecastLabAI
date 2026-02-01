@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.2.0](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.1.8...v0.2.0) (2026-02-01)
+
+
+### Features
+
+* **registry:** implement model registry for run tracking and deployments ([#36](https://github.com/w7-mgfcode/ForecastLabAI/issues/36)) ([902f331](https://github.com/w7-mgfcode/ForecastLabAI/commit/902f331))
+  - ORM models for ModelRun (JSONB columns) and DeploymentAlias with state machine validation
+  - LocalFSProvider for artifact storage with SHA-256 integrity verification
+  - 10 API endpoints for runs CRUD, aliases management, artifact verification, and run comparison
+  - Comprehensive test suite (103 unit + 24 integration tests)
+
+
+### Bug Fixes
+
+* add date range filter to SalesDaily cleanup in ingest tests ([008aaac](https://github.com/w7-mgfcode/ForecastLabAI/commit/008aaac))
+* enforce artifact_hash presence before verification in registry routes ([008aaac](https://github.com/w7-mgfcode/ForecastLabAI/commit/008aaac))
+* compute SHA256 from saved file instead of source in storage ([008aaac](https://github.com/w7-mgfcode/ForecastLabAI/commit/008aaac))
+* fix override_get_db to mirror production transaction semantics ([008aaac](https://github.com/w7-mgfcode/ForecastLabAI/commit/008aaac))
+* update database port to 5433 in config and .env.example ([008aaac](https://github.com/w7-mgfcode/ForecastLabAI/commit/008aaac))
+
+
+### Documentation
+
+* add PHASE documentation for phases 4 (Forecasting), 5 (Backtesting), and 6 (Model Registry) ([7d2722f](https://github.com/w7-mgfcode/ForecastLabAI/commit/7d2722f))
+* fix markdownlint MD040/MD060 issues in docs ([008aaac](https://github.com/w7-mgfcode/ForecastLabAI/commit/008aaac))
+
 ## [0.1.8](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.1.7...v0.1.8) (2026-02-01)
 
 
