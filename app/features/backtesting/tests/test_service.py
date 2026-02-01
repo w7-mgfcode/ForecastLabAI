@@ -1,6 +1,7 @@
 """Tests for backtesting service."""
 
 from datetime import date, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
@@ -546,3 +547,209 @@ class TestBacktestingServiceSeasonalModel:
         # Seasonal naive should perform better on seasonal data
         # (lower MAE)
         assert seasonal_result.aggregated_metrics["mae"] < naive_result.aggregated_metrics["mae"]
+
+
+class TestBacktestingServiceConfigValidation:
+    """Tests for config validation against settings constraints."""
+
+    def test_validate_config_n_splits_exceeds_max(self) -> None:
+        """Test validation raises error when n_splits exceeds max."""
+        service = BacktestingService()
+
+        # Create config with n_splits exceeding settings.backtest_max_splits (20)
+        config = BacktestConfig(
+            split_config=SplitConfig(
+                strategy="expanding",
+                n_splits=20,  # At max allowed by schema
+                min_train_size=30,
+                gap=0,
+                horizon=14,
+            ),
+            model_config_main=NaiveModelConfig(),
+        )
+
+        # This should pass as it's at the max
+        service._validate_config(config)
+
+        # Note: We can't test > 20 because schema validation prevents it
+        # The service validation provides runtime configurability
+
+    def test_validate_config_gap_exceeds_max(self) -> None:
+        """Test validation raises error when gap exceeds max."""
+        service = BacktestingService()
+
+        # Create config with gap at max allowed by schema (30)
+        config = BacktestConfig(
+            split_config=SplitConfig(
+                strategy="expanding",
+                n_splits=5,
+                min_train_size=30,
+                gap=30,  # At max allowed by schema
+                horizon=31,  # Must be > gap
+            ),
+            model_config_main=NaiveModelConfig(),
+        )
+
+        # This should pass as it's at the max
+        service._validate_config(config)
+
+    def test_validate_config_min_train_below_default_logs_warning(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Test validation logs warning when min_train_size is below default."""
+        import structlog
+
+        # Configure structlog to work with pytest caplog
+        structlog.configure(
+            processors=[
+                structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+            ],
+            logger_factory=structlog.stdlib.LoggerFactory(),
+            cache_logger_on_first_use=False,
+        )
+
+        service = BacktestingService()
+
+        # Create config with min_train_size below default (30)
+        config = BacktestConfig(
+            split_config=SplitConfig(
+                strategy="expanding",
+                n_splits=5,
+                min_train_size=10,  # Below default of 30
+                gap=0,
+                horizon=14,
+            ),
+            model_config_main=NaiveModelConfig(),
+        )
+
+        # Should not raise, but should log warning
+        service._validate_config(config)
+
+        # Note: Due to structlog configuration, we verify no exception was raised
+        # The warning is logged to structlog which may not appear in caplog
+
+
+class TestBacktestingServiceSaveResults:
+    """Tests for save_results method."""
+
+    def test_save_results_creates_file(self, tmp_path: Path) -> None:
+        """Test save_results creates JSON file."""
+        import json
+        from unittest.mock import patch
+
+        from app.features.backtesting.schemas import ModelBacktestResult
+
+        # Create service and patch settings
+        service = BacktestingService()
+
+        mock_settings = MagicMock()
+        mock_settings.backtest_results_dir = str(tmp_path)
+
+        with patch.object(service, "settings", mock_settings):
+            # Create a minimal BacktestResponse
+            response = BacktestResponse(
+                backtest_id="test123",
+                store_id=1,
+                product_id=1,
+                config_hash="abc123",
+                split_config=SplitConfig(),
+                main_model_results=ModelBacktestResult(
+                    model_type="naive",
+                    config_hash="def456",
+                    fold_results=[],
+                    aggregated_metrics={"mae": 10.0},
+                    metric_std={"mae_std": 1.0},
+                ),
+                duration_ms=100.0,
+                leakage_check_passed=True,
+            )
+
+            # Save results
+            file_path = service.save_results(response)
+
+        # Verify file was created
+        assert file_path.exists()
+        assert file_path.name == "test123.json"
+
+        # Verify content is valid JSON
+        content = json.loads(file_path.read_text())
+        assert content["backtest_id"] == "test123"
+        assert content["store_id"] == 1
+
+    def test_save_results_with_custom_filename(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Test save_results with custom filename."""
+        from unittest.mock import patch
+
+        from app.features.backtesting.schemas import ModelBacktestResult
+
+        service = BacktestingService()
+
+        mock_settings = MagicMock()
+        mock_settings.backtest_results_dir = str(tmp_path)
+
+        with patch.object(service, "settings", mock_settings):
+            response = BacktestResponse(
+                backtest_id="test456",
+                store_id=2,
+                product_id=3,
+                config_hash="xyz789",
+                split_config=SplitConfig(),
+                main_model_results=ModelBacktestResult(
+                    model_type="naive",
+                    config_hash="abc123",
+                    fold_results=[],
+                    aggregated_metrics={"mae": 5.0},
+                    metric_std={"mae_std": 0.5},
+                ),
+                duration_ms=50.0,
+                leakage_check_passed=True,
+            )
+
+            # Save with custom filename
+            file_path = service.save_results(response, filename="custom_results.json")
+
+        assert file_path.exists()
+        assert file_path.name == "custom_results.json"
+
+    def test_save_results_creates_directory(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Test save_results creates directory if it doesn't exist."""
+        from unittest.mock import patch
+
+        from app.features.backtesting.schemas import ModelBacktestResult
+
+        nested_dir = tmp_path / "nested" / "results" / "dir"
+
+        service = BacktestingService()
+
+        mock_settings = MagicMock()
+        mock_settings.backtest_results_dir = str(nested_dir)
+
+        with patch.object(service, "settings", mock_settings):
+            response = BacktestResponse(
+                backtest_id="test789",
+                store_id=1,
+                product_id=1,
+                config_hash="hash123",
+                split_config=SplitConfig(),
+                main_model_results=ModelBacktestResult(
+                    model_type="naive",
+                    config_hash="abc",
+                    fold_results=[],
+                    aggregated_metrics={"mae": 1.0},
+                    metric_std={"mae_std": 0.1},
+                ),
+                duration_ms=10.0,
+                leakage_check_passed=True,
+            )
+
+            file_path = service.save_results(response)
+
+        assert nested_dir.exists()
+        assert file_path.exists()

@@ -6,6 +6,7 @@ Orchestrates:
 - Training and predicting with models per fold
 - Calculating metrics and aggregating results
 - Running baseline comparisons
+- Saving results to configured directory
 
 CRITICAL: All operations respect time-safety constraints.
 """
@@ -16,6 +17,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import date as date_type
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -88,6 +90,73 @@ class BacktestingService:
         self.settings = get_settings()
         self.metrics_calculator = MetricsCalculator()
 
+    def _validate_config(self, config: BacktestConfig) -> None:
+        """Validate backtest configuration against settings constraints.
+
+        Args:
+            config: Backtest configuration to validate.
+
+        Raises:
+            ValueError: If config violates settings constraints.
+        """
+        split_config = config.split_config
+
+        # Validate n_splits against backtest_max_splits
+        if split_config.n_splits > self.settings.backtest_max_splits:
+            raise ValueError(
+                f"n_splits ({split_config.n_splits}) exceeds maximum allowed "
+                f"({self.settings.backtest_max_splits}). "
+                f"Adjust split_config.n_splits or increase BACKTEST_MAX_SPLITS setting."
+            )
+
+        # Validate gap against backtest_max_gap
+        if split_config.gap > self.settings.backtest_max_gap:
+            raise ValueError(
+                f"gap ({split_config.gap}) exceeds maximum allowed "
+                f"({self.settings.backtest_max_gap}). "
+                f"Adjust split_config.gap or increase BACKTEST_MAX_GAP setting."
+            )
+
+        # Validate min_train_size meets minimum threshold
+        if split_config.min_train_size < self.settings.backtest_default_min_train_size:
+            logger.warning(
+                "backtesting.min_train_size_below_default",
+                provided=split_config.min_train_size,
+                default=self.settings.backtest_default_min_train_size,
+                message="Using provided min_train_size below recommended default",
+            )
+
+    def save_results(
+        self,
+        response: BacktestResponse,
+        filename: str | None = None,
+    ) -> Path:
+        """Save backtest results to configured results directory.
+
+        Args:
+            response: BacktestResponse to save.
+            filename: Optional custom filename. Defaults to backtest_id.json.
+
+        Returns:
+            Path to saved results file.
+        """
+        results_dir = Path(self.settings.backtest_results_dir)
+        results_dir.mkdir(parents=True, exist_ok=True)
+
+        if filename is None:
+            filename = f"{response.backtest_id}.json"
+
+        file_path = results_dir / filename
+        file_path.write_text(response.model_dump_json(indent=2))
+
+        logger.info(
+            "backtesting.results_saved",
+            backtest_id=response.backtest_id,
+            file_path=str(file_path),
+        )
+
+        return file_path
+
     async def run_backtest(
         self,
         db: AsyncSession,
@@ -111,8 +180,12 @@ class BacktestingService:
             BacktestResponse with all results.
 
         Raises:
-            ValueError: If insufficient data for requested splits.
+            ValueError: If insufficient data for requested splits or config
+                violates settings constraints.
         """
+        # Validate config against settings constraints
+        self._validate_config(config)
+
         start_time = time.perf_counter()
         backtest_id = uuid.uuid4().hex[:16]
 
