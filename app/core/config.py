@@ -90,6 +90,30 @@ class Settings(BaseSettings):
     rag_hnsw_m: int = 16
     rag_hnsw_ef_construction: int = 64
 
+    # Agent LLM Configuration
+    agent_default_model: str = "anthropic:claude-sonnet-4-5"
+    agent_fallback_model: str = "openai:gpt-4o"
+    agent_temperature: float = 0.1
+    agent_max_tokens: int = 4096
+    anthropic_api_key: str = ""
+
+    # Agent Execution Configuration
+    agent_max_tool_calls: int = 10
+    agent_timeout_seconds: int = 120
+    agent_retry_attempts: int = 3
+    agent_retry_delay_seconds: float = 1.0
+
+    # Human-in-the-Loop Configuration
+    agent_require_approval: list[str] = ["create_alias", "archive_run"]
+    agent_approval_timeout_minutes: int = 60
+
+    # Session Configuration
+    agent_session_ttl_minutes: int = 120
+    agent_max_sessions_per_user: int = 5
+
+    # Streaming Configuration
+    agent_enable_streaming: bool = True
+
     @property
     def is_development(self) -> bool:
         """Check if running in development mode."""
