@@ -1,17 +1,19 @@
 """WebSocket handler for streaming agent responses.
 
 Provides real-time streaming of agent responses for responsive UX.
+
+CRITICAL: Uses session-per-message pattern to avoid stale data and memory growth.
+Each incoming message gets a fresh database session that is closed after processing.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncGenerator
 
 import structlog
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.core.database import get_session_maker
 from app.features.agents.service import (
     AgentService,
     SessionExpiredError,
@@ -23,23 +25,9 @@ logger = structlog.get_logger()
 router = APIRouter(tags=["agents-websocket"])
 
 
-async def get_db_for_websocket() -> AsyncGenerator[AsyncSession, None]:
-    """Get database session for WebSocket connections.
-
-    Note: WebSockets need special handling for database sessions
-    since they're long-lived connections.
-    """
-    from app.core.database import get_session_maker
-
-    session_maker = get_session_maker()
-    async with session_maker() as session:
-        yield session
-
-
 @router.websocket("/agents/stream")
 async def websocket_stream(
     websocket: WebSocket,
-    db: AsyncSession = Depends(get_db_for_websocket),  # noqa: B008
 ) -> None:
     """WebSocket endpoint for streaming agent responses.
 
@@ -50,10 +38,14 @@ async def websocket_stream(
     4. On error: {"event_type": "error", "data": {"error": "...", "recoverable": bool}}
 
     The connection stays open for multiple messages within the same session.
+
+    CRITICAL: Uses session-per-message pattern - each message gets a fresh database
+    session to avoid stale data and memory growth from long-lived connections.
     """
     await websocket.accept()
 
     service = AgentService()
+    session_maker = get_session_maker()
     current_session_id: str | None = None
 
     logger.info("agents.websocket_connected")
@@ -87,42 +79,48 @@ async def websocket_stream(
                 message_length=len(message),
             )
 
-            # Stream response
-            try:
-                async for event in service.stream_chat(
-                    db=db,
-                    session_id=session_id,
-                    message=message,
-                ):
-                    await websocket.send_json(event.model_dump(mode="json"))
+            # Stream response with fresh database session per message
+            # This prevents stale data and memory growth from accumulated ORM objects
+            async with session_maker() as db:
+                try:
+                    async for event in service.stream_chat(
+                        db=db,
+                        session_id=session_id,
+                        message=message,
+                    ):
+                        await websocket.send_json(event.model_dump(mode="json"))
 
-            except SessionNotFoundError as e:
-                await _send_error(
-                    websocket,
-                    str(e),
-                    error_type="session_not_found",
-                    recoverable=False,
-                )
-            except SessionExpiredError as e:
-                await _send_error(
-                    websocket,
-                    str(e),
-                    error_type="session_expired",
-                    recoverable=False,
-                )
-            except Exception as e:
-                logger.exception(
-                    "agents.websocket_stream_error",
-                    session_id=session_id,
-                    error=str(e),
-                    error_type=type(e).__name__,
-                )
-                await _send_error(
-                    websocket,
-                    f"Stream error: {e}",
-                    error_type=type(e).__name__,
-                    recoverable=True,
-                )
+                    # Commit any changes made during streaming
+                    await db.commit()
+
+                except SessionNotFoundError as e:
+                    await _send_error(
+                        websocket,
+                        str(e),
+                        error_type="session_not_found",
+                        recoverable=False,
+                    )
+                except SessionExpiredError as e:
+                    await _send_error(
+                        websocket,
+                        str(e),
+                        error_type="session_expired",
+                        recoverable=False,
+                    )
+                except Exception as e:
+                    logger.exception(
+                        "agents.websocket_stream_error",
+                        session_id=session_id,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                    )
+                    await db.rollback()
+                    await _send_error(
+                        websocket,
+                        f"Stream error: {e}",
+                        error_type=type(e).__name__,
+                        recoverable=True,
+                    )
 
     except WebSocketDisconnect:
         logger.info(

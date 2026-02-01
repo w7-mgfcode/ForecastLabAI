@@ -466,15 +466,34 @@ class AgentService:
         session.last_activity = datetime.now(UTC)
 
         result: Any = None
-        status: Literal["executed", "rejected", "expired"] = (
-            "rejected" if not approved else "executed"
-        )
+        status: Literal["executed", "rejected", "expired"] = "rejected"
 
         if approved:
             # Execute the pending action
-            # Note: In production, we would re-run the tool here
-            result = {"message": "Action approved and executed"}
-            status = "executed"
+            try:
+                result = await self._execute_pending_action(
+                    db=db,
+                    action_type=pending.get("action_type", "unknown"),
+                    arguments=pending.get("arguments", {}),
+                )
+                status = "executed"
+                logger.info(
+                    "agents.action_executed",
+                    session_id=session_id,
+                    action_id=action_id,
+                    action_type=pending.get("action_type"),
+                )
+            except Exception as e:
+                logger.exception(
+                    "agents.action_execution_failed",
+                    session_id=session_id,
+                    action_id=action_id,
+                    action_type=pending.get("action_type"),
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+                result = {"error": str(e), "error_type": type(e).__name__}
+                status = "rejected"  # Mark as rejected on failure
 
         await db.flush()
 
@@ -606,3 +625,45 @@ class AgentService:
             created_at=datetime.fromisoformat(pending.get("created_at", "")),
             expires_at=datetime.fromisoformat(pending.get("expires_at", "")),
         )
+
+    async def _execute_pending_action(
+        self,
+        db: AsyncSession,
+        action_type: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Execute a pending action that was approved.
+
+        Args:
+            db: Database session.
+            action_type: Type of action to execute (e.g., 'create_alias', 'archive_run').
+            arguments: Arguments for the action.
+
+        Returns:
+            Result dictionary from the executed action.
+
+        Raises:
+            ValueError: If action_type is not recognized.
+        """
+        from app.features.agents.tools.registry_tools import archive_run, create_alias
+
+        if action_type == "create_alias":
+            alias_name = arguments.get("alias_name", "")
+            run_id = arguments.get("run_id", "")
+            description = arguments.get("description")
+            return await create_alias(
+                db=db,
+                alias_name=alias_name,
+                run_id=run_id,
+                description=description,
+            )
+        elif action_type == "archive_run":
+            run_id = arguments.get("run_id", "")
+            result = await archive_run(db=db, run_id=run_id)
+            if result is None:
+                raise ValueError(f"Run not found: {run_id}")
+            return result
+        else:
+            raise ValueError(
+                f"Unknown action type: {action_type}. Supported actions: create_alias, archive_run"
+            )

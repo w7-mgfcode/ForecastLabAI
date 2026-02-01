@@ -131,7 +131,7 @@ class Settings(BaseSettings):
             Validated model identifier.
 
         Raises:
-            ValueError: If format is invalid.
+            ValueError: If format is invalid or model name is missing.
         """
         if ":" not in v:
             raise ValueError(
@@ -139,7 +139,17 @@ class Settings(BaseSettings):
                 "Expected format: 'provider:model-name' "
                 "(e.g., 'anthropic:claude-sonnet-4-5', 'google-gla:gemini-3-flash')"
             )
-        provider, _ = v.split(":", 1)
+        provider, model_name = v.split(":", 1)
+
+        # Validate model name is non-empty and not just whitespace
+        if not model_name or not model_name.strip():
+            raise ValueError(
+                f"Invalid model identifier '{v}'. "
+                "Model name after ':' cannot be empty or blank. "
+                "Expected format: 'provider:model-name' "
+                "(e.g., 'anthropic:claude-sonnet-4-5', 'google-gla:gemini-3-flash')"
+            )
+
         valid_providers = ["anthropic", "openai", "google-gla", "google-vertex"]
         if provider not in valid_providers:
             raise ValueError(f"Unknown provider '{provider}'. Valid providers: {valid_providers}")

@@ -72,8 +72,13 @@ async def list_runs(
 
     service = RegistryService()
 
-    # Convert status string to enum if provided
-    status_enum = RunStatus(status) if status else None
+    # Convert status string to enum if provided, with validation
+    status_enum: RunStatus | None = None
+    if status:
+        valid_statuses = [s.value for s in RunStatus]
+        if status not in valid_statuses:
+            raise ValueError(f"Invalid run status: '{status}'. Valid values: {valid_statuses}")
+        status_enum = RunStatus(status)
 
     result: RunListResponse = await service.list_runs(
         db=db,

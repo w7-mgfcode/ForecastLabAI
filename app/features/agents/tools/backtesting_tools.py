@@ -38,14 +38,19 @@ def _create_model_config(
     """Create model configuration from type string.
 
     Args:
-        model_type: Type of model ('naive', 'seasonal_naive', 'linear_regression').
-        season_length: Season length for seasonal models (default 7 for weekly).
+        model_type: Type of model. Supported values:
+            - 'naive': Last observed value (simple baseline)
+            - 'seasonal_naive': Same period from previous season
+            - 'moving_average': Mean of last N observations
+        season_length: Season length for seasonal_naive model (default 7 for weekly).
+            Only used when model_type is 'seasonal_naive'.
 
     Returns:
-        Configured ModelConfig instance.
+        Configured ModelConfig instance (NaiveModelConfig, SeasonalNaiveModelConfig,
+        or MovingAverageModelConfig).
 
     Raises:
-        ValueError: If model_type is not supported.
+        ValueError: If model_type is not one of: naive, seasonal_naive, moving_average.
     """
     if model_type == "naive":
         return NaiveModelConfig()
@@ -248,17 +253,33 @@ def compare_backtest_results(
     mae_b = metrics_b.get("mae")
     if mae_a is not None and mae_b is not None:
         if mae_a < mae_b:
-            pct_better = ((mae_b - mae_a) / mae_b) * 100
-            comparison["recommendation"] = (
-                f"Model A ({main_a.get('model_type')}) performs better with "
-                f"{pct_better:.1f}% lower MAE ({mae_a:.2f} vs {mae_b:.2f})."
-            )
+            # Guard against division by zero
+            if mae_b == 0:
+                comparison["recommendation"] = (
+                    f"Model A ({main_a.get('model_type')}) performs better with "
+                    f"MAE {mae_a:.2f} vs {mae_b:.2f} (improvement is infinite/undetermined "
+                    f"as Model B has zero MAE baseline)."
+                )
+            else:
+                pct_better = ((mae_b - mae_a) / mae_b) * 100
+                comparison["recommendation"] = (
+                    f"Model A ({main_a.get('model_type')}) performs better with "
+                    f"{pct_better:.1f}% lower MAE ({mae_a:.2f} vs {mae_b:.2f})."
+                )
         elif mae_b < mae_a:
-            pct_better = ((mae_a - mae_b) / mae_a) * 100
-            comparison["recommendation"] = (
-                f"Model B ({main_b.get('model_type')}) performs better with "
-                f"{pct_better:.1f}% lower MAE ({mae_b:.2f} vs {mae_a:.2f})."
-            )
+            # Guard against division by zero
+            if mae_a == 0:
+                comparison["recommendation"] = (
+                    f"Model B ({main_b.get('model_type')}) performs better with "
+                    f"MAE {mae_b:.2f} vs {mae_a:.2f} (improvement is infinite/undetermined "
+                    f"as Model A has zero MAE baseline)."
+                )
+            else:
+                pct_better = ((mae_a - mae_b) / mae_a) * 100
+                comparison["recommendation"] = (
+                    f"Model B ({main_b.get('model_type')}) performs better with "
+                    f"{pct_better:.1f}% lower MAE ({mae_b:.2f} vs {mae_a:.2f})."
+                )
         else:
             comparison["recommendation"] = (
                 f"Both models have identical MAE ({mae_a:.2f}). "

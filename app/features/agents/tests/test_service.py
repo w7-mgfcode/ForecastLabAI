@@ -362,6 +362,11 @@ class TestAgentServiceApproval:
         mock_result.scalar_one_or_none.return_value = sample_awaiting_approval_session
         mock_db.execute.return_value = mock_result
 
+        # Mock the _execute_pending_action method to return success
+        service._execute_pending_action = AsyncMock(  # type: ignore[method-assign]
+            return_value={"message": "Alias created successfully", "alias_name": "production"}
+        )
+
         pending = sample_awaiting_approval_session.pending_action
         assert pending is not None
         action_id = pending["action_id"]
@@ -376,6 +381,12 @@ class TestAgentServiceApproval:
         assert response.status == "executed"
         assert sample_awaiting_approval_session.pending_action is None
         assert sample_awaiting_approval_session.status == SessionStatus.ACTIVE.value
+        # Verify _execute_pending_action was called with correct arguments
+        service._execute_pending_action.assert_called_once_with(
+            db=mock_db,
+            action_type="create_alias",
+            arguments={"alias_name": "production", "run_id": "abc123"},
+        )
 
     @pytest.mark.asyncio
     async def test_approve_action_rejected(

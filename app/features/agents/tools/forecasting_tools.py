@@ -15,6 +15,7 @@ from typing import Any
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.features.forecasting.schemas import (
     ModelConfig,
     MovingAverageModelConfig,
@@ -35,14 +36,19 @@ def _create_model_config(
     """Create model configuration from type string.
 
     Args:
-        model_type: Type of model ('naive', 'seasonal_naive', 'linear_regression').
-        season_length: Season length for seasonal models (default 7 for weekly).
+        model_type: Type of model. Supported values:
+            - 'naive': Last observed value (simple baseline)
+            - 'seasonal_naive': Same period from previous season
+            - 'moving_average': Mean of last N observations
+        season_length: Season length for seasonal_naive model (default 7 for weekly).
+            Only used when model_type is 'seasonal_naive'.
 
     Returns:
-        Configured ModelConfig instance.
+        Configured ModelConfig instance (NaiveModelConfig, SeasonalNaiveModelConfig,
+        or MovingAverageModelConfig).
 
     Raises:
-        ValueError: If model_type is not supported.
+        ValueError: If model_type is not one of: naive, seasonal_naive, moving_average.
     """
     if model_type == "naive":
         return NaiveModelConfig()
@@ -103,6 +109,12 @@ async def train_model(
         train_end_date=str(train_end_date),
         model_type=model_type,
     )
+
+    # Validate date range
+    if train_start_date > train_end_date:
+        raise ValueError(
+            f"train_start_date ({train_start_date}) must be <= train_end_date ({train_end_date})"
+        )
 
     # Create model configuration
     model_config = _create_model_config(model_type, season_length)
@@ -167,6 +179,13 @@ async def predict(
         horizon=horizon,
         model_path=model_path,
     )
+
+    # Validate horizon against max limit
+    settings = get_settings()
+    if horizon > settings.forecast_max_horizon:
+        raise ValueError(
+            f"horizon ({horizon}) exceeds maximum allowed ({settings.forecast_max_horizon})"
+        )
 
     # Generate predictions
     service = ForecastingService()

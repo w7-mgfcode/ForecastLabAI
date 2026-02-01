@@ -560,15 +560,33 @@ curl -X POST http://localhost:8123/agents/sessions/{session_id}/chat \
 **Configuration:**
 ```bash
 # Agent LLM Configuration
-ANTHROPIC_API_KEY=sk-ant-your-key
-AGENT_MODEL_NAME=claude-3-haiku-20240307
-AGENT_TEMPERATURE=0.0
+# Model format: "provider:model-name" (e.g., anthropic:claude-sonnet-4-5)
+AGENT_DEFAULT_MODEL=anthropic:claude-sonnet-4-5
+AGENT_FALLBACK_MODEL=openai:gpt-4o
+AGENT_TEMPERATURE=0.1
 AGENT_MAX_TOKENS=4096
 
+# API Keys (set based on your chosen provider)
+ANTHROPIC_API_KEY=sk-ant-your-key
+# OPENAI_API_KEY=sk-your-key
+# GOOGLE_API_KEY=your-google-api-key  # For Gemini models
+
+# Execution Configuration
+AGENT_MAX_TOOL_CALLS=10
+AGENT_TIMEOUT_SECONDS=120
+AGENT_RETRY_ATTEMPTS=3
+AGENT_RETRY_DELAY_SECONDS=1.0
+
 # Session Configuration
-AGENT_SESSION_TTL_MINUTES=30
-AGENT_APPROVAL_TIMEOUT_MINUTES=5
-AGENT_MAX_TOOL_CALLS_PER_TURN=10
+AGENT_SESSION_TTL_MINUTES=120
+AGENT_MAX_SESSIONS_PER_USER=5
+
+# Human-in-the-loop Configuration (JSON array format)
+AGENT_REQUIRE_APPROVAL=["create_alias","archive_run"]
+AGENT_APPROVAL_TIMEOUT_MINUTES=60
+
+# Streaming Configuration
+AGENT_ENABLE_STREAMING=true
 ```
 
 ### Error Responses (RFC 7807)
