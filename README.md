@@ -202,7 +202,7 @@ curl -X POST http://localhost:8123/forecasting/train \
     "train_end_date": "2024-06-30",
     "config": {
       "model_type": "seasonal_naive",
-      "seasonal_period": 7
+      "season_length": 7
     }
   }'
 ```

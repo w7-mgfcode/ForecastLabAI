@@ -101,7 +101,7 @@ Implement a model zoo with baseline forecasting algorithms and a unified model i
 
 ### Current Codebase Tree (Relevant Parts)
 
-```
+```text
 app/
 ├── core/
 │   ├── config.py           # Settings singleton
@@ -124,7 +124,7 @@ app/
 
 ### Desired Codebase Tree
 
-```
+```text
 app/features/forecasting/           # NEW: Forecasting vertical slice
 ├── __init__.py                     # Module exports
 ├── schemas.py                      # ModelConfig, TrainRequest, PredictRequest, PredictResponse
@@ -153,27 +153,33 @@ app/main.py                         # MODIFY: Register forecasting router
 
 ### Known Gotchas
 
-```python
-# CRITICAL: Pydantic v2 uses model_config = ConfigDict(...), not class Config
-# Example: frozen=True for immutability, extra="forbid" for strict validation
+#### CRITICAL: Pydantic v2 uses model_config = ConfigDict(...), not class Config
 
-# CRITICAL: Use field_validator (not @validator) with @classmethod decorator
-# Example: @field_validator("horizon") @classmethod def validate_horizon(...)
+Example: `frozen=True` for immutability, `extra="forbid"` for strict validation.
 
-# CRITICAL: Joblib serialization includes Python version - document this
-# Models may not load if trained on different Python/sklearn version
+#### CRITICAL: Use field_validator (not @validator) with @classmethod decorator
 
-# CRITICAL: Recursive forecasting propagates errors - warn users for long horizons
+Example: `@field_validator("horizon") @classmethod def validate_horizon(...)`
 
-# CRITICAL: All forecasters must be deterministic with fixed random_state
-# Use Settings().forecast_random_seed consistently
+#### CRITICAL: Joblib serialization includes Python version
 
-# CRITICAL: Multi-horizon forecasting updates lags recursively
-# Prediction at t+1 becomes lag_1 for prediction at t+2
+Models may not load if trained on different Python/sklearn version. Document this.
 
-# CRITICAL: Feature engineering must use cutoff_date = last training date
-# Never use future data when computing features for prediction
-```
+#### CRITICAL: Recursive forecasting propagates errors
+
+Warn users for long horizons.
+
+#### CRITICAL: All forecasters must be deterministic with fixed random_state
+
+Use `Settings().forecast_random_seed` consistently.
+
+#### CRITICAL: Multi-horizon forecasting updates lags recursively
+
+Prediction at t+1 becomes lag_1 for prediction at t+2.
+
+#### CRITICAL: Feature engineering must use cutoff_date = last training date
+
+Never use future data when computing features for prediction.
 
 ---
 

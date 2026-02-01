@@ -117,6 +117,14 @@ class TestSeasonalNaiveForecaster:
         with pytest.raises(ValueError, match="at least 7"):
             model.fit(short_data)
 
+    def test_invalid_season_length_raises(self):
+        """Test that season_length < 1 raises ValueError on construction."""
+        with pytest.raises(ValueError, match="season_length must be >= 1"):
+            SeasonalNaiveForecaster(season_length=0)
+
+        with pytest.raises(ValueError, match="season_length must be >= 1"):
+            SeasonalNaiveForecaster(season_length=-5)
+
     def test_get_params(self):
         """Test get_params returns expected values."""
         model = SeasonalNaiveForecaster(season_length=14, random_state=42)
@@ -172,6 +180,14 @@ class TestMovingAverageForecaster:
 
         with pytest.raises(ValueError, match="at least 7"):
             model.fit(short_data)
+
+    def test_invalid_window_size_raises(self):
+        """Test that window_size < 1 raises ValueError on construction."""
+        with pytest.raises(ValueError, match="window_size must be >= 1"):
+            MovingAverageForecaster(window_size=0)
+
+        with pytest.raises(ValueError, match="window_size must be >= 1"):
+            MovingAverageForecaster(window_size=-3)
 
     def test_get_params(self):
         """Test get_params returns expected values."""

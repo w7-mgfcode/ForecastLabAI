@@ -235,10 +235,18 @@ class SeasonalNaiveForecaster(BaseForecaster):
         """Initialize the seasonal naive forecaster.
 
         Args:
-            season_length: Seasonality period in days.
+            season_length: Seasonality period in days (must be >= 1).
             random_state: Random seed for reproducibility (unused but kept for interface).
+
+        Raises:
+            ValueError: If season_length < 1.
         """
         super().__init__(random_state)
+        if season_length < 1:
+            raise ValueError(
+                f"season_length must be >= 1, got {season_length}. "
+                "A valid seasonality period is required for seasonal forecasting."
+            )
         self.season_length = season_length
 
     def fit(
@@ -330,10 +338,18 @@ class MovingAverageForecaster(BaseForecaster):
         """Initialize the moving average forecaster.
 
         Args:
-            window_size: Window size for averaging.
+            window_size: Window size for averaging (must be >= 1).
             random_state: Random seed for reproducibility (unused but kept for interface).
+
+        Raises:
+            ValueError: If window_size < 1.
         """
         super().__init__(random_state)
+        if window_size < 1:
+            raise ValueError(
+                f"window_size must be >= 1, got {window_size}. "
+                "A valid window size is required for moving average computation."
+            )
         self.window_size = window_size
         self._forecast_value: float = 0.0
 

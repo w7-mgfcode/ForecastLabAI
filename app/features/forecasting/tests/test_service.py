@@ -80,8 +80,8 @@ class TestForecastingServicePredict:
     """Tests for ForecastingService.predict method."""
 
     @pytest.fixture
-    def saved_model_path(self, sample_naive_config, sample_time_series):
-        """Create a saved model for prediction tests."""
+    def saved_model_context(self, sample_naive_config, sample_time_series):
+        """Create a saved model for prediction tests with patched settings."""
         with TemporaryDirectory() as tmpdir:
             model = NaiveForecaster()
             model.fit(sample_time_series)
@@ -98,107 +98,184 @@ class TestForecastingServicePredict:
 
             path = Path(tmpdir) / "test_model"
             saved = save_model_bundle(bundle, path)
-            yield str(saved)
+            yield {"model_path": str(saved), "tmpdir": tmpdir}
 
     @pytest.mark.asyncio
-    async def test_predict_returns_correct_horizon(self, saved_model_path):
+    async def test_predict_returns_correct_horizon(self, saved_model_context):
         """Test that predict returns correct number of forecast points."""
-        service = ForecastingService()
+        with patch("app.features.forecasting.service.get_settings") as mock_settings:
+            settings = MagicMock()
+            settings.forecast_model_artifacts_dir = saved_model_context["tmpdir"]
+            mock_settings.return_value = settings
 
-        response = await service.predict(
-            store_id=1,
-            product_id=2,
-            horizon=7,
-            model_path=saved_model_path,
-        )
+            service = ForecastingService()
 
-        assert len(response.forecasts) == 7
-        assert response.horizon == 7
-
-    @pytest.mark.asyncio
-    async def test_predict_validates_store_id(self, saved_model_path):
-        """Test that predict validates store_id matches model."""
-        service = ForecastingService()
-
-        with pytest.raises(ValueError, match="store=1"):
-            await service.predict(
-                store_id=999,  # Wrong store
+            response = await service.predict(
+                store_id=1,
                 product_id=2,
                 horizon=7,
-                model_path=saved_model_path,
+                model_path=saved_model_context["model_path"],
             )
+
+            assert len(response.forecasts) == 7
+            assert response.horizon == 7
 
     @pytest.mark.asyncio
-    async def test_predict_validates_product_id(self, saved_model_path):
-        """Test that predict validates product_id matches model."""
-        service = ForecastingService()
+    async def test_predict_validates_store_id(self, saved_model_context):
+        """Test that predict validates store_id matches model."""
+        with patch("app.features.forecasting.service.get_settings") as mock_settings:
+            settings = MagicMock()
+            settings.forecast_model_artifacts_dir = saved_model_context["tmpdir"]
+            mock_settings.return_value = settings
 
-        with pytest.raises(ValueError, match="product=2"):
-            await service.predict(
-                store_id=1,
-                product_id=999,  # Wrong product
-                horizon=7,
-                model_path=saved_model_path,
-            )
+            service = ForecastingService()
+
+            with pytest.raises(ValueError, match="store=1"):
+                await service.predict(
+                    store_id=999,  # Wrong store
+                    product_id=2,
+                    horizon=7,
+                    model_path=saved_model_context["model_path"],
+                )
+
+    @pytest.mark.asyncio
+    async def test_predict_validates_product_id(self, saved_model_context):
+        """Test that predict validates product_id matches model."""
+        with patch("app.features.forecasting.service.get_settings") as mock_settings:
+            settings = MagicMock()
+            settings.forecast_model_artifacts_dir = saved_model_context["tmpdir"]
+            mock_settings.return_value = settings
+
+            service = ForecastingService()
+
+            with pytest.raises(ValueError, match="product=2"):
+                await service.predict(
+                    store_id=1,
+                    product_id=999,  # Wrong product
+                    horizon=7,
+                    model_path=saved_model_context["model_path"],
+                )
 
     @pytest.mark.asyncio
     async def test_predict_file_not_found(self):
         """Test that predict raises for missing model file."""
-        service = ForecastingService()
+        with TemporaryDirectory() as tmpdir:
+            with patch("app.features.forecasting.service.get_settings") as mock_settings:
+                settings = MagicMock()
+                settings.forecast_model_artifacts_dir = tmpdir
+                mock_settings.return_value = settings
 
-        with pytest.raises(FileNotFoundError):
-            await service.predict(
+                service = ForecastingService()
+
+                # Path must be inside artifacts dir and have .joblib extension
+                with pytest.raises(FileNotFoundError):
+                    await service.predict(
+                        store_id=1,
+                        product_id=1,
+                        horizon=7,
+                        model_path=f"{tmpdir}/nonexistent/model.joblib",
+                    )
+
+    @pytest.mark.asyncio
+    async def test_predict_forecast_dates(self, saved_model_context):
+        """Test that predict generates correct forecast dates."""
+        with patch("app.features.forecasting.service.get_settings") as mock_settings:
+            settings = MagicMock()
+            settings.forecast_model_artifacts_dir = saved_model_context["tmpdir"]
+            mock_settings.return_value = settings
+
+            service = ForecastingService()
+
+            response = await service.predict(
                 store_id=1,
-                product_id=1,
-                horizon=7,
-                model_path="/nonexistent/model.joblib",
+                product_id=2,
+                horizon=3,
+                model_path=saved_model_context["model_path"],
             )
 
-    @pytest.mark.asyncio
-    async def test_predict_forecast_dates(self, saved_model_path):
-        """Test that predict generates correct forecast dates."""
-        service = ForecastingService()
-
-        response = await service.predict(
-            store_id=1,
-            product_id=2,
-            horizon=3,
-            model_path=saved_model_path,
-        )
-
-        # Train end date was 2024-01-31, so forecasts start 2024-02-01
-        assert response.forecasts[0].date == date(2024, 2, 1)
-        assert response.forecasts[1].date == date(2024, 2, 2)
-        assert response.forecasts[2].date == date(2024, 2, 3)
+            # Train end date was 2024-01-31, so forecasts start 2024-02-01
+            assert response.forecasts[0].date == date(2024, 2, 1)
+            assert response.forecasts[1].date == date(2024, 2, 2)
+            assert response.forecasts[2].date == date(2024, 2, 3)
 
     @pytest.mark.asyncio
-    async def test_predict_includes_model_type(self, saved_model_path):
+    async def test_predict_includes_model_type(self, saved_model_context):
         """Test that predict response includes model type."""
-        service = ForecastingService()
+        with patch("app.features.forecasting.service.get_settings") as mock_settings:
+            settings = MagicMock()
+            settings.forecast_model_artifacts_dir = saved_model_context["tmpdir"]
+            mock_settings.return_value = settings
 
-        response = await service.predict(
-            store_id=1,
-            product_id=2,
-            horizon=7,
-            model_path=saved_model_path,
-        )
+            service = ForecastingService()
 
-        assert response.model_type == "naive"
+            response = await service.predict(
+                store_id=1,
+                product_id=2,
+                horizon=7,
+                model_path=saved_model_context["model_path"],
+            )
+
+            assert response.model_type == "naive"
 
     @pytest.mark.asyncio
-    async def test_predict_includes_config_hash(self, saved_model_path):
+    async def test_predict_includes_config_hash(self, saved_model_context):
         """Test that predict response includes config hash."""
-        service = ForecastingService()
+        with patch("app.features.forecasting.service.get_settings") as mock_settings:
+            settings = MagicMock()
+            settings.forecast_model_artifacts_dir = saved_model_context["tmpdir"]
+            mock_settings.return_value = settings
 
-        response = await service.predict(
-            store_id=1,
-            product_id=2,
-            horizon=7,
-            model_path=saved_model_path,
-        )
+            service = ForecastingService()
 
-        assert response.config_hash is not None
-        assert len(response.config_hash) == 16
+            response = await service.predict(
+                store_id=1,
+                product_id=2,
+                horizon=7,
+                model_path=saved_model_context["model_path"],
+            )
+
+            assert response.config_hash is not None
+            assert len(response.config_hash) == 16
+
+    @pytest.mark.asyncio
+    async def test_predict_rejects_path_traversal(self):
+        """Test that predict rejects paths outside artifacts directory."""
+        with TemporaryDirectory() as tmpdir:
+            with patch("app.features.forecasting.service.get_settings") as mock_settings:
+                settings = MagicMock()
+                settings.forecast_model_artifacts_dir = tmpdir
+                mock_settings.return_value = settings
+
+                service = ForecastingService()
+
+                # Try to load from outside the artifacts directory (with valid extension)
+                with pytest.raises(ValueError, match="must be within the configured"):
+                    await service.predict(
+                        store_id=1,
+                        product_id=1,
+                        horizon=7,
+                        model_path="/etc/malicious.joblib",
+                    )
+
+    @pytest.mark.asyncio
+    async def test_predict_rejects_invalid_extension(self):
+        """Test that predict rejects non-.joblib files."""
+        with TemporaryDirectory() as tmpdir:
+            with patch("app.features.forecasting.service.get_settings") as mock_settings:
+                settings = MagicMock()
+                settings.forecast_model_artifacts_dir = tmpdir
+                mock_settings.return_value = settings
+
+                service = ForecastingService()
+
+                # Try to load a file without .joblib extension
+                with pytest.raises(ValueError, match=r"\.joblib extension"):
+                    await service.predict(
+                        store_id=1,
+                        product_id=1,
+                        horizon=7,
+                        model_path=f"{tmpdir}/model.pkl",
+                    )
 
 
 class TestForecastingServiceTrain:
@@ -228,8 +305,6 @@ class TestForecastingServiceTrain:
     @pytest.mark.asyncio
     async def test_train_returns_model_path(self):
         """Test that training returns a valid model path."""
-        service = ForecastingService()
-
         # Mock database session with sample data
         mock_db = AsyncMock()
         mock_result = MagicMock()
@@ -246,11 +321,15 @@ class TestForecastingServiceTrain:
         mock_db.execute.return_value = mock_result
 
         with TemporaryDirectory() as tmpdir:
+            # Patch get_settings BEFORE constructing ForecastingService
             with patch("app.features.forecasting.service.get_settings") as mock_settings:
                 settings = MagicMock()
                 settings.forecast_random_seed = 42
                 settings.forecast_model_artifacts_dir = tmpdir
                 mock_settings.return_value = settings
+
+                # Now construct service with patched settings
+                service = ForecastingService()
 
                 response = await service.train_model(
                     db=mock_db,

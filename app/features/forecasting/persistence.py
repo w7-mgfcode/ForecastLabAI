@@ -111,21 +111,42 @@ def save_model_bundle(bundle: ModelBundle, path: str | Path) -> Path:
     return path
 
 
-def load_model_bundle(path: str | Path) -> ModelBundle:
+def load_model_bundle(path: str | Path, base_dir: str | Path | None = None) -> ModelBundle:
     """Load model bundle from disk.
 
     CRITICAL: Logs warning if versions don't match.
+    SECURITY: Validates path is within allowed base directory to prevent path traversal.
 
     Args:
         path: Path to saved bundle.
+        base_dir: Optional base directory for path validation. If provided,
+            the resolved path must be within this directory.
 
     Returns:
         Loaded ModelBundle.
 
     Raises:
         FileNotFoundError: If path doesn't exist.
+        ValueError: If path is outside the allowed base directory.
     """
-    path = Path(path)
+    path = Path(path).resolve()
+
+    # Security: validate path is within allowed base directory
+    if base_dir is not None:
+        base_path = Path(base_dir).resolve()
+        try:
+            path.relative_to(base_path)
+        except ValueError:
+            logger.warning(
+                "forecasting.model_load_rejected",
+                path=str(path),
+                base_dir=str(base_path),
+                reason="path_outside_allowed_directory",
+            )
+            raise ValueError(
+                f"Model path '{path}' is outside the allowed artifacts directory '{base_path}'. "
+                "Only model artifacts within the configured directory can be loaded."
+            ) from None
 
     if not path.exists():
         raise FileNotFoundError(f"Model bundle not found: {path}")

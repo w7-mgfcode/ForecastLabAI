@@ -243,8 +243,8 @@ The `FeatureEngineeringService` provides time-safe feature computation with CRIT
 | Model | Description | Config Parameters |
 |-------|-------------|-------------------|
 | `naive` | Last observed value | None |
-| `seasonal_naive` | Previous season value | `seasonal_period` (e.g., 7 for weekly) |
-| `moving_average` | Mean of last N observations | `window` (default: 7) |
+| `seasonal_naive` | Previous season value | `season_length` (e.g., 7 for weekly) |
+| `moving_average` | Mean of last N observations | `window_size` (default: 7) |
 | `lightgbm` | LightGBM regressor | Feature-flagged, disabled by default |
 
 **Model Interface:** All models inherit from `BaseForecaster` with typed `fit()` and `predict()` methods.

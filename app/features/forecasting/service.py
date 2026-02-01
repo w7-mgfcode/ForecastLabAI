@@ -215,8 +215,41 @@ class ForecastingService:
             model_path=model_path,
         )
 
-        # Load model bundle
-        bundle = load_model_bundle(model_path)
+        # Security: Validate model_path before loading
+        # Resolve to absolute path and validate extension and location
+        resolved_path = Path(model_path).resolve()
+        artifacts_dir = Path(self.settings.forecast_model_artifacts_dir).resolve()
+
+        # Check for .joblib extension
+        if resolved_path.suffix != ".joblib":
+            logger.warning(
+                "forecasting.predict_rejected",
+                model_path=model_path,
+                resolved_path=str(resolved_path),
+                reason="invalid_extension",
+            )
+            raise ValueError(
+                f"Invalid model path: '{model_path}'. Model files must have .joblib extension."
+            )
+
+        # Check path is within artifacts directory
+        try:
+            resolved_path.relative_to(artifacts_dir)
+        except ValueError:
+            logger.warning(
+                "forecasting.predict_rejected",
+                model_path=model_path,
+                resolved_path=str(resolved_path),
+                artifacts_dir=str(artifacts_dir),
+                reason="path_traversal_attempt",
+            )
+            raise ValueError(
+                f"Invalid model path: '{model_path}'. "
+                f"Model path must be within the configured artifacts directory: '{artifacts_dir}'."
+            ) from None
+
+        # Load model bundle (path already validated)
+        bundle = load_model_bundle(resolved_path)
 
         # Validate store/product match
         bundle_store_id = bundle.metadata.get("store_id")
