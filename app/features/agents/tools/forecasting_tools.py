@@ -180,7 +180,10 @@ async def predict(
         model_path=model_path,
     )
 
-    # Validate horizon against max limit
+    # Validate horizon
+    if horizon <= 0:
+        raise ValueError(f"horizon must be positive, got {horizon}")
+
     settings = get_settings()
     if horizon > settings.forecast_max_horizon:
         raise ValueError(

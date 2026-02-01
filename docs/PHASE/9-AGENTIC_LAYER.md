@@ -569,13 +569,11 @@ alembic/versions/
 └── d6e0f2g3h456_create_agent_session_table.py
 
 examples/
-└── agents/                        # (Planned) Usage examples
-    ├── experiment_demo.py
-    ├── rag_query.http
-    └── websocket_client.py
+└── agents/                        # Usage examples
+    ├── experiment_demo.py         # Full experiment workflow example
+    ├── rag_query.http             # HTTP client examples for RAG
+    └── websocket_client.py        # WebSocket streaming client
 ```
-
-**Total Lines**: 7,835 additions, 89 deletions
 
 ---
 
