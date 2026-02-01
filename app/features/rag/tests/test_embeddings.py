@@ -287,9 +287,7 @@ class TestOllamaEmbeddingProvider:
 
             # Mock the HTTP client with OpenAI-compatible response format
             mock_response = MagicMock()
-            mock_response.json.return_value = {
-                "data": [{"embedding": [0.5] * 768, "index": 0}]
-            }
+            mock_response.json.return_value = {"data": [{"embedding": [0.5] * 768, "index": 0}]}
             mock_response.raise_for_status = MagicMock()
 
             mock_client = MagicMock(spec=httpx.AsyncClient)
@@ -341,9 +339,7 @@ class TestOllamaEmbeddingProvider:
 
             # Mock connection error
             mock_client = MagicMock(spec=httpx.AsyncClient)
-            mock_client.post = AsyncMock(
-                side_effect=httpx.ConnectError("Connection refused")
-            )
+            mock_client.post = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
             provider._client = mock_client
 
             with pytest.raises(EmbeddingError) as exc_info:
