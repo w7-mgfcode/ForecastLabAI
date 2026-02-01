@@ -1,5 +1,6 @@
 """Test fixtures for backtesting module."""
 
+import uuid
 from collections.abc import AsyncGenerator
 from datetime import date, timedelta
 from decimal import Decimal
@@ -7,6 +8,7 @@ from decimal import Decimal
 import numpy as np
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
@@ -42,7 +44,13 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
         finally:
-            await session.rollback()
+            # Clean up test data (delete in correct order due to FK constraints)
+            # Only delete test-specific data (with TEST- prefix)
+            await session.execute(delete(SalesDaily))
+            await session.execute(delete(Product).where(Product.sku.like("TEST-%")))
+            await session.execute(delete(Store).where(Store.code.like("TEST-%")))
+            # Don't delete Calendar - it's shared and safe to keep
+            await session.commit()
 
     await engine.dispose()
 
@@ -67,9 +75,10 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
 
 @pytest.fixture
 async def sample_store(db_session: AsyncSession) -> Store:
-    """Create a sample store for testing."""
+    """Create a sample store for testing with unique ID."""
+    unique_id = uuid.uuid4().hex[:8]
     store = Store(
-        code="TEST001",
+        code=f"TEST-{unique_id}",
         name="Test Store",
         region="Test Region",
         city="Test City",
@@ -83,9 +92,10 @@ async def sample_store(db_session: AsyncSession) -> Store:
 
 @pytest.fixture
 async def sample_product(db_session: AsyncSession) -> Product:
-    """Create a sample product for testing."""
+    """Create a sample product for testing with unique ID."""
+    unique_id = uuid.uuid4().hex[:8]
     product = Product(
-        sku="SKU-TEST-001",
+        sku=f"TEST-{unique_id}",
         name="Test Product",
         category="Test Category",
         brand="Test Brand",
@@ -100,7 +110,10 @@ async def sample_product(db_session: AsyncSession) -> Product:
 
 @pytest.fixture
 async def sample_calendar_120(db_session: AsyncSession) -> list[Calendar]:
-    """Create 120 calendar records starting from 2024-01-01."""
+    """Create 120 calendar records starting from 2024-01-01.
+
+    Uses merge to handle existing records gracefully (idempotent).
+    """
     start = date(2024, 1, 1)
     calendars = []
 
@@ -114,12 +127,11 @@ async def sample_calendar_120(db_session: AsyncSession) -> list[Calendar]:
             year=d.year,
             is_holiday=False,
         )
-        calendars.append(calendar)
-        db_session.add(calendar)
+        # Use merge to handle existing records (upsert behavior)
+        merged = await db_session.merge(calendar)
+        calendars.append(merged)
 
     await db_session.commit()
-    for cal in calendars:
-        await db_session.refresh(cal)
     return calendars
 
 
