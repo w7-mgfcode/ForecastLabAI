@@ -1,12 +1,168 @@
 """Test fixtures for backtesting module."""
 
+from collections.abc import AsyncGenerator
 from datetime import date, timedelta
+from decimal import Decimal
 
 import numpy as np
 import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.core.config import get_settings
+from app.core.database import Base, get_db
 from app.features.backtesting.schemas import BacktestConfig, SplitConfig
+from app.features.data_platform.models import Calendar, Product, SalesDaily, Store
 from app.features.forecasting.schemas import NaiveModelConfig, SeasonalNaiveModelConfig
+from app.main import app
+
+# =============================================================================
+# Database Fixtures for Integration Tests
+# =============================================================================
+
+
+@pytest.fixture
+async def db_session() -> AsyncGenerator[AsyncSession, None]:
+    """Create async database session for integration tests.
+
+    This fixture creates all tables, provides a session, and cleans up after.
+    Requires PostgreSQL to be running (docker-compose up -d).
+    """
+    settings = get_settings()
+    engine = create_async_engine(settings.database_url, echo=False)
+
+    # Create tables
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    # Create session
+    async_session_maker = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+
+    async with async_session_maker() as session:
+        try:
+            yield session
+        finally:
+            await session.rollback()
+
+    # Cleanup: drop all tables
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+
+    await engine.dispose()
+
+
+@pytest.fixture
+async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
+    """Create test client with database dependency override."""
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as ac:
+        yield ac
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def sample_store(db_session: AsyncSession) -> Store:
+    """Create a sample store for testing."""
+    store = Store(
+        code="TEST001",
+        name="Test Store",
+        region="Test Region",
+        city="Test City",
+        store_type="supermarket",
+    )
+    db_session.add(store)
+    await db_session.commit()
+    await db_session.refresh(store)
+    return store
+
+
+@pytest.fixture
+async def sample_product(db_session: AsyncSession) -> Product:
+    """Create a sample product for testing."""
+    product = Product(
+        sku="SKU-TEST-001",
+        name="Test Product",
+        category="Test Category",
+        brand="Test Brand",
+        base_price=Decimal("19.99"),
+        base_cost=Decimal("9.99"),
+    )
+    db_session.add(product)
+    await db_session.commit()
+    await db_session.refresh(product)
+    return product
+
+
+@pytest.fixture
+async def sample_calendar_120(db_session: AsyncSession) -> list[Calendar]:
+    """Create 120 calendar records starting from 2024-01-01."""
+    start = date(2024, 1, 1)
+    calendars = []
+
+    for i in range(120):
+        d = start + timedelta(days=i)
+        calendar = Calendar(
+            date=d,
+            day_of_week=d.weekday(),
+            month=d.month,
+            quarter=(d.month - 1) // 3 + 1,
+            year=d.year,
+            is_holiday=False,
+        )
+        calendars.append(calendar)
+        db_session.add(calendar)
+
+    await db_session.commit()
+    for cal in calendars:
+        await db_session.refresh(cal)
+    return calendars
+
+
+@pytest.fixture
+async def sample_sales_120(
+    db_session: AsyncSession,
+    sample_store: Store,
+    sample_product: Product,
+    sample_calendar_120: list[Calendar],
+) -> list[SalesDaily]:
+    """Create 120 days of sequential sales data.
+
+    Sales quantity = day number (1, 2, 3, ..., 120) for predictable verification.
+    """
+    sales_records = []
+
+    for i, calendar in enumerate(sample_calendar_120):
+        quantity = i + 1  # 1, 2, 3, ..., 120
+        unit_price = Decimal("9.99")
+        sales = SalesDaily(
+            date=calendar.date,
+            store_id=sample_store.id,
+            product_id=sample_product.id,
+            quantity=quantity,
+            unit_price=unit_price,
+            total_amount=unit_price * quantity,
+        )
+        sales_records.append(sales)
+        db_session.add(sales)
+
+    await db_session.commit()
+    for sale in sales_records:
+        await db_session.refresh(sale)
+    return sales_records
+
+
+# =============================================================================
+# Unit Test Fixtures (original)
+# =============================================================================
 
 
 @pytest.fixture

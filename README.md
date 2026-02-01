@@ -66,12 +66,34 @@ curl http://localhost:8123/health
 
 ## Development
 
+### Testing
+
+```bash
+# Run all tests
+uv run pytest -v
+
+# Run unit tests only (no database required)
+uv run pytest -v -m "not integration"
+
+# Run integration tests (requires PostgreSQL via docker-compose)
+docker-compose up -d  # Start database first
+uv run pytest -v -m integration
+
+# Run feature-specific tests
+uv run pytest app/features/backtesting/tests/ -v              # All backtesting tests
+uv run pytest app/features/forecasting/tests/ -v              # All forecasting tests
+uv run pytest app/features/backtesting/tests/ -v -m integration  # Backtesting integration tests
+```
+
+**Test Coverage:**
+- Unit tests: Fast, isolated tests that mock database dependencies
+- Integration tests: End-to-end tests against real PostgreSQL database
+  - Marked with `@pytest.mark.integration`
+  - Require `docker-compose up -d` before running
+
 ### Commands
 
 ```bash
-# Run tests
-uv run pytest -v
-
 # Type checking
 uv run mypy app/
 uv run pyright app/
