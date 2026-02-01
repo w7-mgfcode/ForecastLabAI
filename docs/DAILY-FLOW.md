@@ -166,7 +166,7 @@ gh run watch <RUN_ID>
 
 A projekt a moduláris három-fázisú roadmap szerint halad:
 
-```
+```text
 Phase 8: RAG Knowledge Base ("The Memory")
          ↓
 Phase 9: Agentic Layer ("The Brain")

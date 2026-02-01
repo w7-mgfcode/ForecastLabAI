@@ -186,15 +186,17 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         total_tokens = 0
 
         for text in texts:
-            token_count = self.count_tokens(text)
-            if token_count > self.MAX_TOKENS_PER_INPUT:
+            original_token_count = self.count_tokens(text)
+            if original_token_count > self.MAX_TOKENS_PER_INPUT:
                 text = self.truncate_to_tokens(text, self.MAX_TOKENS_PER_INPUT)
                 token_count = self.count_tokens(text)
                 logger.warning(
                     "rag.embedding_text_truncated",
-                    original_tokens=self.count_tokens(text),
+                    original_tokens=original_token_count,
                     truncated_to=self.MAX_TOKENS_PER_INPUT,
                 )
+            else:
+                token_count = original_token_count
             validated_texts.append(text)
             total_tokens += token_count
 

@@ -5,13 +5,15 @@ Revises: b4c8d9e0f123
 Create Date: 2026-02-01 12:49:28.000000
 
 CRITICAL: This migration alters the embedding column dimension.
-If changing from 1536 to a different dimension, existing embeddings
-will be incompatible and re-indexing is required.
+This migration is deterministic - it changes from 1536 to 1536 (no-op by default).
+To change dimensions, create a NEW migration with the desired target dimension.
+
+If changing to a different dimension, existing embeddings will be incompatible
+and re-indexing is required.
 """
 
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
 
 from alembic import op
@@ -22,24 +24,28 @@ down_revision: str | None = "b4c8d9e0f123"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+# CRITICAL: Hardcoded dimensions for deterministic, reversible migrations.
+# To change dimensions, create a NEW migration with updated values.
+PREVIOUS_DIMENSION = 1536  # Dimension before this migration
+TARGET_DIMENSION = 1536  # Dimension after this migration (change this for new dimension)
+
 
 def upgrade() -> None:
-    """Apply migration - alter embedding column to configurable dimension.
+    """Apply migration - alter embedding column to target dimension.
 
-    Reads RAG_EMBEDDING_DIMENSION from environment (default: 1536).
+    Uses hardcoded TARGET_DIMENSION for deterministic behavior.
     WARNING: Changing dimension requires re-indexing all documents.
     """
-    # Get dimension from environment or use default
-    dimension = int(os.environ.get("RAG_EMBEDDING_DIMENSION", "1536"))
-
     # Drop the HNSW index first (required before altering column type)
     op.drop_index("ix_chunk_embedding_hnsw", table_name="document_chunk")
 
-    # Alter the embedding column type with new dimension
+    # Alter the embedding column type with target dimension
     # Note: This will invalidate any existing embeddings if dimension changes
-    op.execute(f"ALTER TABLE document_chunk ALTER COLUMN embedding TYPE vector({dimension})")
+    op.execute(
+        f"ALTER TABLE document_chunk ALTER COLUMN embedding TYPE vector({TARGET_DIMENSION})"
+    )
 
-    # Recreate the HNSW index with the new dimension
+    # Recreate the HNSW index with the target dimension
     op.create_index(
         "ix_chunk_embedding_hnsw",
         "document_chunk",
@@ -52,16 +58,19 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Revert migration - restore embedding column to 1536 dimensions.
+    """Revert migration - restore embedding column to previous dimension.
 
+    Uses hardcoded PREVIOUS_DIMENSION for deterministic rollback.
     WARNING: This will invalidate any embeddings that were generated
-    with a different dimension.
+    with the target dimension.
     """
     # Drop the HNSW index
     op.drop_index("ix_chunk_embedding_hnsw", table_name="document_chunk")
 
-    # Restore to original 1536 dimension
-    op.execute("ALTER TABLE document_chunk ALTER COLUMN embedding TYPE vector(1536)")
+    # Restore to previous dimension
+    op.execute(
+        f"ALTER TABLE document_chunk ALTER COLUMN embedding TYPE vector({PREVIOUS_DIMENSION})"
+    )
 
     # Recreate the HNSW index
     op.create_index(

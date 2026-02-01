@@ -65,7 +65,7 @@ async def index_markdown_docs(base_url: str = "http://localhost:8123") -> None:
                     },
                 )
 
-                if response.status_code == 201:
+                if response.status_code in (200, 201):
                     result = response.json()
                     status = result["status"]
 

@@ -61,14 +61,24 @@ class RAGService:
     def __init__(
         self,
         embedding_service: EmbeddingProvider | None = None,
+        base_dir: Path | str | None = None,
     ) -> None:
         """Initialize RAG service.
 
         Args:
             embedding_service: Optional embedding provider override (for testing).
+            base_dir: Base directory for path validation (for testing).
+                      Defaults to current working directory.
         """
         self.settings = get_settings()
         self._embedding_service = embedding_service or get_embedding_service()
+        # Set base directory for path validation (mirrors registry/storage.py pattern)
+        if base_dir is None:
+            self._base_dir = Path.cwd().resolve()
+        elif isinstance(base_dir, str):
+            self._base_dir = Path(base_dir).resolve()
+        else:
+            self._base_dir = base_dir.resolve()
 
     def _compute_content_hash(self, content: str) -> str:
         """Compute SHA-256 hash of content for change detection.
@@ -82,7 +92,10 @@ class RAGService:
         return hashlib.sha256(content.encode()).hexdigest()
 
     def _read_content_from_path(self, source_path: str) -> str:
-        """Read content from a file path.
+        """Read content from a file path with path traversal protection.
+
+        CRITICAL: Validates path is within base directory to prevent
+        directory traversal attacks. Mirrors pattern from registry/storage.py.
 
         Args:
             source_path: Path to the file.
@@ -91,12 +104,28 @@ class RAGService:
             File content.
 
         Raises:
-            FileNotFoundError: If file doesn't exist.
+            FileNotFoundError: If file doesn't exist or path traversal attempted.
         """
-        path = Path(source_path)
-        if not path.exists():
+        # Resolve the source path
+        resolved_path = Path(source_path).resolve()
+
+        # Security: ensure path is within base directory
+        try:
+            resolved_path.relative_to(self._base_dir)
+        except ValueError:
+            logger.warning(
+                "rag.path_traversal_attempt",
+                source_path=source_path,
+                base_dir=str(self._base_dir),
+            )
+            raise FileNotFoundError(
+                f"Source file not found or access denied: {source_path}"
+            ) from None
+
+        if not resolved_path.exists():
             raise FileNotFoundError(f"Source file not found: {source_path}")
-        return path.read_text(encoding="utf-8")
+
+        return resolved_path.read_text(encoding="utf-8")
 
     async def index_document(
         self,

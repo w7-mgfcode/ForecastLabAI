@@ -50,7 +50,8 @@ class TestRAGServiceUnit:
 
     def test_read_content_from_path_success(self, tmp_path):
         """Test reading from existing path."""
-        service = RAGService()
+        # Pass tmp_path as base_dir to allow test files in tmp directory
+        service = RAGService(base_dir=tmp_path)
 
         # Create test file
         test_file = tmp_path / "test.md"
@@ -58,6 +59,15 @@ class TestRAGServiceUnit:
 
         content = service._read_content_from_path(str(test_file))
         assert content == "# Test Content"
+
+    def test_read_content_from_path_traversal_blocked(self, tmp_path):
+        """Test that path traversal attempts are blocked."""
+        # Set base_dir to tmp_path
+        service = RAGService(base_dir=tmp_path)
+
+        # Try to read file outside base_dir (should fail)
+        with pytest.raises(FileNotFoundError, match="not found or access denied"):
+            service._read_content_from_path("/etc/passwd")
 
 
 class TestRAGServiceIndexDocument:

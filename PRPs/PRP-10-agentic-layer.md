@@ -34,7 +34,7 @@ This is the "Brain" layer that orchestrates tools from INITIAL-9 (RAG), Phase 5 
 ### Endpoints
 
 | Method | Path | Description |
-|--------|------|-------------|
+| ------ | ---- | ----------- |
 | `POST` | `/agents/experiment/run` | Execute experiment workflow |
 | `POST` | `/agents/experiment/approve` | Approve pending action |
 | `POST` | `/agents/rag/query` | Query with answer generation |
@@ -106,7 +106,7 @@ This is the "Brain" layer that orchestrates tools from INITIAL-9 (RAG), Phase 5 
 
 ### Current Codebase Tree (Relevant Parts)
 
-```
+```text
 app/
 ├── core/
 │   ├── config.py          # Settings - ADD agent settings
@@ -124,7 +124,7 @@ app/
 
 ### Desired Codebase Tree (Files to Create)
 
-```
+```text
 app/features/agents/
 ├── __init__.py              # Export router
 ├── models.py                # AgentSession ORM model

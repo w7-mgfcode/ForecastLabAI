@@ -15,7 +15,7 @@ This phase provides intelligent orchestration capabilities:
 ## Tech Stack
 
 | Component | Technology | Purpose |
-|-----------|------------|---------|
+| --------- | ---------- | ------- |
 | Agent Framework | [PydanticAI](https://ai.pydantic.dev/) | Type-safe agent orchestration |
 | Tool System | [Function Tools](https://ai.pydantic.dev/tools/) | API binding |
 | Tool Groups | [Toolsets](https://ai.pydantic.dev/toolsets/) | Grouped tool management |
@@ -52,6 +52,7 @@ Evidence-grounded question answering:
 Execute an experiment workflow with the Orchestrator Agent.
 
 **Request**:
+
 ```json
 {
   "objective": "Find the best model configuration for store S001, product P001",
@@ -66,6 +67,7 @@ Execute an experiment workflow with the Orchestrator Agent.
 ```
 
 **Response**:
+
 ```json
 {
   "session_id": "sess_abc123",
@@ -115,6 +117,7 @@ Execute an experiment workflow with the Orchestrator Agent.
 Approve a pending action from an experiment session.
 
 **Request**:
+
 ```json
 {
   "session_id": "sess_abc123",
@@ -125,6 +128,7 @@ Approve a pending action from an experiment session.
 ```
 
 **Response**:
+
 ```json
 {
   "session_id": "sess_abc123",
@@ -141,6 +145,7 @@ Approve a pending action from an experiment session.
 Query with answer generation using the RAG Assistant Agent.
 
 **Request**:
+
 ```json
 {
   "query": "How does the backtesting module prevent data leakage?",
@@ -150,6 +155,7 @@ Query with answer generation using the RAG Assistant Agent.
 ```
 
 **Response**:
+
 ```json
 {
   "session_id": "sess_def456",
@@ -180,6 +186,7 @@ Query with answer generation using the RAG Assistant Agent.
 Check agent session status.
 
 **Response**:
+
 ```json
 {
   "session_id": "sess_abc123",
@@ -203,6 +210,7 @@ Check agent session status.
 WebSocket endpoint for streaming responses.
 
 **Client → Server**:
+
 ```json
 {
   "type": "query",
@@ -214,6 +222,7 @@ WebSocket endpoint for streaming responses.
 ```
 
 **Server → Client (streaming)**:
+
 ```json
 {"type": "token", "content": "The"}
 {"type": "token", "content": " model"}
@@ -388,7 +397,7 @@ agent_max_sessions_per_user: int = 5
 ## CROSS-MODULE INTEGRATION
 
 | Direction | Module | Integration Point |
-|-----------|--------|-------------------|
+| --------- | ------ | ----------------- |
 | **← RAG Layer** | INITIAL-9 | Uses `retrieve_context` tool |
 | **← Registry** | Phase 6 | Uses `list_runs`, `compare_runs`, `create_alias` tools |
 | **← Backtesting** | Phase 5 | Uses `run_backtest` tool |
