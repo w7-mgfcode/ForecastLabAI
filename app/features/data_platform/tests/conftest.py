@@ -13,7 +13,6 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
-from app.core.database import Base
 from app.features.data_platform.models import Calendar, Product, Store
 
 
@@ -21,15 +20,11 @@ from app.features.data_platform.models import Calendar, Product, Store
 async def db_session():
     """Create async database session for integration tests.
 
-    This fixture creates all tables, provides a session, and cleans up after.
-    Requires PostgreSQL to be running (docker-compose up -d).
+    Uses existing tables from migrations. Rolls back changes after each test.
+    Requires PostgreSQL to be running (docker-compose up -d) and migrations applied.
     """
     settings = get_settings()
     engine = create_async_engine(settings.database_url, echo=False)
-
-    # Create tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
 
     # Create session
     async_session_maker = async_sessionmaker(
@@ -42,11 +37,8 @@ async def db_session():
         try:
             yield session
         finally:
+            # Clean up test data by rolling back any uncommitted changes
             await session.rollback()
-
-    # Cleanup: drop all tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
 
     await engine.dispose()
 

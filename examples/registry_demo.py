@@ -35,7 +35,11 @@ def print_section(title: str) -> None:
 
 def print_response(response: httpx.Response, label: str = "") -> dict:
     """Print HTTP response details."""
-    data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+    data = (
+        response.json()
+        if response.headers.get("content-type", "").startswith("application/json")
+        else {}
+    )
     status_emoji = "✓" if response.status_code < 400 else "✗"
     print(f"{status_emoji} {label} [{response.status_code}]")
     if data:
@@ -210,7 +214,9 @@ def main() -> int:
     for metric, values in compare_data["metrics_diff"].items():
         if values["diff"] is not None:
             diff_pct = values["diff"] / values["b"] * 100 if values["b"] else 0
-            print(f"   {metric}: {values['a']:.2f} vs {values['b']:.2f} (Δ{values['diff']:+.2f}, {diff_pct:+.1f}%)")
+            print(
+                f"   {metric}: {values['a']:.2f} vs {values['b']:.2f} (Δ{values['diff']:+.2f}, {diff_pct:+.1f}%)"
+            )
 
     # ==========================================================================
     # Step 7: List runs and aliases
