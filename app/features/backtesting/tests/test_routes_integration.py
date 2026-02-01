@@ -49,7 +49,7 @@ class TestBacktestingRouteIntegration:
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
         data = response.json()
 
         assert data["store_id"] == sample_store.id
