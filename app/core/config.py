@@ -57,6 +57,13 @@ class Settings(BaseSettings):
     registry_artifact_root: str = "./artifacts/registry"
     registry_duplicate_policy: Literal["allow", "deny", "detect"] = "detect"
 
+    # Analytics
+    analytics_max_rows: int = 10000
+    analytics_max_date_range_days: int = 730
+
+    # Jobs
+    jobs_retention_days: int = 30
+
     @property
     def is_development(self) -> bool:
         """Check if running in development mode."""

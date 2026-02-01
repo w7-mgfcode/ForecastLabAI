@@ -15,9 +15,10 @@ This document indexes all implementation phases of the ForecastLabAI project.
 | 4 | Forecasting | Completed | PRP-5 | [4-FORECASTING.md](./PHASE/4-FORECASTING.md) |
 | 5 | Backtesting | Completed | PRP-6 | [5-BACKTESTING.md](./PHASE/5-BACKTESTING.md) |
 | 6 | Model Registry | Completed | PRP-7 | [6-MODEL_REGISTRY.md](./PHASE/6-MODEL_REGISTRY.md) |
-| 7 | RAG Knowledge Base | Pending | PRP-8 | - |
-| 8 | Dashboard | Pending | PRP-9 | - |
-| 9 | Agentic Layer | Pending | - | - |
+| 7 | Serving Layer | Completed | PRP-8 | [7-SERVING_LAYER.md](./PHASE/7-SERVING_LAYER.md) |
+| 8 | RAG Knowledge Base | Pending | PRP-9 | - |
+| 9 | Dashboard | Pending | PRP-10 | - |
+| 10 | Agentic Layer | Pending | - | - |
 
 ---
 
@@ -229,17 +230,60 @@ This document indexes all implementation phases of the ForecastLabAI project.
 - Pyright: 0 errors
 - Pytest: 103 unit + 24 integration tests
 
+### Phase 7: Serving Layer
+
+**Date Completed**: 2026-02-01
+
+**Summary**: Agent-first API design with RFC 7807 error responses:
+- RFC 7807 Problem Details for semantic error responses
+- Dimensions module for store/product discovery (LLM tool-calling optimized)
+- Analytics module for KPI aggregations and drilldown analysis
+- Jobs module for async-ready task orchestration
+- Rich OpenAPI descriptions for all endpoints
+
+**Key Deliverables**:
+- `app/core/problem_details.py` - RFC 7807 ProblemDetail schema and helpers
+- `app/features/dimensions/` - Store/product discovery endpoints
+- `app/features/analytics/` - KPI and drilldown endpoints
+- `app/features/jobs/` - Job ORM model, service, and endpoints
+- `alembic/versions/37e16ecef223_create_jobs_table.py` - Job table migration
+
+**API Endpoints**:
+- `GET /dimensions/stores` - List stores with pagination and filtering
+- `GET /dimensions/stores/{store_id}` - Get store by ID
+- `GET /dimensions/products` - List products with pagination and filtering
+- `GET /dimensions/products/{product_id}` - Get product by ID
+- `GET /analytics/kpis` - Compute KPIs for date range
+- `GET /analytics/drilldowns` - Drill into dimension
+- `POST /jobs` - Create and execute job
+- `GET /jobs` - List jobs with filtering
+- `GET /jobs/{job_id}` - Get job status
+- `DELETE /jobs/{job_id}` - Cancel pending job
+
+**Configuration (Settings)**:
+```python
+analytics_max_rows: int = 10000
+analytics_max_date_range_days: int = 730
+jobs_retention_days: int = 30
+```
+
+**Validation Results**:
+- Ruff: All checks passed
+- MyPy: 0 errors (103 source files)
+- Pyright: 0 errors
+- Pytest: 426 unit tests passed
+
 ---
 
 ## Pending Phases
 
-### Phase 7: RAG Knowledge Base
+### Phase 8: RAG Knowledge Base
 pgvector embeddings with evidence-grounded answers and citations.
 
-### Phase 8: Dashboard
+### Phase 9: Dashboard
 React + Vite + shadcn/ui frontend with data tables and visualizations.
 
-### Phase 9: Agentic Layer (Optional)
+### Phase 10: Agentic Layer (Optional)
 PydanticAI integration for experiment orchestration.
 
 ---
@@ -286,3 +330,4 @@ Each phase document (`docs/PHASE/X-PHASE_NAME.md`) contains:
 | 2026-01-31 | 4 | Forecasting module with model zoo completed |
 | 2026-01-31 | 5 | Backtesting module with time-series CV completed |
 | 2026-02-01 | 6 | Model Registry with run tracking and deployment aliases completed |
+| 2026-02-01 | 7 | Serving Layer with RFC 7807, dimensions, analytics, and jobs completed |
