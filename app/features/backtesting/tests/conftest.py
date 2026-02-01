@@ -25,41 +25,24 @@ from app.main import app
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Create async database session for integration tests.
 
-    Uses savepoint-based isolation: each test runs in a transaction that is
-    rolled back after the test completes. Tables must already exist (via migrations).
-
+    Creates tables if needed, provides a session, and cleans up test data.
     Requires PostgreSQL to be running (docker-compose up -d).
     """
     settings = get_settings()
     engine = create_async_engine(settings.database_url, echo=False)
 
-    # Create session factory
+    # Create session
     async_session_maker = async_sessionmaker(
         engine,
         class_=AsyncSession,
         expire_on_commit=False,
     )
 
-    # Use a connection with a transaction for isolation
-    async with engine.connect() as conn:
-        # Start an outer transaction
-        trans = await conn.begin()
-
-        # Create session bound to this connection
-        async with async_session_maker(bind=conn) as session:
-            # Create a savepoint for nested transaction
-            nested = await conn.begin_nested()
-
-            try:
-                yield session
-            finally:
-                # Roll back to savepoint
-                if nested.is_active:
-                    await nested.rollback()
-
-            # Roll back outer transaction (cleans up all test data)
-            if trans.is_active:
-                await trans.rollback()
+    async with async_session_maker() as session:
+        try:
+            yield session
+        finally:
+            await session.rollback()
 
     await engine.dispose()
 
@@ -68,7 +51,6 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
 async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     """Create test client with database dependency override."""
 
-    # Create an async generator that yields the session
     async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
         yield db_session
 
