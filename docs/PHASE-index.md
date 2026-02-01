@@ -12,9 +12,9 @@ This document indexes all implementation phases of the ForecastLabAI project.
 | 1 | Data Platform | Completed | PRP-2 | [1-DATA_PLATFORM.md](./PHASE/1-DATA_PLATFORM.md) |
 | 2 | Ingest Layer | Completed | PRP-3 | [2-INGEST_LAYER.md](./PHASE/2-INGEST_LAYER.md) |
 | 3 | Feature Engineering | Completed | PRP-4 | [3-FEATURE_ENGINEERING.md](./PHASE/3-FEATURE_ENGINEERING.md) |
-| 4 | Forecasting | Pending | PRP-5 | - |
-| 5 | Backtesting | Pending | PRP-6 | - |
-| 6 | Model Registry | Pending | PRP-7 | - |
+| 4 | Forecasting | Completed | PRP-5 | - |
+| 5 | Backtesting | Completed | PRP-6 | - |
+| 6 | Model Registry | Completed | PRP-7 | - |
 | 7 | RAG Knowledge Base | Pending | PRP-8 | - |
 | 8 | Dashboard | Pending | PRP-9 | - |
 | 9 | Agentic Layer | Pending | - | - |
@@ -156,18 +156,82 @@ This document indexes all implementation phases of the ForecastLabAI project.
 - Pyright: 0 errors
 - Pytest: 55 tests passed
 
+### Phase 4: Forecasting
+
+**Date Completed**: 2026-01-31
+
+**Summary**: Model zoo with unified forecaster interface:
+- BaseForecaster abstract class with `fit()` and `predict()` methods
+- Naive, SeasonalNaive, MovingAverage models implemented
+- LightGBM model (feature-flagged, disabled by default)
+- Model bundle persistence with joblib (fitted model + config + metadata)
+- POST /forecasting/train and POST /forecasting/predict endpoints
+
+**Key Deliverables**:
+- `app/features/forecasting/models.py` - BaseForecaster and model implementations
+- `app/features/forecasting/persistence.py` - ModelBundle save/load
+- `app/features/forecasting/schemas.py` - Request/response schemas
+- `app/features/forecasting/service.py` - ForecastingService
+- `app/features/forecasting/routes.py` - API endpoints
+- `examples/models/` - Baseline model examples
+
+### Phase 5: Backtesting
+
+**Date Completed**: 2026-01-31
+
+**Summary**: Time-series cross-validation with comprehensive metrics:
+- TimeSeriesSplitter with expanding/sliding window strategies
+- Gap parameter for operational latency simulation
+- Metrics: MAE, sMAPE (0-200), WAPE, Bias, Stability Index
+- Automatic baseline comparisons (naive, seasonal_naive)
+- Per-fold and aggregated metric storage
+- POST /backtesting/run endpoint
+
+**Key Deliverables**:
+- `app/features/backtesting/splitter.py` - TimeSeriesSplitter
+- `app/features/backtesting/metrics.py` - Metrics computation
+- `app/features/backtesting/schemas.py` - Request/response schemas
+- `app/features/backtesting/service.py` - BacktestingService
+- `app/features/backtesting/routes.py` - API endpoint
+- `examples/backtest/` - Usage examples (95 unit + 16 integration tests)
+
+### Phase 6: Model Registry
+
+**Date Completed**: 2026-02-01
+
+**Summary**: Full run tracking and deployment alias management:
+- ModelRun ORM with JSONB columns (model_config, metrics, runtime_info)
+- DeploymentAlias for mutable pointers to successful runs
+- State machine: PENDING → RUNNING → SUCCESS/FAILED → ARCHIVED
+- LocalFSProvider with SHA-256 integrity verification
+- Duplicate detection (configurable: allow/deny/detect)
+- Runtime environment capture and agent context tracking
+
+**Key Deliverables**:
+- `app/features/registry/models.py` - ModelRun, DeploymentAlias ORM models
+- `app/features/registry/storage.py` - LocalFSProvider with abstract interface
+- `app/features/registry/schemas.py` - Request/response schemas
+- `app/features/registry/service.py` - RegistryService
+- `app/features/registry/routes.py` - API endpoints (runs, aliases, compare)
+- `alembic/versions/a2f7b3c8d901_create_model_registry_tables.py` - Migration
+- `examples/registry_demo.py` - Workflow demo
+
+**API Endpoints**:
+- `POST /registry/runs` - Create run
+- `GET /registry/runs` - List with filters and pagination
+- `PATCH /registry/runs/{run_id}` - Update status/metrics/artifacts
+- `GET /registry/runs/{run_id}/verify` - Verify artifact integrity
+- `POST /registry/aliases` - Create deployment alias
+- `GET /registry/compare/{run_id_a}/{run_id_b}` - Compare runs
+
+**Validation Results**:
+- Ruff: All checks passed
+- Pyright: 0 errors
+- Pytest: 103 unit + 24 integration tests
+
 ---
 
 ## Pending Phases
-
-### Phase 4: Forecasting
-Model zoo with unified interface for naive, seasonal, and ML models.
-
-### Phase 5: Backtesting
-Rolling and expanding time-based cross-validation with per-series metrics.
-
-### Phase 6: Model Registry
-Run tracking with config, metrics, artifacts, and data windows.
 
 ### Phase 7: RAG Knowledge Base
 pgvector embeddings with evidence-grounded answers and citations.
@@ -219,3 +283,6 @@ Each phase document (`docs/PHASE/X-PHASE_NAME.md`) contains:
 | 2026-01-26 | 1 | Data Platform schema and migrations completed (v0.1.3) |
 | 2026-01-26 | 2 | Ingest Layer with POST /ingest/sales-daily endpoint completed |
 | 2026-01-31 | 3 | Feature Engineering with time-safe leakage prevention completed |
+| 2026-01-31 | 4 | Forecasting module with model zoo completed |
+| 2026-01-31 | 5 | Backtesting module with time-series CV completed |
+| 2026-02-01 | 6 | Model Registry with run tracking and deployment aliases completed |

@@ -118,7 +118,8 @@ app/
 │   ├── ingest/         # Batch upsert endpoints for sales data
 │   ├── featuresets/    # Time-safe feature engineering (lags, rolling, calendar)
 │   ├── forecasting/    # Model training, prediction, persistence
-│   └── backtesting/    # Time-series CV, metrics, baseline comparisons
+│   ├── backtesting/    # Time-series CV, metrics, baseline comparisons
+│   └── registry/       # Model run tracking, artifacts, deployment aliases
 └── main.py         # FastAPI entry point
 
 tests/              # Test fixtures and helpers
@@ -129,7 +130,8 @@ examples/
 ├── queries/        # Example SQL queries
 ├── models/         # Baseline model examples (naive, seasonal_naive, moving_average)
 ├── backtest/       # Backtesting examples (run_backtest, inspect_splits, metrics_demo)
-└── compute_features_demo.py  # Feature engineering demo
+├── compute_features_demo.py  # Feature engineering demo
+└── registry_demo.py  # Model registry workflow demo
 scripts/            # Utility scripts
 ```
 
@@ -300,6 +302,46 @@ curl -X POST http://localhost:8123/backtesting/run \
 When `include_baselines=true`, automatically compares against naive and seasonal_naive models.
 
 See [examples/backtest/](examples/backtest/) for usage examples.
+
+### Model Registry
+
+- `POST /registry/runs` - Create a new model run
+- `GET /registry/runs` - List runs with filtering and pagination
+- `GET /registry/runs/{run_id}` - Get run details
+- `PATCH /registry/runs/{run_id}` - Update run (status, metrics, artifacts)
+- `GET /registry/runs/{run_id}/verify` - Verify artifact integrity
+- `POST /registry/aliases` - Create or update deployment alias
+- `GET /registry/aliases` - List all aliases
+- `GET /registry/aliases/{alias_name}` - Get alias details
+- `DELETE /registry/aliases/{alias_name}` - Delete an alias
+- `GET /registry/compare/{run_id_a}/{run_id_b}` - Compare two runs
+
+**Example Create Run Request:**
+```bash
+curl -X POST http://localhost:8123/registry/runs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_type": "seasonal_naive",
+    "model_config": {"season_length": 7},
+    "data_window_start": "2024-01-01",
+    "data_window_end": "2024-03-31",
+    "store_id": 1,
+    "product_id": 1
+  }'
+```
+
+**Run Lifecycle:**
+- `pending` → `running` → `success` | `failed` → `archived`
+- Aliases can only point to runs with `success` status
+
+**Features:**
+- JSONB storage for model_config, metrics, runtime_info
+- SHA-256 artifact integrity verification
+- Duplicate detection (configurable: allow/deny/detect)
+- Runtime environment capture (Python, numpy, pandas versions)
+- Agent context tracking for autonomous workflows
+
+See [examples/registry_demo.py](examples/registry_demo.py) for a complete workflow demo.
 
 ## API Documentation
 
