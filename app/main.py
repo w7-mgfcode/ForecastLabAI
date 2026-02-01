@@ -11,6 +11,7 @@ from app.core.health import router as health_router
 from app.core.logging import configure_logging, get_logger
 from app.core.middleware import RequestIdMiddleware
 from app.features.featuresets.routes import router as featuresets_router
+from app.features.forecasting.routes import router as forecasting_router
 from app.features.ingest.routes import router as ingest_router
 
 logger = get_logger(__name__)
@@ -70,6 +71,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(ingest_router)
     app.include_router(featuresets_router)
+    app.include_router(forecasting_router)
 
     return app
 

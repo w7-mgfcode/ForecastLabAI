@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     feature_max_lag: int = 365
     feature_max_window: int = 90
 
+    # Forecasting
+    forecast_random_seed: int = 42
+    forecast_default_horizon: int = 14
+    forecast_max_horizon: int = 90
+    forecast_model_artifacts_dir: str = "./artifacts/models"
+    forecast_enable_lightgbm: bool = False
+
     @property
     def is_development(self) -> bool:
         """Check if running in development mode."""
