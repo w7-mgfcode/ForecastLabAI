@@ -276,9 +276,41 @@ forecast_model_artifacts_dir: str = "./artifacts/models"
 forecast_enable_lightgbm: bool = False
 ```
 
-### 7.5 Backtesting Protocol (Planned)
-- Time-based CV only: rolling or expanding splits (no random split).
-- Metrics: MAE, sMAPE (pinball loss later if needed).
+### 7.5 Backtesting Protocol — ✅ IMPLEMENTED
+
+**Implemented via PRP-6** - Time-series backtesting module provides:
+
+**Split Strategies:**
+| Strategy | Description | Train Size Behavior |
+|----------|-------------|---------------------|
+| `expanding` | Train window grows each fold | Increases per fold |
+| `sliding` | Fixed-size train window slides | Constant |
+
+**Gap Parameter:** Simulates operational data latency (e.g., `gap=7` = 7 days between train end and test start).
+
+**Metrics Suite:**
+| Metric | Description | Scale |
+|--------|-------------|-------|
+| MAE | Mean Absolute Error | Same as target |
+| sMAPE | Symmetric MAPE | 0-200 |
+| WAPE | Weighted Absolute Percentage Error | 0-100+ |
+| Bias | Forecast bias (positive = under-forecast) | Same as target |
+| Stability Index | CV of metrics across folds | 0-100+ |
+
+**Baseline Comparisons:** Automatic comparison against naive and seasonal_naive models with improvement percentages.
+
+**Leakage Validation:** Built-in validation ensures no data leakage in splits.
+
+**API Endpoint:** `POST /backtesting/run`
+
+**Location:**
+- Schemas: `app/features/backtesting/schemas.py`
+- Splitter: `app/features/backtesting/splitter.py`
+- Metrics: `app/features/backtesting/metrics.py`
+- Service: `app/features/backtesting/service.py`
+- Routes: `app/features/backtesting/routes.py`
+- Tests: `app/features/backtesting/tests/` (95 tests)
+- Examples: `examples/backtest/` (run_backtest.py, inspect_splits.py, metrics_demo.py)
 
 ### 7.6 Model Registry (Planned)
 Each run stores:
@@ -301,6 +333,7 @@ Each run stores:
 - `POST /featuresets/preview` - Preview features with sample rows
 - `POST /forecasting/train` - Train forecasting model (returns model_path)
 - `POST /forecasting/predict` - Generate forecasts using saved model
+- `POST /backtesting/run` - Run time-series CV backtest with baseline comparisons
 
 **Planned Endpoints:**
 - `GET /runs`, `GET /runs/{run_id}` - Model registry and leaderboard

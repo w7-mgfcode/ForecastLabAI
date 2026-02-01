@@ -504,6 +504,19 @@ app/
 │   ├── logging.py
 │   ├── middleware.py
 │   └── database.py
+├── features/
+│   ├── backtesting/
+│   │   └── tests/
+│   │       ├── conftest.py                    # Unit + integration fixtures
+│   │       ├── test_metrics.py                # Unit tests for metrics
+│   │       ├── test_runner.py                 # Unit tests for runner
+│   │       ├── test_schemas.py                # Unit tests for schemas
+│   │       ├── test_splitter.py               # Unit tests for splitter
+│   │       ├── test_routes_integration.py     # Integration tests for routes
+│   │       └── test_service_integration.py    # Integration tests for service
+│   └── forecasting/
+│       └── tests/
+│           └── ...
 └── shared/
     ├── tests/
     │   └── test_utils.py
@@ -698,6 +711,87 @@ def test_file_processing(tmp_path):
     assert result == "processed: test content"
 ```
 
+## Feature-Specific Testing
+
+### Backtesting Integration Tests
+
+The backtesting module includes comprehensive integration tests that verify the complete flow from API request through database queries to response.
+
+#### Test Fixtures (conftest.py)
+
+```python
+# Database fixtures for integration tests
+@pytest.fixture
+async def db_session() -> AsyncGenerator[AsyncSession, None]:
+    """Create async database session with table lifecycle management."""
+    settings = get_settings()
+    engine = create_async_engine(settings.database_url, echo=False)
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async_session_maker = async_sessionmaker(engine, class_=AsyncSession)
+    async with async_session_maker() as session:
+        try:
+            yield session
+        finally:
+            await session.rollback()
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
+
+@pytest.fixture
+async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
+    """Create test client with database dependency override."""
+    app.dependency_overrides[get_db] = lambda: db_session
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac
+    app.dependency_overrides.clear()
+
+# Sample data fixtures
+@pytest.fixture
+async def sample_store(db_session: AsyncSession) -> Store:
+    """Create a sample store for testing."""
+
+@pytest.fixture
+async def sample_product(db_session: AsyncSession) -> Product:
+    """Create a sample product for testing."""
+
+@pytest.fixture
+async def sample_calendar_120(db_session: AsyncSession) -> list[Calendar]:
+    """Create 120 calendar records starting from 2024-01-01."""
+
+@pytest.fixture
+async def sample_sales_120(...) -> list[SalesDaily]:
+    """Create 120 days of sequential sales data (quantity = day number 1-120)."""
+```
+
+#### Running Backtesting Tests
+
+```bash
+# All backtesting tests (unit + integration)
+uv run pytest app/features/backtesting/tests/ -v
+
+# Integration tests only (requires PostgreSQL)
+docker-compose up -d
+uv run pytest app/features/backtesting/tests/ -v -m integration
+
+# Unit tests only
+uv run pytest app/features/backtesting/tests/ -v -m "not integration"
+```
+
+#### Test Coverage
+
+| Test File | Type | Count | Description |
+|-----------|------|-------|-------------|
+| `test_metrics.py` | Unit | ~20 | Metric calculations (MAE, sMAPE, WAPE, Bias) |
+| `test_runner.py` | Unit | ~25 | Backtest runner logic |
+| `test_schemas.py` | Unit | ~15 | Pydantic schema validation |
+| `test_splitter.py` | Unit | ~35 | Time series splitter strategies |
+| `test_routes_integration.py` | Integration | 8 | API endpoint tests |
+| `test_service_integration.py` | Integration | 8 | Service layer database tests |
+
 ## CI/CD Integration
 
 ```yaml
@@ -732,6 +826,6 @@ jobs:
 
 ---
 
-**Last Updated:** 2025-10-29
+**Last Updated:** 2026-02-01
 **Pytest Version:** 8.4.2+
 **Python Version:** 3.12+
