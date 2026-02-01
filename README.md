@@ -119,7 +119,10 @@ app/
 │   ├── featuresets/    # Time-safe feature engineering (lags, rolling, calendar)
 │   ├── forecasting/    # Model training, prediction, persistence
 │   ├── backtesting/    # Time-series CV, metrics, baseline comparisons
-│   └── registry/       # Model run tracking, artifacts, deployment aliases
+│   ├── registry/       # Model run tracking, artifacts, deployment aliases
+│   ├── dimensions/     # Store/product discovery for LLM tool-calling
+│   ├── analytics/      # KPI aggregations and drilldown analysis
+│   └── jobs/           # Async-ready task orchestration
 └── main.py         # FastAPI entry point
 
 tests/              # Test fixtures and helpers
@@ -342,6 +345,136 @@ curl -X POST http://localhost:8123/registry/runs \
 - Agent context tracking for autonomous workflows
 
 See [examples/registry_demo.py](examples/registry_demo.py) for a complete workflow demo.
+
+### Dimensions (Discovery)
+
+- `GET /dimensions/stores` - List stores with pagination and filtering
+- `GET /dimensions/stores/{store_id}` - Get store details by ID
+- `GET /dimensions/products` - List products with pagination and filtering
+- `GET /dimensions/products/{product_id}` - Get product details by ID
+
+**Example Request:**
+```bash
+# List stores with filtering
+curl "http://localhost:8123/dimensions/stores?region=North&page=1&page_size=20"
+
+# Search for products
+curl "http://localhost:8123/dimensions/products?search=Cola&category=Beverage"
+```
+
+**Purpose:** Resolve store/product metadata to IDs before calling forecasting endpoints. Optimized for LLM agent tool-calling with rich Field descriptions.
+
+**Features:**
+- 1-indexed pagination (page=1 is first page)
+- Case-insensitive search in code/sku and name fields
+- Filter by region, store_type, category, or brand
+
+### Analytics
+
+- `GET /analytics/kpis` - Compute aggregated KPIs for a date range
+- `GET /analytics/drilldowns` - Drill into data by dimension (store, product, category, region, date)
+
+**Example KPI Request:**
+```bash
+curl "http://localhost:8123/analytics/kpis?start_date=2024-01-01&end_date=2024-01-31&store_id=1"
+```
+
+**Example Drilldown Request:**
+```bash
+curl "http://localhost:8123/analytics/drilldowns?dimension=store&start_date=2024-01-01&end_date=2024-01-31&max_items=10"
+```
+
+**Metrics Computed:**
+- `total_revenue`: Sum of sales amount
+- `total_units`: Sum of quantity sold
+- `total_transactions`: Count of unique sales records
+- `avg_unit_price`: Revenue / units
+- `avg_basket_value`: Revenue / transactions
+
+**Drilldown Dimensions:**
+- `store` - Group by store (returns code and ID)
+- `product` - Group by product (returns SKU and ID)
+- `category` - Group by product category
+- `region` - Group by store region
+- `date` - Daily breakdown
+
+### Jobs (Task Orchestration)
+
+- `POST /jobs` - Create and execute a job (train, predict, backtest)
+- `GET /jobs` - List jobs with filtering and pagination
+- `GET /jobs/{job_id}` - Get job status and result
+- `DELETE /jobs/{job_id}` - Cancel a pending job
+
+**Example Train Job:**
+```bash
+curl -X POST http://localhost:8123/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_type": "train",
+    "params": {
+      "model_type": "seasonal_naive",
+      "store_id": 1,
+      "product_id": 1,
+      "start_date": "2024-01-01",
+      "end_date": "2024-06-30",
+      "season_length": 7
+    }
+  }'
+```
+
+**Example Backtest Job:**
+```bash
+curl -X POST http://localhost:8123/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_type": "backtest",
+    "params": {
+      "model_type": "naive",
+      "store_id": 1,
+      "product_id": 1,
+      "start_date": "2024-01-01",
+      "end_date": "2024-06-30",
+      "n_splits": 5,
+      "test_size": 14
+    }
+  }'
+```
+
+**Job Types:**
+- `train` - Train a forecasting model (returns model_path)
+- `predict` - Generate predictions using a trained model
+- `backtest` - Run time-series cross-validation
+
+**Job Lifecycle:**
+- `pending` → `running` → `completed` | `failed`
+- `pending` → `cancelled` (via DELETE)
+
+**Features:**
+- Jobs execute synchronously but use async-ready API contracts (202 Accepted)
+- JSONB storage for flexible params and results
+- Links to model_run for train/backtest jobs
+
+### Error Responses (RFC 7807)
+
+All error responses follow RFC 7807 Problem Details format with `Content-Type: application/problem+json`:
+
+```json
+{
+  "type": "/errors/not-found",
+  "title": "Not Found",
+  "status": 404,
+  "detail": "Store not found: 999. Use GET /dimensions/stores to list available stores.",
+  "instance": "/requests/abc123",
+  "code": "NOT_FOUND",
+  "request_id": "abc123"
+}
+```
+
+**Error Types:**
+- `/errors/validation` - Request validation failed (422)
+- `/errors/not-found` - Resource not found (404)
+- `/errors/conflict` - Resource conflict (409)
+- `/errors/database` - Database error (500)
 
 ## API Documentation
 
