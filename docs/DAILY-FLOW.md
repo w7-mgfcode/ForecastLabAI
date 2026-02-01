@@ -162,14 +162,21 @@ gh run watch <RUN_ID>
 
 ---
 
-## Következő Phase: Ingest Layer (PRP-3)
+## Következő Phase: Forecasting (PRP-5)
 
 ```bash
 # Kezdés
 git checkout dev
 git pull origin dev
-git checkout -b feat/prp-3-ingest-layer
+git checkout -b feat/prp-5-forecasting
 
 # Fejlesztés...
-# PR → dev → main → release → phase-2 snapshot
+# PR → dev → main → release → phase-4 snapshot
 ```
+
+### PRP-5 Scope (INITIAL-5)
+- Model zoo: naive, seasonal naive, moving average
+- Unified model interface: fit/predict, serialize/load
+- Scikit-learn Pipeline: Scaling → Encoding → Regressor
+- Joblib-based ModelBundle persistence
+- Multi-horizon recursive forecasting
