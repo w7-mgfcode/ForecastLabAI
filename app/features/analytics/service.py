@@ -208,10 +208,17 @@ class AnalyticsService:
         # Order by revenue and limit
         stmt = stmt.order_by(func.sum(SalesDaily.total_amount).desc())
 
-        # Count total items before limiting
-        count_stmt = select(func.count()).select_from(stmt.subquery())
+        # Count total items and total revenue before limiting
+        # Use subquery to get count and sum from full result set
+        subq = stmt.subquery()
+        count_stmt = select(
+            func.count(),
+            func.coalesce(func.sum(subq.c.total_revenue), 0),
+        ).select_from(subq)
         count_result = await db.execute(count_stmt)
-        total_items = count_result.scalar_one()
+        count_row = count_result.one()
+        total_items = int(count_row[0])
+        total_revenue_all = Decimal(str(count_row[1]))
 
         # Apply limit
         stmt = stmt.limit(max_items)
@@ -219,9 +226,6 @@ class AnalyticsService:
         # Execute query
         result = await db.execute(stmt)
         rows = result.all()
-
-        # Calculate total revenue for share calculation
-        total_revenue_all = sum(Decimal(str(row.total_revenue)) for row in rows)
 
         # Build drilldown items
         items: list[DrilldownItem] = []

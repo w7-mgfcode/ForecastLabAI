@@ -346,13 +346,23 @@ class JobService:
             config=config,
         )
 
+        # Extract run_id from model_path (model_{run_id}.joblib format)
+        # The model_path looks like: /path/to/model_{uuid}.joblib
+        from pathlib import Path as PathLib
+
+        model_basename = PathLib(response.model_path).stem  # Remove .joblib extension
+        run_id = model_basename.replace("model_", "") if model_basename.startswith("model_") else model_basename
+
         return {
+            "run_id": run_id,
             "model_type": response.model_type,
             "model_path": response.model_path,
             "config_hash": response.config_hash,
             "n_observations": response.n_observations,
             "train_start_date": str(response.train_start_date),
             "train_end_date": str(response.train_end_date),
+            "store_id": response.store_id,
+            "product_id": response.product_id,
             "duration_ms": response.duration_ms,
         }
 
@@ -371,6 +381,9 @@ class JobService:
             Result dict with predictions.
         """
         # Import here to avoid circular imports
+        from pathlib import Path
+
+        from app.features.forecasting.persistence import load_model_bundle
         from app.features.forecasting.service import ForecastingService
 
         # Note: db is unused here but kept for consistent interface
@@ -378,18 +391,40 @@ class JobService:
 
         service = ForecastingService()
 
-        # Extract parameters
-        model_path = params["model_path"]
-        store_id = params["store_id"]
-        product_id = params["product_id"]
+        # Extract run_id from params (as documented in schema)
+        run_id = params["run_id"]
         horizon = params.get("horizon", 14)
+
+        # Resolve run_id to model_path and metadata
+        # Model path follows pattern: {artifacts_dir}/model_{run_id}.joblib
+        artifacts_dir = Path(self.settings.forecast_model_artifacts_dir)
+        model_path = artifacts_dir / f"model_{run_id}.joblib"
+
+        if not model_path.exists():
+            # Try without .joblib extension (older format)
+            model_path = artifacts_dir / f"model_{run_id}"
+            if not model_path.exists():
+                msg = f"Model not found for run_id: {run_id}"
+                raise FileNotFoundError(msg)
+
+        # Load bundle to get store_id and product_id from metadata
+        bundle = load_model_bundle(model_path, base_dir=artifacts_dir)
+        store_id_raw = bundle.metadata.get("store_id")
+        product_id_raw = bundle.metadata.get("product_id")
+        # Cast to int - metadata values are stored as int but typed as object
+        store_id = int(str(store_id_raw)) if store_id_raw is not None else 0
+        product_id = int(str(product_id_raw)) if product_id_raw is not None else 0
+
+        if store_id == 0 or product_id == 0:
+            msg = f"Model bundle missing store_id or product_id in metadata for run_id: {run_id}"
+            raise ValueError(msg)
 
         # Generate predictions
         response = await service.predict(
             store_id=store_id,
             product_id=product_id,
             horizon=horizon,
-            model_path=model_path,
+            model_path=str(model_path),
         )
 
         return {

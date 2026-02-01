@@ -32,7 +32,7 @@ def sample_predict_job_create() -> JobCreate:
     return JobCreate(
         job_type=JobType.PREDICT,
         params={
-            "run_id": "abc123def456789012345678901234",
+            "run_id": "abc123def4567890123456789012abcd",
             "horizon": 14,
         },
     )
@@ -60,7 +60,7 @@ def sample_job_response() -> JobResponse:
     """Create sample job response."""
     now = datetime.now(UTC)
     return JobResponse(
-        job_id="abc123def456789012345678901234",
+        job_id="abc123def4567890123456789012abcd",
         job_type=JobType.TRAIN,
         status=JobStatus.COMPLETED,
         params={
@@ -71,14 +71,14 @@ def sample_job_response() -> JobResponse:
             "end_date": "2024-06-30",
         },
         result={
-            "run_id": "xyz789abc123def456789012345678",
+            "run_id": "xyz789abc123def4567890123456abcd",
             "model_type": "naive",
             "training_samples": 180,
             "training_time_ms": 50.5,
         },
         error_message=None,
         error_type=None,
-        run_id="xyz789abc123def456789012345678",
+        run_id="xyz789abc123def4567890123456abcd",
         started_at=now,
         completed_at=now,
         created_at=now,

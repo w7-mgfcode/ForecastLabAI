@@ -6,9 +6,10 @@ with filtering by store, product, and date range.
 
 from datetime import date
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.features.analytics.schemas import (
@@ -21,6 +22,39 @@ from app.features.analytics.service import AnalyticsService
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
+
+
+# =============================================================================
+# Date Range Validation Helper
+# =============================================================================
+
+
+def validate_date_range(start_date: date, end_date: date) -> None:
+    """Validate that date range is valid.
+
+    Args:
+        start_date: Start of analysis period.
+        end_date: End of analysis period.
+
+    Raises:
+        HTTPException: If date range is invalid.
+    """
+    settings = get_settings()
+
+    if end_date < start_date:
+        raise HTTPException(
+            status_code=400,
+            detail=f"end_date ({end_date}) must be >= start_date ({start_date})",
+        )
+
+    days_diff = (end_date - start_date).days
+    max_days = settings.analytics_max_date_range_days
+
+    if days_diff > max_days:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Date range ({days_diff} days) exceeds maximum allowed ({max_days} days)",
+        )
 
 
 # =============================================================================
@@ -95,7 +129,13 @@ async def get_kpis(
 
     Returns:
         Aggregated KPI metrics.
+
+    Raises:
+        HTTPException: If date range is invalid.
     """
+    # Validate date range before processing
+    validate_date_range(start_date, end_date)
+
     service = AnalyticsService()
     return await service.compute_kpis(
         db=db,
@@ -190,7 +230,13 @@ async def get_drilldowns(
 
     Returns:
         Drilldown analysis with ranked items.
+
+    Raises:
+        HTTPException: If date range is invalid.
     """
+    # Validate date range before processing
+    validate_date_range(start_date, end_date)
+
     service = AnalyticsService()
     return await service.compute_drilldown(
         db=db,
