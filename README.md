@@ -95,7 +95,8 @@ app/
 │   ├── data_platform/  # Store, product, calendar, sales tables
 │   ├── ingest/         # Batch upsert endpoints for sales data
 │   ├── featuresets/    # Time-safe feature engineering (lags, rolling, calendar)
-│   └── forecasting/    # Model training, prediction, persistence
+│   ├── forecasting/    # Model training, prediction, persistence
+│   └── backtesting/    # Time-series CV, metrics, baseline comparisons
 └── main.py         # FastAPI entry point
 
 tests/              # Test fixtures and helpers
@@ -105,6 +106,7 @@ examples/
 ├── schema/         # Table documentation
 ├── queries/        # Example SQL queries
 ├── models/         # Baseline model examples (naive, seasonal_naive, moving_average)
+├── backtest/       # Backtesting examples (run_backtest, inspect_splits, metrics_demo)
 └── compute_features_demo.py  # Feature engineering demo
 scripts/            # Utility scripts
 ```
@@ -226,6 +228,56 @@ curl -X POST http://localhost:8123/forecasting/predict \
 - `lightgbm` - LightGBM regressor (requires `forecast_enable_lightgbm=True`)
 
 See [examples/models/](examples/models/) for baseline model examples.
+
+### Backtesting
+
+- `POST /backtesting/run` - Run time-series cross-validation backtest
+
+**Example Request:**
+```bash
+curl -X POST http://localhost:8123/backtesting/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "store_id": 1,
+    "product_id": 1,
+    "start_date": "2024-01-01",
+    "end_date": "2024-06-30",
+    "config": {
+      "split_config": {
+        "strategy": "expanding",
+        "n_splits": 5,
+        "min_train_size": 30,
+        "gap": 0,
+        "horizon": 14
+      },
+      "model_config_main": {
+        "model_type": "naive"
+      },
+      "include_baselines": true,
+      "store_fold_details": true
+    }
+  }'
+```
+
+**Split Strategies:**
+- `expanding` - Training window grows with each fold (sklearn-like TimeSeriesSplit)
+- `sliding` - Fixed-size training window slides forward
+
+**Gap Parameter:**
+- Simulates operational data latency between training and test periods
+- `gap=7` means 7 days between train end and test start
+
+**Metrics Calculated:**
+- MAE: Mean Absolute Error
+- sMAPE: Symmetric Mean Absolute Percentage Error (0-200 scale)
+- WAPE: Weighted Absolute Percentage Error
+- Bias: Forecast bias (positive = under-forecast)
+- Stability Index: Coefficient of variation across folds
+
+**Baseline Comparisons:**
+When `include_baselines=true`, automatically compares against naive and seasonal_naive models.
+
+See [examples/backtest/](examples/backtest/) for usage examples.
 
 ## API Documentation
 
