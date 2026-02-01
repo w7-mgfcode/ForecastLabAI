@@ -80,7 +80,7 @@ def sample_run_create() -> RunCreate:
     """Create a sample RunCreate for testing."""
     return RunCreate(
         model_type="test-naive",
-        model_config={"strategy": "last_value"},
+        model_config_data={"strategy": "last_value"},
         feature_config={"lags": [1, 7]},
         data_window_start=date(2024, 1, 1),
         data_window_end=date(2024, 3, 31),
@@ -96,7 +96,7 @@ def sample_run_create_minimal() -> RunCreate:
     """Create a minimal RunCreate for testing."""
     return RunCreate(
         model_type="test-minimal",
-        model_config={"type": "baseline"},
+        model_config_data={"type": "baseline"},
         data_window_start=date(2024, 1, 1),
         data_window_end=date(2024, 1, 31),
         store_id=1,
@@ -109,7 +109,7 @@ def sample_run_create_duplicate(sample_run_create: RunCreate) -> RunCreate:
     """Create a duplicate RunCreate (same config hash and data window)."""
     return RunCreate(
         model_type=sample_run_create.model_type,
-        model_config=sample_run_create.model_config_data,
+        model_config_data=sample_run_create.model_config_data,
         data_window_start=sample_run_create.data_window_start,
         data_window_end=sample_run_create.data_window_end,
         store_id=sample_run_create.store_id,

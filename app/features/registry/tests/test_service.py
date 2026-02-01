@@ -99,7 +99,7 @@ class TestRegistryServiceConfigHashDuplicate:
         """Config hash should be deterministic for same config."""
         run_data = RunCreate(
             model_type="naive",
-            model_config={"a": 1, "b": 2},
+            model_config_data={"a": 1, "b": 2},
             data_window_start=date(2024, 1, 1),
             data_window_end=date(2024, 1, 31),
             store_id=1,
@@ -113,7 +113,7 @@ class TestRegistryServiceConfigHashDuplicate:
         """Config hash should be same regardless of key order."""
         run1 = RunCreate(
             model_type="naive",
-            model_config={"a": 1, "b": 2, "c": 3},
+            model_config_data={"a": 1, "b": 2, "c": 3},
             data_window_start=date(2024, 1, 1),
             data_window_end=date(2024, 1, 31),
             store_id=1,
@@ -121,7 +121,7 @@ class TestRegistryServiceConfigHashDuplicate:
         )
         run2 = RunCreate(
             model_type="naive",
-            model_config={"c": 3, "a": 1, "b": 2},
+            model_config_data={"c": 3, "a": 1, "b": 2},
             data_window_start=date(2024, 1, 1),
             data_window_end=date(2024, 1, 31),
             store_id=1,

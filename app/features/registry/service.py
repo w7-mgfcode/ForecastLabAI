@@ -623,30 +623,33 @@ class RegistryService:
         Returns:
             Response schema.
         """
-        return RunResponse(
-            run_id=model_run.run_id,
-            status=RunStatus(model_run.status),
-            model_type=model_run.model_type,
-            model_config=model_run.model_config,
-            feature_config=model_run.feature_config,
-            config_hash=model_run.config_hash,
-            data_window_start=model_run.data_window_start,
-            data_window_end=model_run.data_window_end,
-            store_id=model_run.store_id,
-            product_id=model_run.product_id,
-            metrics=model_run.metrics,
-            artifact_uri=model_run.artifact_uri,
-            artifact_hash=model_run.artifact_hash,
-            artifact_size_bytes=model_run.artifact_size_bytes,
-            runtime_info=model_run.runtime_info,
-            agent_context=model_run.agent_context,
-            git_sha=model_run.git_sha,
-            error_message=model_run.error_message,
-            started_at=model_run.started_at,
-            completed_at=model_run.completed_at,
-            created_at=model_run.created_at,
-            updated_at=model_run.updated_at,
-        )
+        # Build a dict that maps to the schema field names
+        # model_config in ORM -> model_config_data in schema (via alias "model_config")
+        data = {
+            "run_id": model_run.run_id,
+            "status": RunStatus(model_run.status),
+            "model_type": model_run.model_type,
+            "model_config": model_run.model_config,  # uses alias
+            "feature_config": model_run.feature_config,
+            "config_hash": model_run.config_hash,
+            "data_window_start": model_run.data_window_start,
+            "data_window_end": model_run.data_window_end,
+            "store_id": model_run.store_id,
+            "product_id": model_run.product_id,
+            "metrics": model_run.metrics,
+            "artifact_uri": model_run.artifact_uri,
+            "artifact_hash": model_run.artifact_hash,
+            "artifact_size_bytes": model_run.artifact_size_bytes,
+            "runtime_info": model_run.runtime_info,
+            "agent_context": model_run.agent_context,
+            "git_sha": model_run.git_sha,
+            "error_message": model_run.error_message,
+            "started_at": model_run.started_at,
+            "completed_at": model_run.completed_at,
+            "created_at": model_run.created_at,
+            "updated_at": model_run.updated_at,
+        }
+        return RunResponse.model_validate(data)
 
     def _compute_config_diff(
         self, config_a: dict[str, Any], config_b: dict[str, Any]

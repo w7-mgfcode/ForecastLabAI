@@ -121,7 +121,7 @@ class TestRunCreate:
         """Should create with only required fields."""
         run = RunCreate(
             model_type="naive",
-            model_config={"strategy": "last_value"},
+            model_config_data={"strategy": "last_value"},
             data_window_start=date(2024, 1, 1),
             data_window_end=date(2024, 3, 31),
             store_id=1,
@@ -137,7 +137,7 @@ class TestRunCreate:
         """Should create with all fields."""
         run = RunCreate(
             model_type="seasonal_naive",
-            model_config={"season_length": 7},
+            model_config_data={"season_length": 7},
             feature_config={"lags": [1, 7, 14]},
             data_window_start=date(2024, 1, 1),
             data_window_end=date(2024, 6, 30),
@@ -156,7 +156,7 @@ class TestRunCreate:
         with pytest.raises(ValidationError) as exc_info:
             RunCreate(
                 model_type="",
-                model_config={},
+                model_config_data={},
                 data_window_start=date(2024, 1, 1),
                 data_window_end=date(2024, 1, 31),
                 store_id=1,
@@ -169,7 +169,7 @@ class TestRunCreate:
         with pytest.raises(ValidationError) as exc_info:
             RunCreate(
                 model_type="a" * 51,
-                model_config={},
+                model_config_data={},
                 data_window_start=date(2024, 1, 1),
                 data_window_end=date(2024, 1, 31),
                 store_id=1,
@@ -182,7 +182,7 @@ class TestRunCreate:
         with pytest.raises(ValidationError) as exc_info:
             RunCreate(
                 model_type="naive",
-                model_config={},
+                model_config_data={},
                 data_window_start=date(2024, 1, 1),
                 data_window_end=date(2024, 1, 31),
                 store_id=0,
@@ -195,7 +195,7 @@ class TestRunCreate:
         with pytest.raises(ValidationError) as exc_info:
             RunCreate(
                 model_type="naive",
-                model_config={},
+                model_config_data={},
                 data_window_start=date(2024, 1, 1),
                 data_window_end=date(2024, 1, 31),
                 store_id=1,
@@ -208,7 +208,7 @@ class TestRunCreate:
         with pytest.raises(ValidationError) as exc_info:
             RunCreate(
                 model_type="naive",
-                model_config={},
+                model_config_data={},
                 data_window_start=date(2024, 3, 1),
                 data_window_end=date(2024, 1, 1),
                 store_id=1,
@@ -220,7 +220,7 @@ class TestRunCreate:
         """data_window_end == data_window_start should be valid."""
         run = RunCreate(
             model_type="naive",
-            model_config={},
+            model_config_data={},
             data_window_start=date(2024, 1, 1),
             data_window_end=date(2024, 1, 1),
             store_id=1,
@@ -232,7 +232,7 @@ class TestRunCreate:
         """config_hash should be deterministic for same config."""
         run1 = RunCreate(
             model_type="naive",
-            model_config={"a": 1, "b": 2},
+            model_config_data={"a": 1, "b": 2},
             data_window_start=date(2024, 1, 1),
             data_window_end=date(2024, 1, 31),
             store_id=1,
@@ -240,7 +240,7 @@ class TestRunCreate:
         )
         run2 = RunCreate(
             model_type="naive",
-            model_config={"b": 2, "a": 1},  # Same config, different order
+            model_config_data={"b": 2, "a": 1},  # Same config, different order
             data_window_start=date(2024, 1, 1),
             data_window_end=date(2024, 1, 31),
             store_id=1,
@@ -252,7 +252,7 @@ class TestRunCreate:
         """config_hash should differ for different configs."""
         run1 = RunCreate(
             model_type="naive",
-            model_config={"a": 1},
+            model_config_data={"a": 1},
             data_window_start=date(2024, 1, 1),
             data_window_end=date(2024, 1, 31),
             store_id=1,
@@ -260,7 +260,7 @@ class TestRunCreate:
         )
         run2 = RunCreate(
             model_type="naive",
-            model_config={"a": 2},
+            model_config_data={"a": 2},
             data_window_start=date(2024, 1, 1),
             data_window_end=date(2024, 1, 31),
             store_id=1,
@@ -272,7 +272,7 @@ class TestRunCreate:
         """config_hash should be 16 characters."""
         run = RunCreate(
             model_type="naive",
-            model_config={"test": True},
+            model_config_data={"test": True},
             data_window_start=date(2024, 1, 1),
             data_window_end=date(2024, 1, 31),
             store_id=1,
