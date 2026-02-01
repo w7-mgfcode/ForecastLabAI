@@ -6,6 +6,7 @@ see fixtures in tests/conftest.py since it's not in their parent path. This is i
 pytest behavior to allow feature tests to be self-contained.
 """
 
+from contextlib import suppress
 from datetime import date
 from decimal import Decimal
 
@@ -47,14 +48,12 @@ async def db_session():
             yield session
         finally:
             # Rollback any pending transaction first (required if test caused an error)
-            try:
+            with suppress(Exception):
                 await session.rollback()
-            except Exception:
-                pass
 
     # Use a fresh session for cleanup to avoid transaction state issues
     async with async_session_maker() as cleanup_session:
-        try:
+        with suppress(Exception):
             # Clean up test data (delete in correct order due to FK constraints)
             await cleanup_session.execute(delete(SalesDaily))
             await cleanup_session.execute(delete(InventorySnapshotDaily))
@@ -69,9 +68,6 @@ async def db_session():
                 )
             )
             await cleanup_session.commit()
-        except Exception:
-            # If cleanup fails, continue anyway - next test run will try again
-            pass
 
     await engine.dispose()
 
