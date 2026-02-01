@@ -198,7 +198,7 @@ class BacktestRequest(BaseModel):
         config: Backtest configuration.
     """
 
-    model_config = ConfigDict(strict=True)
+    model_config = ConfigDict(extra="forbid")
 
     store_id: int = Field(..., ge=1, description="Store ID")
     product_id: int = Field(..., ge=1, description="Product ID")
