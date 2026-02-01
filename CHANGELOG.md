@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.2.0](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.0...v0.2.0) (2026-02-01)
+
+
+### Features
+
+* **backtesting:** implement time-series backtesting module (PRP-6) ([#32](https://github.com/w7-mgfcode/ForecastLabAI/issues/32)) ([8aca4d1](https://github.com/w7-mgfcode/ForecastLabAI/commit/8aca4d13a57c0b6ebf416a384995d98c35884121))
+* **backtesting:** wire config fields into implementation ([daef9ce](https://github.com/w7-mgfcode/ForecastLabAI/commit/daef9ce3d72bf90ca53f61a095576c454385c93b))
+* **backtesting:** wire config fields into implementation ([80e99e8](https://github.com/w7-mgfcode/ForecastLabAI/commit/80e99e8113bc7a935a392229e72e5f416e0bda75))
+* **data-platform:** implement PRP-2 schema and migrations ([#12](https://github.com/w7-mgfcode/ForecastLabAI/issues/12)) ([c392942](https://github.com/w7-mgfcode/ForecastLabAI/commit/c39294249a628fdcc2567f622a65e71dafa24d62))
+* **featuresets:** implement time-safe feature engineering layer ([#24](https://github.com/w7-mgfcode/ForecastLabAI/issues/24)) ([8541553](https://github.com/w7-mgfcode/ForecastLabAI/commit/8541553aef8eb5288c8fe86705ad7f22459c3430))
+* **forecasting:** add baseline model zoo with security validations ([3da7783](https://github.com/w7-mgfcode/ForecastLabAI/commit/3da7783748f8d9bf2fe96e194274aa88f69bdfd2))
+* **forecasting:** implement baseline model zoo and unified interface ([#28](https://github.com/w7-mgfcode/ForecastLabAI/issues/28)) ([a9a055f](https://github.com/w7-mgfcode/ForecastLabAI/commit/a9a055f39cb781dbb5b6f8f9b76e7d4e833d30ce))
+* implement Phase 0 project foundation ([17c81cd](https://github.com/w7-mgfcode/ForecastLabAI/commit/17c81cd21bb7aa0de97d0beebe434f6a0098fa0a))
+* implement Phase 1 CI/CD and repo governance ([36874ba](https://github.com/w7-mgfcode/ForecastLabAI/commit/36874ba620e49585e8373f971169c2b026dd3af9))
+* **ingest:** implement idempotent batch upsert endpoint for sales_daily ([#19](https://github.com/w7-mgfcode/ForecastLabAI/issues/19)) ([0e15cb3](https://github.com/w7-mgfcode/ForecastLabAI/commit/0e15cb34587c744c41e20c554c82adf3ff27f853))
+
+
+### Bug Fixes
+
+* add 'testing' to allowed app_env values ([d0b152e](https://github.com/w7-mgfcode/ForecastLabAI/commit/d0b152e3a99a4ed9f00f5a481a467dbd99f9aa69))
+* address code review feedback ([1e0db5e](https://github.com/w7-mgfcode/ForecastLabAI/commit/1e0db5eeb92d2abd4052fbabde7b4710780a36c9))
+* **backtesting:** handle signed metrics in comparison summary ([215d249](https://github.com/w7-mgfcode/ForecastLabAI/commit/215d249a056727c3d95f568ce5eba7dbd52f443c))
+* **ci:** use uv build instead of python -m build ([#9](https://github.com/w7-mgfcode/ForecastLabAI/issues/9)) ([c2b22d3](https://github.com/w7-mgfcode/ForecastLabAI/commit/c2b22d3c760df5bbeae6bb745a25801fb8a20f4c))
+* **docs:** address CodeRabbit review comments ([3fb1b06](https://github.com/w7-mgfcode/ForecastLabAI/commit/3fb1b06b584b7f0e39019de49d68ebc456ec02a7))
+* **forecasting:** add security validations and fix documentation ([1d411f9](https://github.com/w7-mgfcode/ForecastLabAI/commit/1d411f9ebd43e11b7bcba4525ba75cba7903dfbe))
+* make config tests environment-agnostic ([65bc671](https://github.com/w7-mgfcode/ForecastLabAI/commit/65bc671b3f8532b8ca979b823e0ee8d04c752688))
+* remove CRLF line endings from pyproject.toml ([#6](https://github.com/w7-mgfcode/ForecastLabAI/issues/6)) ([66007a2](https://github.com/w7-mgfcode/ForecastLabAI/commit/66007a257e4fa810982dacab3c09e109c9b0bd89))
+
+
+### Documentation
+
+* add DAILY-FLOW and PHASE-FLOW documentation ([292e8c6](https://github.com/w7-mgfcode/ForecastLabAI/commit/292e8c67957488de981da27686bbd20f03040ed0))
+* add Phase 2 (Ingest Layer) documentation ([#20](https://github.com/w7-mgfcode/ForecastLabAI/issues/20)) ([3249bf6](https://github.com/w7-mgfcode/ForecastLabAI/commit/3249bf61387501c38a7455479457ef6cfe778323))
+* mark Phase 1 as completed (v0.1.3) ([#15](https://github.com/w7-mgfcode/ForecastLabAI/issues/15)) ([10601ef](https://github.com/w7-mgfcode/ForecastLabAI/commit/10601ef4f3e87ade284a4f914a422e3782e4d5d4))
+* update DAILY-FLOW.md for Phase 4 Forecasting ([#27](https://github.com/w7-mgfcode/ForecastLabAI/issues/27)) ([e2c57ff](https://github.com/w7-mgfcode/ForecastLabAI/commit/e2c57ffb35cfa1fe0a4d0b6b9d1f56be9abdc7d9))
+* update phase-0 documentation with CI/CD infrastructure ([#4](https://github.com/w7-mgfcode/ForecastLabAI/issues/4)) ([e33aade](https://github.com/w7-mgfcode/ForecastLabAI/commit/e33aade1b5a24dad131884c9ad058a82ab94ff8f))
+
+
+### Miscellaneous Chores
+
+* **main:** release 0.2.0 ([#38](https://github.com/w7-mgfcode/ForecastLabAI/issues/38)) ([964448d](https://github.com/w7-mgfcode/ForecastLabAI/commit/964448dda7c9bebdfbc95de66a932bd4e9390a81))
+
 ## [0.2.0](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.1.8...v0.2.0) (2026-02-01)
 
 
