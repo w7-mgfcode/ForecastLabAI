@@ -10,6 +10,8 @@ from app.core.exceptions import register_exception_handlers
 from app.core.health import router as health_router
 from app.core.logging import configure_logging, get_logger
 from app.core.middleware import RequestIdMiddleware
+from app.features.agents.routes import router as agents_router
+from app.features.agents.websocket import router as agents_ws_router
 from app.features.analytics.routes import router as analytics_router
 from app.features.backtesting.routes import router as backtesting_router
 from app.features.dimensions.routes import router as dimensions_router
@@ -84,6 +86,8 @@ def create_app() -> FastAPI:
     app.include_router(backtesting_router)
     app.include_router(registry_router)
     app.include_router(rag_router)
+    app.include_router(agents_router)
+    app.include_router(agents_ws_router)
 
     return app
 

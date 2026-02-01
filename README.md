@@ -9,6 +9,7 @@ Portfolio-grade end-to-end retail demand forecasting system.
 - **Serving Layer**: Typed FastAPI endpoints (Pydantic v2 validation)
 - **Model Registry**: Run configs, metrics, artifacts, and data windows for reproducibility
 - **RAG Knowledge Base**: Postgres pgvector embeddings + evidence-grounded answers with citations
+- **Agentic Layer**: PydanticAI agents for autonomous experimentation and evidence-grounded Q&A with human-in-the-loop approval
 
 ## Quick Start
 
@@ -120,6 +121,8 @@ app/
 │   ├── forecasting/    # Model training, prediction, persistence
 │   ├── backtesting/    # Time-series CV, metrics, baseline comparisons
 │   ├── registry/       # Model run tracking, artifacts, deployment aliases
+│   ├── rag/            # pgvector embeddings, semantic search, citations
+│   ├── agents/         # PydanticAI agents (experiment, RAG assistant)
 │   ├── dimensions/     # Store/product discovery for LLM tool-calling
 │   ├── analytics/      # KPI aggregations and drilldown analysis
 │   └── jobs/           # Async-ready task orchestration
@@ -506,6 +509,85 @@ curl -X POST http://localhost:8123/rag/retrieve \
 - Idempotent indexing via content hash
 - Markdown and OpenAPI chunking strategies
 - Configurable embedding dimensions
+
+### Agentic Layer
+
+- `POST /agents/sessions` - Create a new agent session
+- `GET /agents/sessions/{session_id}` - Get session status and details
+- `POST /agents/sessions/{session_id}/chat` - Send a message to the agent
+- `POST /agents/sessions/{session_id}/approve` - Approve or reject a pending action
+- `DELETE /agents/sessions/{session_id}` - Close a session
+- `WS /agents/stream` - WebSocket streaming endpoint for real-time responses
+
+**Agent Types:**
+
+1. **Experiment Orchestrator** (`agent_type: "experiment"`):
+   - Autonomous model experimentation workflow
+   - Runs backtests and compares configurations
+   - Recommends best model with human-in-the-loop approval
+
+2. **RAG Assistant** (`agent_type: "rag_assistant"`):
+   - Evidence-grounded documentation Q&A
+   - Citation-backed responses with confidence scoring
+   - "Insufficient evidence" detection to prevent hallucination
+
+**Example Create Session Request:**
+```bash
+curl -X POST http://localhost:8123/agents/sessions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_type": "rag_assistant",
+    "initial_context": null
+  }'
+```
+
+**Example Chat Request:**
+```bash
+curl -X POST http://localhost:8123/agents/sessions/{session_id}/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "How does backtesting prevent data leakage?"
+  }'
+```
+
+**Features:**
+- PydanticAI v1.48.0 for structured, type-safe agent orchestration
+- Session management with PostgreSQL JSONB message history
+- Human-in-the-loop approval for sensitive actions (create_alias, archive_run)
+- WebSocket streaming for real-time token delivery
+- Token usage tracking and tool call auditing
+
+**Configuration:**
+```bash
+# Agent LLM Configuration
+# Model format: "provider:model-name" (e.g., anthropic:claude-sonnet-4-5)
+AGENT_DEFAULT_MODEL=anthropic:claude-sonnet-4-5
+AGENT_FALLBACK_MODEL=openai:gpt-4o
+AGENT_TEMPERATURE=0.1
+AGENT_MAX_TOKENS=4096
+
+# API Keys (set based on your chosen provider)
+ANTHROPIC_API_KEY=sk-ant-your-key
+# OPENAI_API_KEY=sk-your-key
+# GOOGLE_API_KEY=your-google-api-key  # For Gemini models
+
+# Execution Configuration
+AGENT_MAX_TOOL_CALLS=10
+AGENT_TIMEOUT_SECONDS=120
+AGENT_RETRY_ATTEMPTS=3
+AGENT_RETRY_DELAY_SECONDS=1.0
+
+# Session Configuration
+AGENT_SESSION_TTL_MINUTES=120
+AGENT_MAX_SESSIONS_PER_USER=5
+
+# Human-in-the-loop Configuration (JSON array format)
+AGENT_REQUIRE_APPROVAL=["create_alias","archive_run"]
+AGENT_APPROVAL_TIMEOUT_MINUTES=60
+
+# Streaming Configuration
+AGENT_ENABLE_STREAMING=true
+```
 
 ### Error Responses (RFC 7807)
 

@@ -17,7 +17,7 @@ This document indexes all implementation phases of the ForecastLabAI project.
 | 6 | Model Registry | Completed | PRP-7 | [6-MODEL_REGISTRY.md](./PHASE/6-MODEL_REGISTRY.md) |
 | 7 | Serving Layer | Completed | PRP-8 | [7-SERVING_LAYER.md](./PHASE/7-SERVING_LAYER.md) |
 | 8 | RAG Knowledge Base | Completed | PRP-9 | [8-RAG_KNOWLEDGE_BASE.md](./PHASE/8-RAG_KNOWLEDGE_BASE.md) |
-| 9 | Agentic Layer | Pending | PRP-10 | - |
+| 9 | Agentic Layer | Completed | PRP-10 | [9-AGENTIC_LAYER.md](./PHASE/9-AGENTIC_LAYER.md) |
 | 10 | ForecastLab Dashboard | Pending | PRP-11 | - |
 
 ---
@@ -314,17 +314,64 @@ ollama_embedding_model: str = "nomic-embed-text"
 - Pyright: 0 errors
 - Pytest: 82 unit tests + 14 integration tests
 
+### [Phase 9: Agentic Layer](./PHASE/9-AGENTIC_LAYER.md)
+
+**Date Completed**: 2026-02-01
+
+**Summary**: Agentic Layer ("The Brain") for autonomous decision-making and tool orchestration:
+- PydanticAI-based agents with lazy initialization and structured outputs
+- Experiment Agent (autonomous model testing, backtesting, deployment orchestration)
+- RAG Assistant Agent (evidence-grounded Q&A with citations)
+- Session management with PostgreSQL JSONB message history
+- Human-in-the-loop approval workflow for sensitive actions
+- REST API (`/agents/sessions/*`) and WebSocket streaming (`/agents/stream`)
+- Tool integration with Registry, Backtesting, Forecasting, and RAG modules
+- 92 unit tests with comprehensive coverage
+
+**Key Deliverables**:
+- `app/features/agents/agents/experiment.py` - Experiment Orchestrator Agent
+- `app/features/agents/agents/rag_assistant.py` - RAG Assistant Agent
+- `app/features/agents/tools/` - Tool modules for registry, backtesting, forecasting, RAG
+- `app/features/agents/service.py` - AgentService with session lifecycle management
+- `app/features/agents/routes.py` - REST endpoints for session and chat
+- `app/features/agents/websocket.py` - WebSocket streaming endpoint
+- `app/features/agents/models.py` - AgentSession ORM model
+- `alembic/versions/d6e0f2g3h456_create_agent_session_table.py` - Agent session table migration
+- `pyproject.toml` - Added PydanticAI 1.48.0, Anthropic SDK 0.50.0
+
+**API Endpoints**:
+- `POST /agents/sessions` - Create new agent session
+- `GET /agents/sessions/{session_id}` - Get session status
+- `POST /agents/sessions/{session_id}/chat` - Send message to agent
+- `POST /agents/sessions/{session_id}/approve` - Approve/reject pending action
+- `DELETE /agents/sessions/{session_id}` - Close session
+- `WS /agents/stream` - WebSocket streaming endpoint
+
+**Configuration (Settings)**:
+```python
+agent_default_model: str = "anthropic:claude-sonnet-4-5"
+agent_temperature: float = 0.1
+agent_max_tokens: int = 4096
+anthropic_api_key: str = ""
+agent_max_tool_calls: int = 10
+agent_timeout_seconds: int = 120
+agent_session_ttl_minutes: int = 120
+agent_approval_timeout_minutes: int = 60
+agent_require_approval: list[str] = ["create_alias", "archive_run"]
+agent_enable_streaming: bool = True
+```
+
+**Validation Results**:
+- Ruff: All checks passed
+- MyPy: 0 errors
+- Pyright: 0 errors (22 warnings from PydanticAI partial type coverage)
+- Pytest: 92 unit tests passed
+
+**PR**: [#55](https://github.com/w7-mgfcode/ForecastLabAI/pull/55) (Open, +7,835 additions)
+
 ---
 
 ## Pending Phases
-
-### Phase 9: Agentic Layer ("The Brain")
-Autonomous decision-making, tool orchestration, and structured outputs using PydanticAI.
-- Experiment Orchestrator Agent (backtest → compare → deploy workflow)
-- RAG Assistant Agent (query → retrieve → answer with citations)
-- Human-in-the-loop approval for sensitive operations
-- WebSocket streaming for real-time responses
-- Endpoints: POST /agents/experiment/run, POST /agents/rag/query, WS /agents/stream
 
 ### Phase 10: ForecastLab Dashboard ("The Face")
 User interface, data visualization, and agent interaction.
@@ -380,3 +427,4 @@ Each phase document (`docs/PHASE/X-PHASE_NAME.md`) contains:
 | 2026-02-01 | 6 | Model Registry with run tracking and deployment aliases completed |
 | 2026-02-01 | 7 | Serving Layer with RFC 7807, dimensions, analytics, and jobs completed |
 | 2026-02-01 | 8 | RAG Knowledge Base with pgvector and Ollama embedding provider completed |
+| 2026-02-01 | 9 | Agentic Layer with PydanticAI agents and human-in-the-loop approval completed |
