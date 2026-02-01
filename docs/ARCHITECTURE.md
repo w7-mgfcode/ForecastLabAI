@@ -378,20 +378,57 @@ registry_duplicate_policy: Literal["allow", "deny", "detect"] = "detect"
 
 ---
 
-## 8) Typed FastAPI Contracts (Serving Layer)
+## 8) Typed FastAPI Contracts (Serving Layer) — ✅ IMPLEMENTED
 
-**Implemented Endpoints:**
+**Implemented via PRP-8** - Agent-first API design with RFC 7807 error responses:
+
+### 8.1 RFC 7807 Problem Details
+
+All error responses use RFC 7807 format with `Content-Type: application/problem+json`:
+- Type URIs: `/errors/validation`, `/errors/not-found`, `/errors/conflict`, `/errors/database`
+- Includes `request_id` for correlation
+- Field-level validation errors for 422 responses
+
+### 8.2 Implemented Endpoints
+
+**Health & Core:**
 - `GET /health` - Health check
+
+**Dimensions (Discovery):**
+- `GET /dimensions/stores` - List stores with pagination, filtering, search
+- `GET /dimensions/stores/{store_id}` - Get store by ID
+- `GET /dimensions/products` - List products with pagination, filtering, search
+- `GET /dimensions/products/{product_id}` - Get product by ID
+
+**Analytics:**
+- `GET /analytics/kpis` - Compute KPIs for date range with filters
+- `GET /analytics/drilldowns` - Drill into dimension (store, product, category, region, date)
+
+**Jobs (Task Orchestration):**
+- `POST /jobs` - Create and execute job (train, predict, backtest)
+- `GET /jobs` - List jobs with filtering and pagination
+- `GET /jobs/{job_id}` - Get job status and result
+- `DELETE /jobs/{job_id}` - Cancel pending job
+
+**Ingest:**
 - `POST /ingest/sales-daily` - Batch upsert daily sales records
+
+**Feature Engineering:**
 - `POST /featuresets/compute` - Compute time-safe features
 - `POST /featuresets/preview` - Preview features with sample rows
-- `POST /forecasting/train` - Train forecasting model (returns model_path)
-- `POST /forecasting/predict` - Generate forecasts using saved model
-- `POST /backtesting/run` - Run time-series CV backtest with baseline comparisons
+
+**Forecasting:**
+- `POST /forecasting/train` - Train forecasting model
+- `POST /forecasting/predict` - Generate forecasts
+
+**Backtesting:**
+- `POST /backtesting/run` - Run time-series CV backtest
+
+**Model Registry:**
 - `POST /registry/runs` - Create model run
 - `GET /registry/runs` - List runs with filters
 - `GET /registry/runs/{run_id}` - Get run details
-- `PATCH /registry/runs/{run_id}` - Update run status/metrics/artifacts
+- `PATCH /registry/runs/{run_id}` - Update status/metrics/artifacts
 - `GET /registry/runs/{run_id}/verify` - Verify artifact integrity
 - `POST /registry/aliases` - Create deployment alias
 - `GET /registry/aliases` - List aliases
@@ -399,8 +436,23 @@ registry_duplicate_policy: Literal["allow", "deny", "detect"] = "detect"
 - `DELETE /registry/aliases/{alias_name}` - Delete alias
 - `GET /registry/compare/{run_id_a}/{run_id_b}` - Compare two runs
 
+### 8.3 Location
+
+- Problem Details: `app/core/problem_details.py`
+- Dimensions: `app/features/dimensions/` (schemas, service, routes)
+- Analytics: `app/features/analytics/` (schemas, service, routes)
+- Jobs: `app/features/jobs/` (models, schemas, service, routes)
+- Migration: `alembic/versions/37e16ecef223_create_jobs_table.py`
+
+### 8.4 Configuration (Settings)
+
+```python
+analytics_max_rows: int = 10000
+analytics_max_date_range_days: int = 730
+jobs_retention_days: int = 30
+```
+
 **Planned Endpoints:**
-- `GET /data/kpis`, `GET /data/drilldowns` - Data exploration
 - `POST /rag/query` - RAG knowledge base queries (optional `/rag/index` in dev)
 
 Contracts are Pydantic v2 validated and use `response_model` for explicit output typing.
@@ -453,5 +505,10 @@ The repo standards live in `docs/validation/` and are treated as merge gates:
   - Backtesting: ✅ IMPLEMENTED (PRP-6)
   - Registry: ✅ IMPLEMENTED (PRP-7)
   - Leaderboard UI: Planned
-- **Phase-2**: ML models + richer exogenous features
-- **Phase-3**: RAG + agentic workflows (PydanticAI), run report generation/indexing
+- **Phase-2**: Serving Layer (agent-first API design) ✅
+  - RFC 7807 Problem Details: ✅ IMPLEMENTED (PRP-8)
+  - Dimensions discovery: ✅ IMPLEMENTED (PRP-8)
+  - Analytics KPIs/drilldowns: ✅ IMPLEMENTED (PRP-8)
+  - Jobs orchestration: ✅ IMPLEMENTED (PRP-8)
+- **Phase-3**: ML models + richer exogenous features
+- **Phase-4**: RAG + agentic workflows (PydanticAI), run report generation/indexing
