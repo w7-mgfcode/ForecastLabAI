@@ -10,7 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
-from app.core.database import Base, get_db
+from app.core.database import get_db
 from app.features.backtesting.schemas import BacktestConfig, SplitConfig
 from app.features.data_platform.models import Calendar, Product, SalesDaily, Store
 from app.features.forecasting.schemas import NaiveModelConfig, SeasonalNaiveModelConfig
@@ -25,32 +25,41 @@ from app.main import app
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Create async database session for integration tests.
 
-    This fixture creates all tables, provides a session, and cleans up after.
+    Uses savepoint-based isolation: each test runs in a transaction that is
+    rolled back after the test completes. Tables must already exist (via migrations).
+
     Requires PostgreSQL to be running (docker-compose up -d).
     """
     settings = get_settings()
     engine = create_async_engine(settings.database_url, echo=False)
 
-    # Create tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    # Create session
+    # Create session factory
     async_session_maker = async_sessionmaker(
         engine,
         class_=AsyncSession,
         expire_on_commit=False,
     )
 
-    async with async_session_maker() as session:
-        try:
-            yield session
-        finally:
-            await session.rollback()
+    # Use a connection with a transaction for isolation
+    async with engine.connect() as conn:
+        # Start an outer transaction
+        trans = await conn.begin()
 
-    # Cleanup: drop all tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+        # Create session bound to this connection
+        async with async_session_maker(bind=conn) as session:
+            # Create a savepoint for nested transaction
+            nested = await conn.begin_nested()
+
+            try:
+                yield session
+            finally:
+                # Roll back to savepoint
+                if nested.is_active:
+                    await nested.rollback()
+
+            # Roll back outer transaction (cleans up all test data)
+            if trans.is_active:
+                await trans.rollback()
 
     await engine.dispose()
 
@@ -58,7 +67,12 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
 @pytest.fixture
 async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     """Create test client with database dependency override."""
-    app.dependency_overrides[get_db] = lambda: db_session
+
+    # Create an async generator that yields the session
+    async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
 
     async with AsyncClient(
         transport=ASGITransport(app=app),

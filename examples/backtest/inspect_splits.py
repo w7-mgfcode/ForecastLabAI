@@ -32,7 +32,7 @@ def print_splits(title: str, config: SplitConfig, dates: list[date], values: np.
 
     for split in splitter.split(dates, values):
         print(f"--- Fold {split.fold_index} ---")
-        print(f"  Train: indices [{split.train_indices[0]}:{split.train_indices[-1]+1}]")
+        print(f"  Train: indices [{split.train_indices[0]}:{split.train_indices[-1] + 1}]")
         print(f"         dates  {split.train_dates[0]} to {split.train_dates[-1]}")
         print(f"         size   {len(split.train_indices)} observations")
 
@@ -41,7 +41,7 @@ def print_splits(title: str, config: SplitConfig, dates: list[date], values: np.
             gap_end = split.test_dates[0] - timedelta(days=1)
             print(f"  Gap:   {gap_start} to {gap_end} ({config.gap} days)")
 
-        print(f"  Test:  indices [{split.test_indices[0]}:{split.test_indices[-1]+1}]")
+        print(f"  Test:  indices [{split.test_indices[0]}:{split.test_indices[-1] + 1}]")
         print(f"         dates  {split.test_dates[0]} to {split.test_dates[-1]}")
         print(f"         size   {len(split.test_indices)} observations")
         print()

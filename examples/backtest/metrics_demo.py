@@ -122,7 +122,9 @@ def main():
 
     print("Fold metrics:")
     for i, fm in enumerate(fold_metrics):
-        print(f"  Fold {i}: MAE={fm['mae']}, sMAPE={fm['smape']}, WAPE={fm['wape']}, Bias={fm['bias']}")
+        print(
+            f"  Fold {i}: MAE={fm['mae']}, sMAPE={fm['smape']}, WAPE={fm['wape']}, Bias={fm['bias']}"
+        )
 
     aggregated, stability = calc.aggregate_fold_metrics(fold_metrics)
 
