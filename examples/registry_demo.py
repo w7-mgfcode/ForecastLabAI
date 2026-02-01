@@ -17,11 +17,11 @@ Prerequisites:
     - API running (uv run uvicorn app.main:app --reload --port 8123)
 """
 
-import httpx
 import json
 import sys
 from datetime import date
 
+import httpx
 
 API_BASE = "http://localhost:8123"
 
@@ -200,7 +200,7 @@ def main() -> int:
     print_section("Step 6: Compare Runs")
 
     response = client.get(f"/registry/compare/{run_id}/{run2_id}")
-    compare_data = print_response(response, f"GET /registry/compare/...")
+    compare_data = print_response(response, "GET /registry/compare/...")
 
     print("\n→ Configuration differences:")
     for key, values in compare_data["config_diff"].items():
@@ -232,7 +232,7 @@ def main() -> int:
 
     print("Summary:")
     print(f"  - Created runs: {run_id[:12]}..., {run2_id[:12]}...")
-    print(f"  - Created alias: demo-production")
+    print("  - Created alias: demo-production")
     print()
     print("To clean up, delete the alias and runs:")
     print(f"  curl -X DELETE {API_BASE}/registry/aliases/demo-production")

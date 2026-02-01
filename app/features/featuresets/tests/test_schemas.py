@@ -202,7 +202,7 @@ class TestFeatureSetConfig:
         """Config should be immutable (frozen)."""
         config = FeatureSetConfig(name="test")
         with pytest.raises(ValidationError):
-            config.name = "modified"
+            config.name = "modified"  # type: ignore[misc]
 
     def test_rejects_empty_name(self):
         """Empty name should be rejected."""

@@ -13,6 +13,7 @@ from app.core.database import Base
 
 # Import all models for Alembic autogenerate detection
 from app.features.data_platform import models as data_platform_models  # noqa: F401
+from app.features.registry import models as registry_models  # noqa: F401
 
 # Alembic Config object
 config = context.config

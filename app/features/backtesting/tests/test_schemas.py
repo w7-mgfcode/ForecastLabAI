@@ -93,7 +93,7 @@ class TestSplitConfig:
         """Test SplitConfig is immutable."""
         config = SplitConfig()
         with pytest.raises(ValidationError):
-            config.n_splits = 10
+            config.n_splits = 10  # type: ignore[misc]
 
 
 class TestBacktestConfig:
@@ -136,7 +136,7 @@ class TestBacktestConfig:
         """Test BacktestConfig is immutable."""
         config = BacktestConfig(model_config_main=NaiveModelConfig())
         with pytest.raises(ValidationError):
-            config.include_baselines = False
+            config.include_baselines = False  # type: ignore[misc]
 
     def test_invalid_schema_version(self):
         """Test invalid schema_version raises error."""
