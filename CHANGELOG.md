@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.8](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.1.7...v0.1.8) (2026-02-01)
+
+
+### Features
+
+* **backtesting:** implement time-series backtesting module (PRP-6) ([#32](https://github.com/w7-mgfcode/ForecastLabAI/issues/32)) ([8aca4d1](https://github.com/w7-mgfcode/ForecastLabAI/commit/8aca4d13a57c0b6ebf416a384995d98c35884121))
+* **backtesting:** wire config fields into implementation ([daef9ce](https://github.com/w7-mgfcode/ForecastLabAI/commit/daef9ce3d72bf90ca53f61a095576c454385c93b))
+* **backtesting:** wire config fields into implementation ([80e99e8](https://github.com/w7-mgfcode/ForecastLabAI/commit/80e99e8113bc7a935a392229e72e5f416e0bda75))
+
+
+### Bug Fixes
+
+* **backtesting:** handle signed metrics in comparison summary ([215d249](https://github.com/w7-mgfcode/ForecastLabAI/commit/215d249a056727c3d95f568ce5eba7dbd52f443c))
+
 ## [0.1.7](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.1.6...v0.1.7) (2026-02-01)
 
 
