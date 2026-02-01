@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.core.database import Base
 
 # Import all models for Alembic autogenerate detection
+from app.features.agents import models as agents_models  # noqa: F401
 from app.features.data_platform import models as data_platform_models  # noqa: F401
 from app.features.jobs import models as jobs_models  # noqa: F401
 from app.features.rag import models as rag_models  # noqa: F401
