@@ -12,9 +12,9 @@ This document indexes all implementation phases of the ForecastLabAI project.
 | 1 | Data Platform | Completed | PRP-2 | [1-DATA_PLATFORM.md](./PHASE/1-DATA_PLATFORM.md) |
 | 2 | Ingest Layer | Completed | PRP-3 | [2-INGEST_LAYER.md](./PHASE/2-INGEST_LAYER.md) |
 | 3 | Feature Engineering | Completed | PRP-4 | [3-FEATURE_ENGINEERING.md](./PHASE/3-FEATURE_ENGINEERING.md) |
-| 4 | Forecasting | Completed | PRP-5 | - |
-| 5 | Backtesting | Completed | PRP-6 | - |
-| 6 | Model Registry | Completed | PRP-7 | - |
+| 4 | Forecasting | Completed | PRP-5 | [4-FORECASTING.md](./PHASE/4-FORECASTING.md) |
+| 5 | Backtesting | Completed | PRP-6 | [5-BACKTESTING.md](./PHASE/5-BACKTESTING.md) |
+| 6 | Model Registry | Completed | PRP-7 | [6-MODEL_REGISTRY.md](./PHASE/6-MODEL_REGISTRY.md) |
 | 7 | RAG Knowledge Base | Pending | PRP-8 | - |
 | 8 | Dashboard | Pending | PRP-9 | - |
 | 9 | Agentic Layer | Pending | - | - |
