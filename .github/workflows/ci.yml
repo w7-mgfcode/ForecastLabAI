@@ -2,19 +2,29 @@ name: CI
 
 on:
   push:
-    branches: [main, dev]
+    branches:
+      - main
+      - dev
+      - 'release-please--branches--**'  # Release-please branches (e.g., release-please--branches--main--components--forecastlabai)
   pull_request:
     branches: [main, dev]
-  workflow_dispatch:  # Allow manual trigger for release-please PRs
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or ref to run CI on (leave empty to use triggering ref)'
+        required: false
+        type: string
 
 # Cancel in-progress runs on same branch
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ inputs.ref || github.ref }}
   cancel-in-progress: true
 
 env:
   PYTHON_VERSION: "3.12"
   UV_VERSION: "0.5"
+  # Resolve the ref to checkout: use input if provided, otherwise use github.ref
+  CHECKOUT_REF: ${{ inputs.ref || github.ref }}
 
 jobs:
   lint:
@@ -22,6 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -46,6 +58,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -86,6 +100,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -131,6 +147,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
