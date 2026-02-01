@@ -19,6 +19,7 @@ from app.features.agents.agents.base import (
     SYSTEM_PROMPT_HEADER,
     get_model_identifier,
     get_model_settings,
+    validate_api_key_for_model,
 )
 from app.features.agents.deps import AgentDeps
 from app.features.agents.schemas import RAGAnswer
@@ -66,8 +67,11 @@ def create_rag_assistant_agent() -> Agent[AgentDeps, RAGAnswer]:
     Returns:
         Configured Agent instance with tools registered.
     """
+    model = get_model_identifier()
+    validate_api_key_for_model(model)  # Fail-fast validation
+
     agent: Agent[AgentDeps, RAGAnswer] = Agent(
-        model=get_model_identifier(),
+        model=model,
         deps_type=AgentDeps,
         output_type=RAGAnswer,
         system_prompt=RAG_SYSTEM_PROMPT,

@@ -3,6 +3,7 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -96,6 +97,10 @@ class Settings(BaseSettings):
     agent_temperature: float = 0.1
     agent_max_tokens: int = 4096
     anthropic_api_key: str = ""
+    google_api_key: str = ""  # For Gemini models (google-gla:* or google-vertex:*)
+
+    # Gemini Extended Reasoning Configuration (optional)
+    agent_thinking_budget: int | None = None  # Token budget for Gemini 2.5+ thinking mode
 
     # Agent Execution Configuration
     agent_max_tool_calls: int = 10
@@ -113,6 +118,34 @@ class Settings(BaseSettings):
 
     # Streaming Configuration
     agent_enable_streaming: bool = True
+
+    @field_validator("agent_default_model", "agent_fallback_model")
+    @classmethod
+    def validate_model_identifier(cls, v: str) -> str:
+        """Validate model identifier format (provider:model-name).
+
+        Args:
+            v: Model identifier string.
+
+        Returns:
+            Validated model identifier.
+
+        Raises:
+            ValueError: If format is invalid.
+        """
+        if ":" not in v:
+            raise ValueError(
+                f"Invalid model identifier '{v}'. "
+                "Expected format: 'provider:model-name' "
+                "(e.g., 'anthropic:claude-sonnet-4-5', 'google-gla:gemini-3-flash')"
+            )
+        provider, _ = v.split(":", 1)
+        valid_providers = ["anthropic", "openai", "google-gla", "google-vertex"]
+        if provider not in valid_providers:
+            raise ValueError(
+                f"Unknown provider '{provider}'. Valid providers: {valid_providers}"
+            )
+        return v
 
     @property
     def is_development(self) -> bool:

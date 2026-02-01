@@ -361,62 +361,67 @@ asyncio.run(stream_chat())
 
 **File**: `app/core/config.py`
 
-### Added Settings
+### Agent LLM Configuration
 
 ```python
 class Settings(BaseSettings):
-    # Agent LLM Configuration
+    # Model Configuration
     agent_default_model: str = "anthropic:claude-sonnet-4-5"
     agent_fallback_model: str = "openai:gpt-4o"
     agent_temperature: float = 0.1
     agent_max_tokens: int = 4096
+
+    # API Keys (optional, validated at usage time)
     anthropic_api_key: str = ""
+    google_api_key: str = ""
+    # Note: openai_api_key is defined in RAG section
 
-    # Agent Execution Configuration
-    agent_max_tool_calls: int = 10
-    agent_timeout_seconds: int = 120
-    agent_retry_attempts: int = 3
-    agent_retry_delay_seconds: float = 1.0
-
-    # Human-in-the-Loop Configuration
-    agent_require_approval: list[str] = ["create_alias", "archive_run"]
-    agent_approval_timeout_minutes: int = 60
-
-    # Session Configuration
-    agent_session_ttl_minutes: int = 120
-    agent_max_sessions_per_user: int = 5
-
-    # Streaming Configuration
-    agent_enable_streaming: bool = True
+    # Gemini Extended Reasoning Configuration
+    agent_thinking_budget: int | None = None  # Token budget for thinking mode
 ```
 
-### Environment Variables
+### Supported LLM Providers
 
-**Added to `.env.example`**:
-```bash
-# =============================================================================
-# Agentic Layer Configuration (PydanticAI)
-# =============================================================================
+PydanticAI v1.48.0 automatically routes model requests based on model identifier prefix:
 
-# LLM Provider: "anthropic" (Claude), "openai", or "gemini"
-AGENT_LLM_PROVIDER=anthropic
-AGENT_MODEL_NAME=claude-3-haiku-20240307
+| Provider | Model Identifier Format | Authentication | Notes |
+|----------|------------------------|----------------|-------|
+| Anthropic Claude | `anthropic:claude-sonnet-4-5` | `ANTHROPIC_API_KEY` | Default, recommended for production |
+| OpenAI GPT | `openai:gpt-4o` | `OPENAI_API_KEY` | Fallback model |
+| Google Gemini (AI Studio) | `google-gla:gemini-3-flash` | `GOOGLE_API_KEY` | 60-70% cheaper than Gemini 2.5, 3x faster |
+| Google Vertex AI | `google-vertex:gemini-*` | GCP Service Account | Enterprise deployments with Vertex AI |
 
-# API Keys (only one needed based on provider)
-ANTHROPIC_API_KEY=sk-ant-your-anthropic-api-key-here
+**Model Selection Guide:**
+- **Production**: `anthropic:claude-sonnet-4-5` (best balance of quality/speed/cost)
+- **Cost-optimized**: `google-gla:gemini-3-flash` (fast, cheap, good quality)
+- **Reasoning-heavy**: `google-gla:gemini-2-5-pro` with `agent_thinking_budget=4000`
+- **Maximum quality**: `anthropic:claude-opus-4-5` (highest capability, slower)
 
-# Session settings
-AGENT_SESSION_TTL_MINUTES=30
-AGENT_APPROVAL_TIMEOUT_MINUTES=5
-AGENT_MAX_TOOL_CALLS_PER_TURN=10
+### Gemini Extended Reasoning
 
-# Model parameters
-AGENT_MAX_TOKENS=4096
-AGENT_TEMPERATURE=0.0
+Gemini 2.5+ models support "thinking mode" for complex multi-step reasoning:
 
-# Human-in-the-loop actions (comma-separated list)
-AGENT_APPROVAL_REQUIRED_ACTIONS=create_alias,archive_run
+```python
+# Enable thinking mode by setting token budget
+AGENT_THINKING_BUDGET=4000  # Recommended: 2000-8000 tokens
+
+# Budget usage:
+# - 2000: Simple multi-step tasks
+# - 4000: Complex planning and analysis (recommended for agents)
+# - 8000: Deep reasoning (experiment comparison, metric interpretation)
 ```
+
+**When to enable:**
+- Complex experiment planning (comparing 5+ models)
+- Multi-step backtest analysis with trade-offs
+- Metric interpretation requiring domain knowledge
+- Deployment decisions with risk assessment
+
+**When to disable:**
+- Simple queries (single backtest execution)
+- Quick RAG lookups
+- Cost-sensitive deployments
+- Latency-critical applications
 
 ---
 

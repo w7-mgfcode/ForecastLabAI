@@ -22,6 +22,7 @@ from app.features.agents.agents.base import (
     get_model_identifier,
     get_model_settings,
     requires_approval,
+    validate_api_key_for_model,
 )
 from app.features.agents.deps import AgentDeps
 from app.features.agents.schemas import ExperimentReport
@@ -73,8 +74,11 @@ def create_experiment_agent() -> Agent[AgentDeps, ExperimentReport]:
     Returns:
         Configured Agent instance with tools registered.
     """
+    model = get_model_identifier()
+    validate_api_key_for_model(model)  # Fail-fast validation
+
     agent: Agent[AgentDeps, ExperimentReport] = Agent(
-        model=get_model_identifier(),
+        model=model,
         deps_type=AgentDeps,
         output_type=ExperimentReport,
         system_prompt=EXPERIMENT_SYSTEM_PROMPT,

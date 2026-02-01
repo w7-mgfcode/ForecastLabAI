@@ -38,13 +38,51 @@ def get_model_settings() -> dict[str, Any]:
     """Get model settings from configuration.
 
     Returns:
-        Dictionary with temperature and max_tokens settings.
+        Dictionary with temperature, max_tokens, and optional thinking settings.
     """
     settings = get_settings()
-    return {
+    model_settings: dict[str, Any] = {
         "temperature": settings.agent_temperature,
         "max_tokens": settings.agent_max_tokens,
     }
+
+    # Add thinking budget if configured (Gemini 2.5+ extended reasoning)
+    if settings.agent_thinking_budget:
+        model_settings["thinking"] = {"budget": settings.agent_thinking_budget}
+
+    return model_settings
+
+
+def validate_api_key_for_model(model: str) -> None:
+    """Validate that required API key is configured for model.
+
+    Args:
+        model: Model identifier (provider:model-name).
+
+    Raises:
+        ValueError: If required API key is not configured.
+    """
+    settings = get_settings()
+    provider = model.split(":")[0]
+
+    if provider == "anthropic" and not settings.anthropic_api_key:
+        raise ValueError(
+            "Anthropic API key not configured. Set ANTHROPIC_API_KEY environment variable."
+        )
+    elif provider == "openai" and not settings.openai_api_key:
+        raise ValueError(
+            "OpenAI API key not configured. Set OPENAI_API_KEY environment variable."
+        )
+    elif provider in ["google-gla", "google-vertex"] and not settings.google_api_key:
+        raise ValueError(
+            "Google API key not configured. Set GOOGLE_API_KEY environment variable."
+        )
+
+    logger.debug(
+        "agents.api_key_validated",
+        provider=provider,
+        model=model,
+    )
 
 
 def requires_approval(action_name: str) -> bool:
