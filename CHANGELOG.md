@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.2.3](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.2...v0.2.3) (2026-02-01)
+
+
+### Features
+
+* **agents:** add Google Gemini model support with extended reasoning ([97f9df2](https://github.com/w7-mgfcode/ForecastLabAI/commit/97f9df284a81e8b42095cff6cc0f334258517ab5))
+* **agents:** implement PRP-10 agentic layer with PydanticAI ([7456207](https://github.com/w7-mgfcode/ForecastLabAI/commit/74562072731fa82b5646d708e4444e2271b6419e))
+* Phase 9 Agentic Layer - Release v0.3.0 ([01b4b59](https://github.com/w7-mgfcode/ForecastLabAI/commit/01b4b596330eca847013df289504fa366da5e92b))
+
+
+### Bug Fixes
+
+* **agents:** add streaming approval detection and validation fixes ([449686d](https://github.com/w7-mgfcode/ForecastLabAI/commit/449686de764434f16f4dfc8ee2ae84c4b92b6332))
+* **agents:** address CI failures for PR [#55](https://github.com/w7-mgfcode/ForecastLabAI/issues/55) ([da13d24](https://github.com/w7-mgfcode/ForecastLabAI/commit/da13d24ebf1af734b5292cbb93c3b1214efb3cc2))
+* **agents:** import agents models in alembic env for schema validation ([1defb89](https://github.com/w7-mgfcode/ForecastLabAI/commit/1defb89493c5fd3ac5005428044014c8ee4b9a81))
+* **agents:** improve validation, execution, and session handling ([835dfd7](https://github.com/w7-mgfcode/ForecastLabAI/commit/835dfd71e7aac9501dcf4f2504cac69dc799a080))
+* **agents:** remove unnecessary noqa directive ([6910f26](https://github.com/w7-mgfcode/ForecastLabAI/commit/6910f261f048959a933866fcf8cf873d7eede267))
+* **ci:** use PAT token for release-please to trigger CI workflows ([2684914](https://github.com/w7-mgfcode/ForecastLabAI/commit/26849149c67e6a8df9dcbb9ab65445ee6f0c31e1))
+
+
+### Documentation
+
+* **prp:** update PRP-10 for PydanticAI v1 and Claude 4.x models ([dc43e14](https://github.com/w7-mgfcode/ForecastLabAI/commit/dc43e1485ba615b4e24da2a7fdabad0e46b77568))
+* update ARCHITECTURE.md for Phase 8 (RAG) and Phase 9 (Agentic Layer) ([c155236](https://github.com/w7-mgfcode/ForecastLabAI/commit/c155236735b8d69293934acadd7f86a313676a76))
+* update documentation for completed Phase 9 (Agentic Layer) ([34c9feb](https://github.com/w7-mgfcode/ForecastLabAI/commit/34c9feb1d8f3b8d1dcbcfc1db6d873588e42fece))
+
 ## [0.2.2](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.1...v0.2.2) (2026-02-01)
 
 
