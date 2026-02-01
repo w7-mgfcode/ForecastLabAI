@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     forecast_model_artifacts_dir: str = "./artifacts/models"
     forecast_enable_lightgbm: bool = False
 
+    # Backtesting
+    backtest_max_splits: int = 20
+    backtest_default_min_train_size: int = 30
+    backtest_max_gap: int = 30
+    backtest_results_dir: str = "./artifacts/backtests"
+
     @property
     def is_development(self) -> bool:
         """Check if running in development mode."""

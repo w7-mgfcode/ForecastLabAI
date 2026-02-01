@@ -10,6 +10,16 @@
   - sMAPE
   - (optional) pinball loss later
 - Persist split boundaries and evaluation artifacts.
+- Advanced Time-Series Splitting:
+  - Support for 'Expanding' and 'Sliding' windows.
+  - Integration of a 'Gap' parameter to simulate operational data latency.
+- Comprehensive Metric Suite:
+  - Accuracy: MAE, sMAPE, WAPE.
+  - Reliability: Forecast Bias, Stability Index.
+- Automated Benchmarking:
+  - Mandatory side-by-side comparison with Baseline models.
+- Data Lineage:
+  - Storage of full 'Actual vs. Predicted' datasets per fold for downstream UI visualization.
 
 ## EXAMPLES:
 - `examples/backtest/run_backtest.py` — generates splits from config and executes evaluations.
