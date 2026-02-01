@@ -454,6 +454,59 @@ curl -X POST http://localhost:8123/jobs \
 - JSONB storage for flexible params and results
 - Links to model_run for train/backtest jobs
 
+### RAG Knowledge Base
+
+- `POST /rag/index` - Index a document into the knowledge base
+- `POST /rag/retrieve` - Semantic search across indexed documents
+- `GET /rag/sources` - List indexed sources
+- `DELETE /rag/sources/{source_id}` - Delete a source and its chunks
+
+**Embedding Providers:**
+
+The RAG system supports two embedding providers:
+
+1. **OpenAI** (default):
+```bash
+RAG_EMBEDDING_PROVIDER=openai
+OPENAI_API_KEY=sk-your-key
+RAG_EMBEDDING_MODEL=text-embedding-3-small
+RAG_EMBEDDING_DIMENSION=1536
+```
+
+2. **Ollama** (local/LAN):
+```bash
+RAG_EMBEDDING_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+RAG_EMBEDDING_DIMENSION=768
+```
+
+**Example Index Request:**
+```bash
+curl -X POST http://localhost:8123/rag/index \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_type": "markdown",
+    "source_path": "docs/ARCHITECTURE.md"
+  }'
+```
+
+**Example Retrieve Request:**
+```bash
+curl -X POST http://localhost:8123/rag/retrieve \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "How does backtesting work?",
+    "top_k": 5
+  }'
+```
+
+**Features:**
+- pgvector for HNSW similarity search
+- Idempotent indexing via content hash
+- Markdown and OpenAPI chunking strategies
+- Configurable embedding dimensions
+
 ### Error Responses (RFC 7807)
 
 All error responses follow RFC 7807 Problem Details format with `Content-Type: application/problem+json`:
