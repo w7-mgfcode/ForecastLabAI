@@ -351,7 +351,11 @@ class JobService:
         from pathlib import Path as PathLib
 
         model_basename = PathLib(response.model_path).stem  # Remove .joblib extension
-        run_id = model_basename.replace("model_", "") if model_basename.startswith("model_") else model_basename
+        run_id = (
+            model_basename.replace("model_", "")
+            if model_basename.startswith("model_")
+            else model_basename
+        )
 
         return {
             "run_id": run_id,
