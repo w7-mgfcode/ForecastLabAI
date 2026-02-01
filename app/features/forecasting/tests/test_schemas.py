@@ -31,7 +31,7 @@ class TestNaiveModelConfig:
         """Test that config is immutable (frozen=True)."""
         config = NaiveModelConfig()
         with pytest.raises(ValidationError):
-            config.model_type = "other"
+            config.model_type = "other"  # type: ignore[assignment]
 
     def test_config_hash_determinism(self):
         """Test that config_hash is deterministic."""
