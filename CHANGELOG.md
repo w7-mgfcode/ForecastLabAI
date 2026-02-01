@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.1...v0.2.2) (2026-02-01)
+
+
+### Features
+
+* RAG Knowledge Base, Serving Layer, and Model Registry ([#50](https://github.com/w7-mgfcode/ForecastLabAI/issues/50)) ([ad4388d](https://github.com/w7-mgfcode/ForecastLabAI/commit/ad4388d9d7386fb6a73e40de45e22f3a576afef7))
+
 ## [0.2.1](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.0...v0.2.1) (2026-02-01)
 
 
