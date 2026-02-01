@@ -17,8 +17,8 @@ This document indexes all implementation phases of the ForecastLabAI project.
 | 6 | Model Registry | Completed | PRP-7 | [6-MODEL_REGISTRY.md](./PHASE/6-MODEL_REGISTRY.md) |
 | 7 | Serving Layer | Completed | PRP-8 | [7-SERVING_LAYER.md](./PHASE/7-SERVING_LAYER.md) |
 | 8 | RAG Knowledge Base | Pending | PRP-9 | - |
-| 9 | Dashboard | Pending | PRP-10 | - |
-| 10 | Agentic Layer | Pending | - | - |
+| 9 | Agentic Layer | Pending | PRP-10 | - |
+| 10 | ForecastLab Dashboard | Pending | PRP-11 | - |
 
 ---
 
@@ -277,14 +277,29 @@ jobs_retention_days: int = 30
 
 ## Pending Phases
 
-### Phase 8: RAG Knowledge Base
-pgvector embeddings with evidence-grounded answers and citations.
+### Phase 8: RAG Knowledge Base ("The Memory")
+Vector storage, document ingestion, and semantic retrieval infrastructure.
+- PostgreSQL 16 + pgvector extension
+- OpenAI text-embedding-3-small embeddings (1536 dimensions)
+- Markdown-aware and OpenAPI endpoint-aware chunking
+- HNSW index for cosine similarity search
+- Endpoints: POST /rag/index, POST /rag/retrieve, GET /rag/sources, DELETE /rag/sources/{id}
 
-### Phase 9: Dashboard
-React + Vite + shadcn/ui frontend with data tables and visualizations.
+### Phase 9: Agentic Layer ("The Brain")
+Autonomous decision-making, tool orchestration, and structured outputs using PydanticAI.
+- Experiment Orchestrator Agent (backtest → compare → deploy workflow)
+- RAG Assistant Agent (query → retrieve → answer with citations)
+- Human-in-the-loop approval for sensitive operations
+- WebSocket streaming for real-time responses
+- Endpoints: POST /agents/experiment/run, POST /agents/rag/query, WS /agents/stream
 
-### Phase 10: Agentic Layer (Optional)
-PydanticAI integration for experiment orchestration.
+### Phase 10: ForecastLab Dashboard ("The Face")
+User interface, data visualization, and agent interaction.
+- React 19 + Vite + shadcn/ui + Tailwind CSS 4
+- TanStack Table for server-side data grids
+- TanStack Query for data fetching and caching
+- Recharts for time series visualization
+- Agent chat interface with streaming and citations
 
 ---
 
