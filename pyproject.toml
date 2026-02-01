@@ -107,12 +107,18 @@ python_version = "3.12"
 strict = true
 show_error_codes = true
 warn_unused_ignores = true
+plugins = ["pydantic.mypy"]
 
 # Practical adjustments
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 check_untyped_defs = true
 disallow_untyped_decorators = false  # FastAPI decorators aren't typed
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
 
 [[tool.mypy.overrides]]
 module = [

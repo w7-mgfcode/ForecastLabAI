@@ -14,6 +14,7 @@ from app.features.backtesting.routes import router as backtesting_router
 from app.features.featuresets.routes import router as featuresets_router
 from app.features.forecasting.routes import router as forecasting_router
 from app.features.ingest.routes import router as ingest_router
+from app.features.registry.routes import router as registry_router
 
 logger = get_logger(__name__)
 
@@ -74,6 +75,7 @@ def create_app() -> FastAPI:
     app.include_router(featuresets_router)
     app.include_router(forecasting_router)
     app.include_router(backtesting_router)
+    app.include_router(registry_router)
 
     return app
 

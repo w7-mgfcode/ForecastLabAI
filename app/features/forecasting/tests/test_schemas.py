@@ -31,7 +31,7 @@ class TestNaiveModelConfig:
         """Test that config is immutable (frozen=True)."""
         config = NaiveModelConfig()
         with pytest.raises(ValidationError):
-            config.model_type = "other"  # type: ignore[assignment]
+            config.model_type = "other"  # type: ignore[misc,assignment]
 
     def test_config_hash_determinism(self):
         """Test that config_hash is deterministic."""
@@ -98,7 +98,7 @@ class TestMovingAverageModelConfig:
         """Test that config is immutable."""
         config = MovingAverageModelConfig()
         with pytest.raises(ValidationError):
-            config.window_size = 14
+            config.window_size = 14  # type: ignore[misc]
 
 
 class TestLightGBMModelConfig:

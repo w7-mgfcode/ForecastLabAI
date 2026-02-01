@@ -312,15 +312,69 @@ forecast_enable_lightgbm: bool = False
 - Tests: `app/features/backtesting/tests/` (95 tests)
 - Examples: `examples/backtest/` (run_backtest.py, inspect_splits.py, metrics_demo.py)
 
-### 7.6 Model Registry (Planned)
-Each run stores:
-- run_id, timestamps
-- model_type + model_config (JSON)
-- feature_config + schema_version
-- data window boundaries
-- metrics (JSON)
-- artifact URI/path + artifact hash
-- optional git_sha
+### 7.6 Model Registry — ✅ IMPLEMENTED
+
+**Implemented via PRP-7** - Full run tracking and deployment alias management:
+
+**ORM Models:**
+- `ModelRun` - JSONB columns for model_config, feature_config, metrics, runtime_info, agent_context
+- `DeploymentAlias` - Mutable pointers to successful runs for deployment
+
+**Run Lifecycle (State Machine):**
+```text
+PENDING → RUNNING → SUCCESS/FAILED → ARCHIVED
+```
+- Validated transitions prevent invalid state changes
+- Aliases can only point to SUCCESS runs
+
+**Storage Provider:**
+- `LocalFSProvider` with abstract interface for future S3/GCS support
+- SHA-256 integrity verification on load
+- Path traversal prevention (security)
+
+**Each Run Stores:**
+- run_id (UUID hex, 32 chars), timestamps (created_at, updated_at, started_at, completed_at)
+- model_type + model_config (JSONB with GIN index)
+- feature_config (JSONB, optional)
+- data_window_start, data_window_end, store_id, product_id
+- config_hash (16-char SHA-256 prefix for deduplication)
+- metrics (JSONB with GIN index)
+- artifact_uri, artifact_hash (SHA-256), artifact_size_bytes
+- runtime_info (Python, numpy, pandas, sklearn, joblib versions)
+- agent_context (agent_id, session_id for autonomous workflows)
+- git_sha (optional)
+- error_message (for FAILED runs)
+
+**Duplicate Detection:**
+- Configurable via `registry_duplicate_policy`: allow, deny, detect
+- Based on config_hash + store_id + product_id + data_window
+
+**API Endpoints:**
+- `POST /registry/runs` - Create run
+- `GET /registry/runs` - List with filters and pagination
+- `GET /registry/runs/{run_id}` - Get run details
+- `PATCH /registry/runs/{run_id}` - Update status/metrics/artifacts
+- `GET /registry/runs/{run_id}/verify` - Verify artifact integrity
+- `POST /registry/aliases` - Create/update deployment alias
+- `GET /registry/aliases` - List aliases
+- `GET /registry/aliases/{alias_name}` - Get alias
+- `DELETE /registry/aliases/{alias_name}` - Delete alias
+- `GET /registry/compare/{run_id_a}/{run_id_b}` - Compare runs
+
+**Location:**
+- Models: `app/features/registry/models.py`
+- Schemas: `app/features/registry/schemas.py`
+- Storage: `app/features/registry/storage.py`
+- Service: `app/features/registry/service.py`
+- Routes: `app/features/registry/routes.py`
+- Tests: `app/features/registry/tests/` (103 unit + 24 integration tests)
+- Example: `examples/registry_demo.py`
+
+**Configuration (Settings):**
+```python
+registry_artifact_root: str = "./artifacts/registry"
+registry_duplicate_policy: Literal["allow", "deny", "detect"] = "detect"
+```
 
 ---
 
@@ -334,9 +388,18 @@ Each run stores:
 - `POST /forecasting/train` - Train forecasting model (returns model_path)
 - `POST /forecasting/predict` - Generate forecasts using saved model
 - `POST /backtesting/run` - Run time-series CV backtest with baseline comparisons
+- `POST /registry/runs` - Create model run
+- `GET /registry/runs` - List runs with filters
+- `GET /registry/runs/{run_id}` - Get run details
+- `PATCH /registry/runs/{run_id}` - Update run status/metrics/artifacts
+- `GET /registry/runs/{run_id}/verify` - Verify artifact integrity
+- `POST /registry/aliases` - Create deployment alias
+- `GET /registry/aliases` - List aliases
+- `GET /registry/aliases/{alias_name}` - Get alias details
+- `DELETE /registry/aliases/{alias_name}` - Delete alias
+- `GET /registry/compare/{run_id_a}/{run_id_b}` - Compare two runs
 
 **Planned Endpoints:**
-- `GET /runs`, `GET /runs/{run_id}` - Model registry and leaderboard
 - `GET /data/kpis`, `GET /data/drilldowns` - Data exploration
 - `POST /rag/query` - RAG knowledge base queries (optional `/rag/index` in dev)
 
@@ -385,7 +448,10 @@ The repo standards live in `docs/validation/` and are treated as merge gates:
 
 ## 12) Roadmap (Phased Delivery)
 
-- **Phase-0**: vertical-slice demo (seed → ingest → baseline train → predict → UI tables)
-- **Phase-1**: ForecastOps core (backtesting + registry + leaderboard)
+- **Phase-0**: vertical-slice demo (seed → ingest → baseline train → predict → UI tables) ✅
+- **Phase-1**: ForecastOps core (backtesting + registry + leaderboard) ✅
+  - Backtesting: ✅ IMPLEMENTED (PRP-6)
+  - Registry: ✅ IMPLEMENTED (PRP-7)
+  - Leaderboard UI: Planned
 - **Phase-2**: ML models + richer exogenous features
 - **Phase-3**: RAG + agentic workflows (PydanticAI), run report generation/indexing

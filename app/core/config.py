@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # Database
-    database_url: str = "postgresql+asyncpg://forecastlab:forecastlab@localhost:5432/forecastlab"
+    database_url: str = "postgresql+asyncpg://forecastlab:forecastlab@localhost:5433/forecastlab"
 
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     backtest_default_min_train_size: int = 30
     backtest_max_gap: int = 30
     backtest_results_dir: str = "./artifacts/backtests"
+
+    # Registry
+    registry_artifact_root: str = "./artifacts/registry"
+    registry_duplicate_policy: Literal["allow", "deny", "detect"] = "detect"
 
     @property
     def is_development(self) -> bool:
