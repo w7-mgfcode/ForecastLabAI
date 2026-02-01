@@ -2,7 +2,8 @@
 
 **Feature**: INITIAL-10.md — Agentic Layer
 **Status**: Ready for Implementation
-**Confidence Score**: 7.5/10
+**Confidence Score**: 8.0/10
+**Last Updated**: 2026-02-01 (Post Phase-9 RAG Review)
 
 ---
 
@@ -65,7 +66,7 @@ This is the "Brain" layer that orchestrates tools from INITIAL-9 (RAG), Phase 5 
   why: "Official PydanticAI docs - main reference"
 
 - url: https://ai.pydantic.dev/agents/
-  why: "Agent constructor, result_type, system_prompt, run/run_stream methods"
+  why: "Agent constructor, output_type, system_prompt, run/run_stream methods"
 
 - url: https://ai.pydantic.dev/tools/
   why: "@agent.tool decorator, RunContext, deps_type, tool parameters"
@@ -165,13 +166,14 @@ examples/agents/
 ### Known Gotchas & Library Quirks
 
 ```python
-# CRITICAL: PydanticAI model identifier format
-# Use "anthropic:claude-sonnet-4-20250514" NOT "claude-sonnet-4-20250514"
-agent = Agent(model="anthropic:claude-sonnet-4-20250514")
+# CRITICAL: PydanticAI model identifier format (updated Jan 2026)
+# Use "anthropic:claude-sonnet-4-5" NOT "claude-sonnet-4-5"
+# For production, pin specific version: "anthropic:claude-sonnet-4-5-20250929"
+agent = Agent(model="anthropic:claude-sonnet-4-5")
 
 # CRITICAL: deps_type must match RunContext generic parameter
 agent = Agent(
-    model="anthropic:claude-sonnet-4-20250514",
+    model="anthropic:claude-sonnet-4-5",
     deps_type=AgentDeps,  # Your dependency dataclass
 )
 
@@ -502,9 +504,12 @@ class WSEvent(BaseModel):
 ```yaml
 MODIFY: pyproject.toml
 ADD to dependencies:
-  - "pydantic-ai>=0.1.0"    # PydanticAI agent framework
-  - "anthropic>=0.40.0"      # Anthropic SDK for Claude
+  - "pydantic-ai>=1.48.0"    # PydanticAI agent framework (v1 stable, API guaranteed)
+  - "anthropic>=0.50.0"      # Anthropic SDK for Claude
   - "websockets>=13.0"       # WebSocket support (already in uvicorn[standard])
+
+NOTE: PydanticAI v1.0 was released Sept 2025 with API stability guarantee.
+      Current version is 1.48.0 (Jan 2026). Do NOT use 0.x versions.
 ```
 
 ### Task 2: Add Agent Settings to config.py
@@ -514,7 +519,7 @@ MODIFY: app/core/config.py
 ADD after RAG settings:
 
   # Agent LLM Configuration
-  agent_default_model: str = "anthropic:claude-sonnet-4-20250514"
+  agent_default_model: str = "anthropic:claude-sonnet-4-5"
   agent_fallback_model: str = "openai:gpt-4o"
   agent_temperature: float = 0.1
   agent_max_tokens: int = 4096
@@ -596,28 +601,41 @@ INCLUDE:
 CREATE: app/features/agents/tools/registry_tools.py
 TOOLS:
   - list_runs(ctx, filters) -> list[RunSummary]
+      # Wraps: RegistryService.list_runs(db, page, page_size, model_type, status, store_id, product_id)
   - compare_runs(ctx, run_id_a, run_id_b) -> CompareResult
+      # Wraps: RegistryService.compare_runs(db, run_id_a, run_id_b)
   - create_alias(ctx, alias_name, run_id) -> AliasResult
+      # Wraps: RegistryService.create_alias(db, AliasCreate(...))
+      # REQUIRES HUMAN APPROVAL
   - archive_run(ctx, run_id) -> ArchiveResult
+      # Wraps: RegistryService.update_run(db, run_id, RunUpdate(status=RunStatus.ARCHIVED))
+      # NOTE: No direct archive method - use update_run with ARCHIVED status
+      # REQUIRES HUMAN APPROVAL
 
 CREATE: app/features/agents/tools/backtesting_tools.py
 TOOLS:
   - run_backtest(ctx, model_type, config, store_id, product_id, n_splits) -> BacktestResult
+      # Wraps: BacktestingService.run_backtest(db, store_id, product_id, start_date, end_date, config)
 
 CREATE: app/features/agents/tools/forecasting_tools.py
 TOOLS:
   - list_models(ctx) -> list[ModelInfo]
+      # Returns available model types: naive, seasonal_naive, moving_average, lightgbm (if enabled)
 
 CREATE: app/features/agents/tools/rag_tools.py
 TOOLS:
-  - retrieve_context(ctx, query, top_k) -> list[RetrievedChunk]
+  - retrieve_context(ctx, query, top_k) -> list[ChunkResult]
+      # Wraps: RAGService.retrieve(db, RetrieveRequest(query=query, top_k=top_k))
+      # NOTE: RAG service uses retrieve() not retrieve_context()
   - format_citation(ctx, chunk) -> Citation
+      # Transforms ChunkResult to Citation schema
 
 CRITICAL for all tools:
   - Use @agent.tool decorator (not @agent.tool_plain) for db access
   - First param is RunContext[AgentDeps]
-  - Detailed docstrings for LLM schema
+  - Detailed docstrings for LLM schema (Google/numpy style supported)
   - Structured logging with timing
+  - Match actual service method signatures from Phase 5-9 implementations
 ```
 
 ### Task 8: Create Agent Definitions
@@ -736,11 +754,58 @@ ADD websocket: app.add_api_websocket_route("/agents/stream", websocket_stream)
 ```yaml
 CREATE: app/features/agents/tests/conftest.py
 FIXTURES:
-  - db_session: Async session with cleanup
+  - db_session: Async session with cleanup (follow registry/tests/conftest.py pattern)
   - client: AsyncClient with db override
-  - mock_anthropic: Mock Anthropic API responses
-  - sample_experiment_request: Test request
-  - sample_rag_request: Test request
+  - mock_pydantic_ai_agent: Mock PydanticAI Agent (see pattern below)
+  - sample_experiment_request: ExperimentRequest fixture
+  - sample_rag_request: RAGQueryRequest fixture
+  - sample_agent_session: AgentSession ORM fixture
+
+MOCK PATTERN (following rag/tests/conftest.py mock_embedding_service):
+```
+
+```python
+@pytest.fixture
+def mock_pydantic_ai_agent():
+    """Mock PydanticAI Agent for unit tests without LLM calls.
+
+    Follows the mock_embedding_service pattern from RAG tests.
+    Returns deterministic responses without API calls.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+    from app.features.agents.schemas import ExperimentReport, RunSummary
+
+    # Create mock structured output
+    mock_report = ExperimentReport(
+        objective="Test objective",
+        methodology="Tested naive and seasonal_naive models",
+        experiments_run=2,
+        best_run=RunSummary(
+            run_id="test123",
+            model_type="seasonal_naive",
+            config={"season_length": 7},
+            metrics={"mae": 5.0, "smape": 10.0},
+        ),
+        baseline_comparison=None,
+        recommendation="Deploy seasonal_naive model",
+        approval_required=False,
+    )
+
+    # Mock result object
+    mock_result = MagicMock()
+    mock_result.output = mock_report
+    mock_result.usage.return_value = MagicMock(
+        input_tokens=100,
+        output_tokens=50,
+    )
+    mock_result.messages = []
+
+    # Mock agent
+    agent = MagicMock()
+    agent.run = AsyncMock(return_value=mock_result)
+    agent.run_stream = AsyncMock()
+
+    return agent
 ```
 
 ### Task 14: Create Unit Tests
@@ -792,9 +857,11 @@ MODIFY: .env.example
 ADD:
   # Agent Configuration
   ANTHROPIC_API_KEY=sk-ant-...
-  AGENT_DEFAULT_MODEL=anthropic:claude-sonnet-4-20250514
+  AGENT_DEFAULT_MODEL=anthropic:claude-sonnet-4-5
+  AGENT_FALLBACK_MODEL=openai:gpt-4o
   AGENT_MAX_TOOL_CALLS=10
   AGENT_TIMEOUT_SECONDS=120
+  AGENT_TEMPERATURE=0.1
 ```
 
 ---
@@ -899,22 +966,31 @@ python examples/agents/websocket_client.py
 
 ---
 
-## Confidence Score: 7.5/10
+## Confidence Score: 8.0/10
 
 **Strengths:**
-- PydanticAI has excellent documentation
-- Clear FastAPI integration patterns
-- Existing service patterns to follow
-- Tool integrations with existing modules
+- PydanticAI v1.x provides API stability guarantee (released Sept 2025)
+- Clear FastAPI integration patterns with excellent documentation
+- Existing service patterns from Registry/RAG/Backtesting to follow
+- Tool integrations with existing modules well-defined
+- Mock patterns established in RAG tests (mock_embedding_service)
 
 **Risks:**
-- PydanticAI is relatively new (versioning may change)
 - WebSocket streaming with tools is complex
-- LLM rate limits may affect tests
+- LLM rate limits may affect integration tests
 - Message history serialization edge cases
+- Tool execution ordering in multi-step workflows
 
 **Mitigations:**
-- Pin PydanticAI version in pyproject.toml
-- Comprehensive mocking for unit tests
-- Rate-limited integration tests
+- Pin PydanticAI version >=1.48.0 in pyproject.toml
+- Comprehensive mocking following RAG test patterns
+- Rate-limited integration tests with retry logic
 - JSONB for flexible message storage
+- Timeout handling with asyncio.wait_for
+
+**Changes Since Initial Review (2026-02-01):**
+- Updated PydanticAI from 0.1.0 to 1.48.0 (v1 stable)
+- Updated Claude model identifier to claude-sonnet-4-5 format
+- Added service method mapping notes to Task 7
+- Added mock_pydantic_ai_agent fixture pattern
+- Verified tool wrappers match actual service APIs
