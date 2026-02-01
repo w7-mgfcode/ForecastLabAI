@@ -404,6 +404,10 @@ class BacktestingService:
 
         return results
 
+    # Metrics where the sign matters and we should compare absolute values
+    # for percentage improvement calculations
+    SIGNED_METRICS: frozenset[str] = frozenset({"bias"})
+
     def _generate_comparison_summary(
         self,
         main_results: ModelBacktestResult,
@@ -418,11 +422,16 @@ class BacktestingService:
         Returns:
             Dictionary with comparison metrics.
             Keys are metric names, values are dicts with:
-            - main: Main model value
-            - naive: Naive baseline value (if available)
-            - seasonal_naive: Seasonal naive value (if available)
+            - main: Main model value (original signed value)
+            - naive: Naive baseline value (original signed value, if available)
+            - seasonal_naive: Seasonal naive value (original signed value, if available)
             - vs_naive_pct: Percentage improvement over naive
             - vs_seasonal_pct: Percentage improvement over seasonal
+
+        Note:
+            For signed metrics (e.g., bias), percentage improvements are computed
+            using absolute values since a smaller absolute value is better
+            regardless of sign.
         """
         summary: dict[str, dict[str, float]] = {}
 
@@ -435,21 +444,48 @@ class BacktestingService:
         for metric_name, main_value in main_results.aggregated_metrics.items():
             comparison: dict[str, float] = {"main": main_value}
 
+            # Determine if this is a signed metric
+            is_signed = metric_name in self.SIGNED_METRICS
+
             # Add baseline values and compute improvements
             if "naive" in baseline_by_type:
                 naive_value = baseline_by_type["naive"].get(metric_name, np.nan)
                 comparison["naive"] = naive_value
-                if not np.isnan(naive_value) and naive_value != 0:
-                    # Negative improvement means main is worse
-                    comparison["vs_naive_pct"] = ((naive_value - main_value) / naive_value) * 100
+
+                if not np.isnan(naive_value):
+                    if is_signed:
+                        # For signed metrics, compare absolute values
+                        abs_main = abs(main_value)
+                        abs_naive = abs(naive_value)
+                        if abs_naive != 0:
+                            # Improvement = (abs_baseline - abs_main) / abs_baseline * 100
+                            comparison["vs_naive_pct"] = (
+                                (abs_naive - abs_main) / abs_naive
+                            ) * 100
+                    elif naive_value != 0:
+                        # For unsigned metrics, use original formula
+                        comparison["vs_naive_pct"] = (
+                            (naive_value - main_value) / naive_value
+                        ) * 100
 
             if "seasonal_naive" in baseline_by_type:
                 seasonal_value = baseline_by_type["seasonal_naive"].get(metric_name, np.nan)
                 comparison["seasonal_naive"] = seasonal_value
-                if not np.isnan(seasonal_value) and seasonal_value != 0:
-                    comparison["vs_seasonal_pct"] = (
-                        (seasonal_value - main_value) / seasonal_value
-                    ) * 100
+
+                if not np.isnan(seasonal_value):
+                    if is_signed:
+                        # For signed metrics, compare absolute values
+                        abs_main = abs(main_value)
+                        abs_seasonal = abs(seasonal_value)
+                        if abs_seasonal != 0:
+                            comparison["vs_seasonal_pct"] = (
+                                (abs_seasonal - abs_main) / abs_seasonal
+                            ) * 100
+                    elif seasonal_value != 0:
+                        # For unsigned metrics, use original formula
+                        comparison["vs_seasonal_pct"] = (
+                            (seasonal_value - main_value) / seasonal_value
+                        ) * 100
 
             summary[metric_name] = comparison
 

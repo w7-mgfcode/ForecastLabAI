@@ -246,6 +246,120 @@ class TestBacktestingServiceBaselineComparisons:
         # Improvement = (20-10)/20 * 100 = 50%
         assert summary["mae"]["vs_naive_pct"] == pytest.approx(50.0)
 
+    def test_comparison_signed_metric_uses_absolute_values(self) -> None:
+        """Test that signed metrics (like bias) use absolute values for improvement."""
+        service = BacktestingService()
+
+        from app.features.backtesting.schemas import ModelBacktestResult
+
+        # Create mock results with signed bias values
+        # Main has bias=-5 (over-forecasting by 5)
+        # Naive has bias=-10 (over-forecasting by 10)
+        # Since |-5| < |-10|, main is better
+        main_results = ModelBacktestResult(
+            model_type="test_model",
+            config_hash="abc123",
+            fold_results=[],
+            aggregated_metrics={"bias": -5.0},
+            metric_std={"bias_std": 1.0},
+        )
+
+        baseline_results = [
+            ModelBacktestResult(
+                model_type="naive",
+                config_hash="def456",
+                fold_results=[],
+                aggregated_metrics={"bias": -10.0},
+                metric_std={"bias_std": 2.0},
+            )
+        ]
+
+        summary = service._generate_comparison_summary(
+            main_results=main_results,
+            baseline_results=baseline_results,
+        )
+
+        # Original signed values should be preserved
+        assert summary["bias"]["main"] == -5.0
+        assert summary["bias"]["naive"] == -10.0
+
+        # Improvement should use absolute values:
+        # (|-10| - |-5|) / |-10| * 100 = (10 - 5) / 10 * 100 = 50%
+        assert summary["bias"]["vs_naive_pct"] == pytest.approx(50.0)
+
+    def test_comparison_signed_metric_positive_values(self) -> None:
+        """Test signed metrics with positive values."""
+        service = BacktestingService()
+
+        from app.features.backtesting.schemas import ModelBacktestResult
+
+        # Main has bias=3 (under-forecasting by 3)
+        # Naive has bias=9 (under-forecasting by 9)
+        # Since |3| < |9|, main is better
+        main_results = ModelBacktestResult(
+            model_type="test_model",
+            config_hash="abc123",
+            fold_results=[],
+            aggregated_metrics={"bias": 3.0},
+            metric_std={"bias_std": 0.5},
+        )
+
+        baseline_results = [
+            ModelBacktestResult(
+                model_type="naive",
+                config_hash="def456",
+                fold_results=[],
+                aggregated_metrics={"bias": 9.0},
+                metric_std={"bias_std": 1.0},
+            )
+        ]
+
+        summary = service._generate_comparison_summary(
+            main_results=main_results,
+            baseline_results=baseline_results,
+        )
+
+        # Improvement = (9 - 3) / 9 * 100 = 66.67%
+        assert summary["bias"]["vs_naive_pct"] == pytest.approx(66.666666, rel=1e-3)
+
+    def test_comparison_signed_metric_mixed_signs(self) -> None:
+        """Test signed metrics with mixed positive/negative values."""
+        service = BacktestingService()
+
+        from app.features.backtesting.schemas import ModelBacktestResult
+
+        # Main has bias=2 (under-forecast), Naive has bias=-8 (over-forecast)
+        # |2| = 2, |-8| = 8, so main is better
+        main_results = ModelBacktestResult(
+            model_type="test_model",
+            config_hash="abc123",
+            fold_results=[],
+            aggregated_metrics={"bias": 2.0},
+            metric_std={"bias_std": 0.3},
+        )
+
+        baseline_results = [
+            ModelBacktestResult(
+                model_type="naive",
+                config_hash="def456",
+                fold_results=[],
+                aggregated_metrics={"bias": -8.0},
+                metric_std={"bias_std": 1.5},
+            )
+        ]
+
+        summary = service._generate_comparison_summary(
+            main_results=main_results,
+            baseline_results=baseline_results,
+        )
+
+        # Original values preserved
+        assert summary["bias"]["main"] == 2.0
+        assert summary["bias"]["naive"] == -8.0
+
+        # Improvement = (|-8| - |2|) / |-8| * 100 = (8 - 2) / 8 * 100 = 75%
+        assert summary["bias"]["vs_naive_pct"] == pytest.approx(75.0)
+
 
 class TestBacktestingServiceLoadData:
     """Tests for _load_series_data method."""
