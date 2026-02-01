@@ -10,10 +10,13 @@ from app.core.exceptions import register_exception_handlers
 from app.core.health import router as health_router
 from app.core.logging import configure_logging, get_logger
 from app.core.middleware import RequestIdMiddleware
+from app.features.analytics.routes import router as analytics_router
 from app.features.backtesting.routes import router as backtesting_router
+from app.features.dimensions.routes import router as dimensions_router
 from app.features.featuresets.routes import router as featuresets_router
 from app.features.forecasting.routes import router as forecasting_router
 from app.features.ingest.routes import router as ingest_router
+from app.features.jobs.routes import router as jobs_router
 from app.features.registry.routes import router as registry_router
 
 logger = get_logger(__name__)
@@ -71,6 +74,9 @@ def create_app() -> FastAPI:
 
     # Routers
     app.include_router(health_router)
+    app.include_router(dimensions_router)
+    app.include_router(analytics_router)
+    app.include_router(jobs_router)
     app.include_router(ingest_router)
     app.include_router(featuresets_router)
     app.include_router(forecasting_router)
