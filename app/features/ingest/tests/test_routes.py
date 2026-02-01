@@ -37,16 +37,27 @@ async def db_session():
         try:
             yield session
         finally:
+            # Rollback any pending transaction first
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+
+    # Use a fresh session for cleanup to avoid transaction state issues
+    async with async_session_maker() as cleanup_session:
+        try:
             # Clean up test data (delete in correct order due to FK constraints)
-            await session.execute(delete(SalesDaily))
-            await session.execute(delete(Product).where(Product.sku.like("SKU-%")))
-            await session.execute(delete(Store).where(Store.code.like("S00%")))
-            await session.execute(
+            await cleanup_session.execute(delete(SalesDaily))
+            await cleanup_session.execute(delete(Product).where(Product.sku.like("SKU-%")))
+            await cleanup_session.execute(delete(Store).where(Store.code.like("S00%")))
+            await cleanup_session.execute(
                 delete(Calendar).where(
                     (Calendar.date >= date(2024, 1, 1)) & (Calendar.date <= date(2024, 12, 31))
                 )
             )
-            await session.commit()
+            await cleanup_session.commit()
+        except Exception:
+            pass
 
     await engine.dispose()
 
