@@ -45,11 +45,15 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
             yield session
         finally:
             # Clean up test data (delete in correct order due to FK constraints)
-            # Only delete test-specific data (with TEST- prefix)
             await session.execute(delete(SalesDaily))
             await session.execute(delete(Product).where(Product.sku.like("TEST-%")))
             await session.execute(delete(Store).where(Store.code.like("TEST-%")))
-            # Don't delete Calendar - it's shared and safe to keep
+            # Clean up calendar entries in our test date range (2024-01-01 to 2024-04-29)
+            await session.execute(
+                delete(Calendar).where(
+                    (Calendar.date >= date(2024, 1, 1)) & (Calendar.date <= date(2024, 4, 29))
+                )
+            )
             await session.commit()
 
     await engine.dispose()
