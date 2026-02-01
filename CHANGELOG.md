@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.7](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.1.6...v0.1.7) (2026-02-01)
+
+
+### Features
+
+* **forecasting:** add baseline model zoo with security validations ([3da7783](https://github.com/w7-mgfcode/ForecastLabAI/commit/3da7783748f8d9bf2fe96e194274aa88f69bdfd2))
+* **forecasting:** implement baseline model zoo and unified interface ([#28](https://github.com/w7-mgfcode/ForecastLabAI/issues/28)) ([a9a055f](https://github.com/w7-mgfcode/ForecastLabAI/commit/a9a055f39cb781dbb5b6f8f9b76e7d4e833d30ce))
+
+
+### Bug Fixes
+
+* **forecasting:** add security validations and fix documentation ([1d411f9](https://github.com/w7-mgfcode/ForecastLabAI/commit/1d411f9ebd43e11b7bcba4525ba75cba7903dfbe))
+
+
+### Documentation
+
+* update DAILY-FLOW.md for Phase 4 Forecasting ([#27](https://github.com/w7-mgfcode/ForecastLabAI/issues/27)) ([e2c57ff](https://github.com/w7-mgfcode/ForecastLabAI/commit/e2c57ffb35cfa1fe0a4d0b6b9d1f56be9abdc7d9))
+
 ## [0.1.5](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.1.4...v0.1.5) (2026-01-26)
 
 
