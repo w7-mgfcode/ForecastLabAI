@@ -1,7 +1,8 @@
 # ADR-0002: Frontend Architecture — Vite SPA First
 
-- Status: Accepted
+- Status: Implemented
 - Date: 2026-01-26
+- Updated: 2026-02-01
 
 ## Context
 ForecastLabAI needs a modern dashboard to showcase data exploration, model runs, training/prediction actions, and RAG Q&A.
@@ -39,6 +40,21 @@ Use **Vite** to build a **React SPA dashboard** for Phase-0/Phase-1.
   - Keep API contracts stable and well-typed (OpenAPI + Pydantic schemas).
   - Keep UI logic thin; avoid embedding business rules in the frontend.
 
+## Implementation
+
+The frontend was scaffolded in `frontend/` with:
+
+- **React 19** + TypeScript 5.9 (strict mode)
+- **Vite 7** with `@tailwindcss/vite` plugin
+- **Tailwind CSS 4** (new `@import "tailwindcss"` syntax)
+- **shadcn/ui** (New York style) with 26 pre-installed components
+- **TanStack Query** + **TanStack Table** for data management
+- **React Router 7** for client-side routing
+- **Recharts** for data visualization
+
+Path aliases (`@/`) configured in both `tsconfig.json` and `vite.config.ts`.
+API proxy configured to forward `/api/*` requests to `http://localhost:8123`.
+
 ## Links
-- INITIAL: `INITIAL-8.md` (Dashboard), `INITIAL-7.md` (FastAPI Contracts)
-- PRP: (to be created) `docs/PRP/PRP-frontend-dashboard.md`
+- INITIAL: `INITIAL-11A.md` (Frontend Setup), `INITIAL-11B.md` (Architecture), `INITIAL-11C.md` (Pages)
+- PRP: `PRPs/PRP-11A-frontend-setup.md`
