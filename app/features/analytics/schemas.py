@@ -61,8 +61,7 @@ class KPIMetrics(BaseModel):
     total_units: int = Field(
         ...,
         ge=0,
-        description="Total units sold (sum of quantity). "
-        "Represents the physical volume of sales.",
+        description="Total units sold (sum of quantity). Represents the physical volume of sales.",
     )
     total_transactions: int = Field(
         ...,
@@ -72,8 +71,7 @@ class KPIMetrics(BaseModel):
     )
     avg_unit_price: Decimal | None = Field(
         None,
-        description="Average price per unit (total_revenue / total_units). "
-        "Null if no units sold.",
+        description="Average price per unit (total_revenue / total_units). Null if no units sold.",
     )
     avg_basket_value: Decimal | None = Field(
         None,
@@ -102,18 +100,15 @@ class KPIResponse(BaseModel):
     )
     store_id: int | None = Field(
         None,
-        description="Store filter applied (if any). "
-        "Null means all stores included.",
+        description="Store filter applied (if any). Null means all stores included.",
     )
     product_id: int | None = Field(
         None,
-        description="Product filter applied (if any). "
-        "Null means all products included.",
+        description="Product filter applied (if any). Null means all products included.",
     )
     category: str | None = Field(
         None,
-        description="Category filter applied (if any). "
-        "Null means all categories included.",
+        description="Category filter applied (if any). Null means all categories included.",
     )
 
 

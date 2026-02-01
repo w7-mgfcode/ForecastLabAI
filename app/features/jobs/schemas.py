@@ -87,23 +87,19 @@ class JobResponse(BaseModel):
     )
     result: dict[str, Any] | None = Field(
         None,
-        description="Job result (null until completed). "
-        "Structure depends on job_type.",
+        description="Job result (null until completed). Structure depends on job_type.",
     )
     error_message: str | None = Field(
         None,
-        description="Error details if status='failed'. "
-        "Use for troubleshooting.",
+        description="Error details if status='failed'. Use for troubleshooting.",
     )
     error_type: str | None = Field(
         None,
-        description="Exception class name if status='failed'. "
-        "Helps identify error category.",
+        description="Exception class name if status='failed'. Helps identify error category.",
     )
     run_id: str | None = Field(
         None,
-        description="Model run ID for train/backtest jobs. "
-        "Use with /registry/runs endpoint.",
+        description="Model run ID for train/backtest jobs. Use with /registry/runs endpoint.",
     )
     started_at: datetime | None = Field(
         None,

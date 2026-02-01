@@ -63,9 +63,7 @@ class AnalyticsService:
             func.coalesce(func.sum(SalesDaily.total_amount), 0).label("total_revenue"),
             func.coalesce(func.sum(SalesDaily.quantity), 0).label("total_units"),
             func.count().label("total_transactions"),
-        ).where(
-            (SalesDaily.date >= start_date) & (SalesDaily.date <= end_date)
-        )
+        ).where((SalesDaily.date >= start_date) & (SalesDaily.date <= end_date))
 
         # Apply filters
         if store_id is not None:
@@ -86,12 +84,8 @@ class AnalyticsService:
         total_transactions = int(row.total_transactions)
 
         # Compute derived metrics
-        avg_unit_price = (
-            total_revenue / total_units if total_units > 0 else None
-        )
-        avg_basket_value = (
-            total_revenue / total_transactions if total_transactions > 0 else None
-        )
+        avg_unit_price = total_revenue / total_units if total_units > 0 else None
+        avg_basket_value = total_revenue / total_transactions if total_transactions > 0 else None
 
         metrics = KPIMetrics(
             total_revenue=total_revenue,
@@ -238,15 +232,11 @@ class AnalyticsService:
 
             # Calculate derived metrics
             avg_unit_price = row_revenue / row_units if row_units > 0 else None
-            avg_basket_value = (
-                row_revenue / row_transactions if row_transactions > 0 else None
-            )
+            avg_basket_value = row_revenue / row_transactions if row_transactions > 0 else None
 
             # Calculate revenue share
             revenue_share = (
-                (row_revenue / total_revenue_all * 100)
-                if total_revenue_all > 0
-                else Decimal("0")
+                (row_revenue / total_revenue_all * 100) if total_revenue_all > 0 else Decimal("0")
             )
 
             # Get dimension ID if available

@@ -241,8 +241,7 @@ async def get_job(
     if result is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job not found: {job_id}. "
-            "Use GET /jobs to list available jobs.",
+            detail=f"Job not found: {job_id}. Use GET /jobs to list available jobs.",
         )
 
     return result
@@ -292,8 +291,7 @@ async def cancel_job(
     if result is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job not found: {job_id}. "
-            "Use GET /jobs to list available jobs.",
+            detail=f"Job not found: {job_id}. Use GET /jobs to list available jobs.",
         )
 
     return result

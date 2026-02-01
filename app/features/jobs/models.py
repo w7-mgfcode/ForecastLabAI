@@ -90,9 +90,7 @@ class Job(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     job_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     job_type: Mapped[str] = mapped_column(String(20), index=True)
-    status: Mapped[str] = mapped_column(
-        String(20), default=JobStatus.PENDING.value, index=True
-    )
+    status: Mapped[str] = mapped_column(String(20), default=JobStatus.PENDING.value, index=True)
 
     # Job configuration (stored as JSONB for flexibility)
     params: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
