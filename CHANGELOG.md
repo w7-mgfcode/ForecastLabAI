@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.0...v0.2.1) (2026-02-01)
+
+
+### Features
+
+* Phase 7 Serving Layer with agent-first API design ([#43](https://github.com/w7-mgfcode/ForecastLabAI/issues/43)) ([8fe8ef1](https://github.com/w7-mgfcode/ForecastLabAI/commit/8fe8ef11a979ade39f80d6178e4f5fffda483d3c))
+
 ## [0.2.0](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.0...v0.2.0) (2026-02-01)
 
 
