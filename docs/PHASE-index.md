@@ -16,9 +16,9 @@ This document indexes all implementation phases of the ForecastLabAI project.
 | 5 | Backtesting | Completed | PRP-6 | [5-BACKTESTING.md](./PHASE/5-BACKTESTING.md) |
 | 6 | Model Registry | Completed | PRP-7 | [6-MODEL_REGISTRY.md](./PHASE/6-MODEL_REGISTRY.md) |
 | 7 | Serving Layer | Completed | PRP-8 | [7-SERVING_LAYER.md](./PHASE/7-SERVING_LAYER.md) |
-| 8 | RAG Knowledge Base | Pending | PRP-9 | - |
-| 9 | Dashboard | Pending | PRP-10 | - |
-| 10 | Agentic Layer | Pending | - | - |
+| 8 | RAG Knowledge Base | Completed | PRP-9 | [8-RAG_KNOWLEDGE_BASE.md](./PHASE/8-RAG_KNOWLEDGE_BASE.md) |
+| 9 | Agentic Layer | Pending | PRP-10 | - |
+| 10 | ForecastLab Dashboard | Pending | PRP-11 | - |
 
 ---
 
@@ -273,18 +273,66 @@ jobs_retention_days: int = 30
 - Pyright: 0 errors
 - Pytest: 426 unit tests passed
 
+### [Phase 8: RAG Knowledge Base](./PHASE/8-RAG_KNOWLEDGE_BASE.md)
+
+**Date Completed**: 2026-02-01
+
+**Summary**: RAG Knowledge Base with pgvector and multiple embedding providers:
+- PostgreSQL pgvector for HNSW similarity search
+- Embedding Provider Pattern: OpenAI (default) and Ollama (local/LAN)
+- Ollama uses `/v1/embeddings` OpenAI-compatible endpoint with `dimensions` parameter
+- Markdown-aware and OpenAPI endpoint-aware chunking
+- Idempotent indexing via SHA-256 content hash
+- Configurable embedding dimensions (1536 default, 768 for nomic-embed-text, etc.)
+
+**Key Deliverables**:
+- `app/features/rag/embeddings.py` - EmbeddingProvider, OpenAIEmbeddingProvider, OllamaEmbeddingProvider
+- `app/features/rag/chunkers.py` - MarkdownChunker, OpenAPIChunker
+- `app/features/rag/models.py` - DocumentSource, DocumentChunk ORM models
+- `app/features/rag/service.py` - RAGService (index, retrieve, list, delete)
+- `app/features/rag/routes.py` - API endpoints
+- `alembic/versions/b4c8d9e0f123_create_rag_tables.py` - Base RAG tables
+- `alembic/versions/c5d9e1f2g345_rag_dynamic_embedding_dimension.py` - Dynamic dimension
+
+**API Endpoints**:
+- `POST /rag/index` - Index document into knowledge base
+- `POST /rag/retrieve` - Semantic search with similarity threshold
+- `GET /rag/sources` - List indexed sources
+- `DELETE /rag/sources/{source_id}` - Delete source and chunks
+
+**Configuration (Settings)**:
+```python
+rag_embedding_provider: Literal["openai", "ollama"] = "openai"
+rag_embedding_dimension: int = 1536
+ollama_base_url: str = "http://localhost:11434"
+ollama_embedding_model: str = "nomic-embed-text"
+```
+
+**Validation Results**:
+- Ruff: All checks passed
+- MyPy: 0 errors (117 source files)
+- Pyright: 0 errors
+- Pytest: 82 unit tests + 14 integration tests
+
 ---
 
 ## Pending Phases
 
-### Phase 8: RAG Knowledge Base
-pgvector embeddings with evidence-grounded answers and citations.
+### Phase 9: Agentic Layer ("The Brain")
+Autonomous decision-making, tool orchestration, and structured outputs using PydanticAI.
+- Experiment Orchestrator Agent (backtest → compare → deploy workflow)
+- RAG Assistant Agent (query → retrieve → answer with citations)
+- Human-in-the-loop approval for sensitive operations
+- WebSocket streaming for real-time responses
+- Endpoints: POST /agents/experiment/run, POST /agents/rag/query, WS /agents/stream
 
-### Phase 9: Dashboard
-React + Vite + shadcn/ui frontend with data tables and visualizations.
-
-### Phase 10: Agentic Layer (Optional)
-PydanticAI integration for experiment orchestration.
+### Phase 10: ForecastLab Dashboard ("The Face")
+User interface, data visualization, and agent interaction.
+- React 19 + Vite + shadcn/ui + Tailwind CSS 4
+- TanStack Table for server-side data grids
+- TanStack Query for data fetching and caching
+- Recharts for time series visualization
+- Agent chat interface with streaming and citations
 
 ---
 
@@ -331,3 +379,4 @@ Each phase document (`docs/PHASE/X-PHASE_NAME.md`) contains:
 | 2026-01-31 | 5 | Backtesting module with time-series CV completed |
 | 2026-02-01 | 6 | Model Registry with run tracking and deployment aliases completed |
 | 2026-02-01 | 7 | Serving Layer with RFC 7807, dimensions, analytics, and jobs completed |
+| 2026-02-01 | 8 | RAG Knowledge Base with pgvector and Ollama embedding provider completed |

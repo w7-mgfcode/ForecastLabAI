@@ -162,21 +162,29 @@ gh run watch <RUN_ID>
 
 ---
 
-## Következő Phase: Forecasting (PRP-5)
+## Következő Phases (INITIAL-9 → INITIAL-11)
 
-```bash
-# Kezdés
-git checkout dev
-git pull origin dev
-git checkout -b feat/prp-5-forecasting
+A projekt a moduláris három-fázisú roadmap szerint halad:
 
-# Fejlesztés...
-# PR → dev → main → release → phase-4 snapshot
+```text
+Phase 8: RAG Knowledge Base ("The Memory")
+         ↓
+Phase 9: Agentic Layer ("The Brain")
+         ↓
+Phase 10: ForecastLab Dashboard ("The Face")
 ```
 
-### PRP-5 Scope (INITIAL-5)
-- Model zoo: naive, seasonal naive, moving average
-- Unified model interface: fit/predict, serialize/load
-- Scikit-learn Pipeline: Scaling → Encoding → Regressor
-- Joblib-based ModelBundle persistence
-- Multi-horizon recursive forecasting
+### Phase 8: RAG Knowledge Base (INITIAL-9)
+- pgvector embeddings + semantic retrieval
+- Markdown/OpenAPI chunking
+- POST /rag/index, POST /rag/retrieve endpoints
+
+### Phase 9: Agentic Layer (INITIAL-10)
+- PydanticAI agents (Experiment Orchestrator, RAG Assistant)
+- Tool orchestration + structured outputs
+- WebSocket streaming
+
+### Phase 10: Dashboard (INITIAL-11)
+- React 19 + Vite + shadcn/ui
+- Data tables + time series charts
+- Agent chat interface

@@ -20,6 +20,12 @@ dependencies = [
     "numpy>=2.4.1",
     "scikit-learn>=1.6.0",
     "joblib>=1.4.0",
+    # RAG dependencies
+    "pgvector>=0.3.0",
+    "openai>=1.40.0",
+    "tiktoken>=0.7.0",
+    "httpx>=0.28.0",
+    "pyyaml>=6.0.0",
 ]
 
 [project.optional-dependencies]

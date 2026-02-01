@@ -1,0 +1,123 @@
+### RAG Knowledge Base - HTTP Client Examples
+### Use with VS Code REST Client or similar tools
+
+### =============================================================================
+### Index Endpoints
+### =============================================================================
+
+### Index a markdown document (with content)
+POST http://localhost:8123/rag/index
+Content-Type: application/json
+
+{
+  "source_type": "markdown",
+  "source_path": "docs/example.md",
+  "content": "# Example Document\n\nThis is an example markdown document for testing the RAG indexing pipeline.\n\n## Section One\n\nFirst section with some content about forecasting.\n\n## Section Two\n\nSecond section about backtesting strategies.",
+  "metadata": {
+    "category": "documentation",
+    "author": "test"
+  }
+}
+
+### Index a markdown document (read from file path)
+POST http://localhost:8123/rag/index
+Content-Type: application/json
+
+{
+  "source_type": "markdown",
+  "source_path": "README.md"
+}
+
+### Index an OpenAPI specification
+POST http://localhost:8123/rag/index
+Content-Type: application/json
+
+{
+  "source_type": "openapi",
+  "source_path": "api/openapi.json",
+  "content": "{\"openapi\":\"3.0.0\",\"info\":{\"title\":\"Test API\",\"version\":\"1.0\"},\"paths\":{\"/users\":{\"get\":{\"summary\":\"List users\",\"operationId\":\"listUsers\",\"responses\":{\"200\":{\"description\":\"OK\"}}}}}}"
+}
+
+### =============================================================================
+### Retrieve Endpoints
+### =============================================================================
+
+### Semantic search - basic query
+POST http://localhost:8123/rag/retrieve
+Content-Type: application/json
+
+{
+  "query": "How does backtesting prevent data leakage?",
+  "top_k": 5,
+  "similarity_threshold": 0.7
+}
+
+### Semantic search - with filters
+POST http://localhost:8123/rag/retrieve
+Content-Type: application/json
+
+{
+  "query": "What forecasting models are available?",
+  "top_k": 10,
+  "similarity_threshold": 0.6,
+  "filters": {
+    "source_type": ["markdown"],
+    "category": "documentation"
+  }
+}
+
+### Semantic search - lower threshold for more results
+POST http://localhost:8123/rag/retrieve
+Content-Type: application/json
+
+{
+  "query": "time series cross validation",
+  "top_k": 20,
+  "similarity_threshold": 0.5
+}
+
+### =============================================================================
+### Sources Endpoints
+### =============================================================================
+
+### List all indexed sources
+GET http://localhost:8123/rag/sources
+
+### Delete a specific source (replace source_id with actual value)
+DELETE http://localhost:8123/rag/sources/abc123def456789012345678901234
+
+### =============================================================================
+### Example Workflows
+### =============================================================================
+
+### Workflow 1: Index and then query
+### Step 1: Index a document
+POST http://localhost:8123/rag/index
+Content-Type: application/json
+
+{
+  "source_type": "markdown",
+  "source_path": "test-workflow.md",
+  "content": "# Backtesting Guide\n\nBacktesting is a method to evaluate forecasting models using historical data.\n\n## Time-Based Splits\n\nWe use expanding or sliding window strategies to prevent data leakage.\n\n## Metrics\n\nKey metrics include MAE, sMAPE, WAPE, and Bias."
+}
+
+### Step 2: Query the indexed content
+POST http://localhost:8123/rag/retrieve
+Content-Type: application/json
+
+{
+  "query": "What metrics are used in backtesting?",
+  "top_k": 3,
+  "similarity_threshold": 0.6
+}
+
+### Workflow 2: Re-index with updated content
+### (Using same source_path will update existing chunks)
+POST http://localhost:8123/rag/index
+Content-Type: application/json
+
+{
+  "source_type": "markdown",
+  "source_path": "test-workflow.md",
+  "content": "# Backtesting Guide (Updated)\n\nBacktesting evaluates forecasting models.\n\n## Time-Based Splits\n\nWe use expanding or sliding window strategies.\n\n## Metrics\n\nKey metrics: MAE, sMAPE, WAPE, Bias, and Stability Index."
+}
