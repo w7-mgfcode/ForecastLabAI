@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.features.rag.chunkers import ChunkData, get_chunker
-from app.features.rag.embeddings import EmbeddingService, get_embedding_service
+from app.features.rag.embeddings import EmbeddingProvider, get_embedding_service
 from app.features.rag.models import DocumentChunk, DocumentSource
 from app.features.rag.schemas import (
     ChunkResult,
@@ -60,12 +60,12 @@ class RAGService:
 
     def __init__(
         self,
-        embedding_service: EmbeddingService | None = None,
+        embedding_service: EmbeddingProvider | None = None,
     ) -> None:
         """Initialize RAG service.
 
         Args:
-            embedding_service: Optional embedding service override (for testing).
+            embedding_service: Optional embedding provider override (for testing).
         """
         self.settings = get_settings()
         self._embedding_service = embedding_service or get_embedding_service()

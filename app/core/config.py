@@ -65,10 +65,15 @@ class Settings(BaseSettings):
     jobs_retention_days: int = 30
 
     # RAG Embedding Configuration
+    rag_embedding_provider: Literal["openai", "ollama"] = "openai"
     openai_api_key: str = ""
     rag_embedding_model: str = "text-embedding-3-small"
     rag_embedding_dimension: int = 1536
     rag_embedding_batch_size: int = 100
+
+    # Ollama Configuration (when rag_embedding_provider = "ollama")
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_embedding_model: str = "nomic-embed-text"
 
     # RAG Chunking Configuration
     rag_chunk_size: int = 512  # tokens

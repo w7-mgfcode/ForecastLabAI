@@ -1,18 +1,19 @@
-"""Embedding service for RAG knowledge base.
+"""Embedding providers for RAG knowledge base.
 
-Provides async embedding generation using OpenAI API:
-- Batch processing with configurable batch size
-- Rate limit handling with exponential backoff
-- Token usage logging for cost tracking
+Provides async embedding generation with multiple backends:
+- OpenAI API (default): Batch processing with rate limit handling
+- Ollama: Local/LAN embedding generation via HTTP API
 
-CRITICAL: Uses AsyncOpenAI for non-blocking API calls.
+CRITICAL: Provider selection via RAG_EMBEDDING_PROVIDER config.
 """
 
 from __future__ import annotations
 
 import asyncio
+from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
+import httpx
 import structlog
 import tiktoken
 from openai import AsyncOpenAI, RateLimitError
@@ -31,8 +32,56 @@ class EmbeddingError(Exception):
     pass
 
 
-class EmbeddingService:
-    """Service for generating text embeddings via OpenAI API.
+class EmbeddingProvider(ABC):
+    """Abstract base class for embedding providers.
+
+    Defines the interface for generating text embeddings.
+    All providers must implement embed_texts, embed_query, and dimension.
+    """
+
+    @abstractmethod
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Generate embeddings for multiple texts.
+
+        Args:
+            texts: List of texts to embed.
+
+        Returns:
+            List of embedding vectors in same order as input texts.
+
+        Raises:
+            EmbeddingError: If embedding generation fails.
+        """
+        ...
+
+    @abstractmethod
+    async def embed_query(self, query: str) -> list[float]:
+        """Generate embedding for a single query.
+
+        Args:
+            query: Query text to embed.
+
+        Returns:
+            Embedding vector.
+
+        Raises:
+            EmbeddingError: If embedding generation fails.
+        """
+        ...
+
+    @property
+    @abstractmethod
+    def dimension(self) -> int:
+        """Return the embedding dimension for this provider.
+
+        Returns:
+            Embedding dimension (e.g., 1536 for OpenAI, 768 for nomic-embed-text).
+        """
+        ...
+
+
+class OpenAIEmbeddingProvider(EmbeddingProvider):
+    """Embedding provider using OpenAI API.
 
     Handles:
     - Async batch embedding generation
@@ -47,11 +96,9 @@ class EmbeddingService:
     MAX_INPUTS_PER_BATCH = 2048  # OpenAI batch limit
 
     def __init__(self) -> None:
-        """Initialize embedding service with OpenAI client."""
+        """Initialize OpenAI embedding provider."""
         self.settings = get_settings()
         self._encoder = tiktoken.get_encoding("cl100k_base")
-
-        # Initialize client (will fail on first call if no API key)
         self._client: AsyncOpenAI | None = None
 
     def _get_client(self) -> AsyncOpenAI:
@@ -70,6 +117,15 @@ class EmbeddingService:
                 )
             self._client = AsyncOpenAI(api_key=self.settings.openai_api_key)
         return self._client
+
+    @property
+    def dimension(self) -> int:
+        """Return configured embedding dimension.
+
+        Returns:
+            Embedding dimension from settings.
+        """
+        return self.settings.rag_embedding_dimension
 
     def count_tokens(self, text: str) -> int:
         """Count tokens in text using tiktoken.
@@ -155,6 +211,7 @@ class EmbeddingService:
             text_count=len(texts),
             total_tokens=total_tokens,
             model=self.settings.rag_embedding_model,
+            provider="openai",
         )
 
         return embeddings
@@ -249,17 +306,229 @@ class EmbeddingService:
         )
 
 
-# Singleton instance for dependency injection
-_embedding_service: EmbeddingService | None = None
+class OllamaEmbeddingProvider(EmbeddingProvider):
+    """Embedding provider using Ollama's OpenAI-compatible API.
+
+    Provides local/LAN-based embedding generation without OpenAI dependency.
+    Uses the /v1/embeddings endpoint (OpenAI-compatible) which supports
+    the `dimensions` parameter for output dimension control.
+
+    CRITICAL: Requires Ollama server running with an embedding model pulled.
+    """
+
+    def __init__(self) -> None:
+        """Initialize Ollama embedding provider."""
+        self.settings = get_settings()
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """Get or create the async HTTP client.
+
+        Returns:
+            httpx AsyncClient instance.
+        """
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                base_url=self.settings.ollama_base_url,
+                timeout=httpx.Timeout(60.0, connect=10.0),
+            )
+        return self._client
+
+    @property
+    def dimension(self) -> int:
+        """Return configured embedding dimension.
+
+        Returns:
+            Embedding dimension from settings.
+        """
+        return self.settings.rag_embedding_dimension
+
+    async def embed_texts(
+        self,
+        texts: list[str],
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
+    ) -> list[list[float]]:
+        """Generate embeddings for multiple texts via Ollama's OpenAI-compatible API.
+
+        Uses /v1/embeddings endpoint which supports the `dimensions` parameter
+        to control output embedding size.
+
+        Args:
+            texts: List of texts to embed.
+            max_retries: Maximum retry attempts.
+            retry_delay: Initial delay between retries (doubles each retry).
+
+        Returns:
+            List of embeddings in same order as input texts.
+
+        Raises:
+            EmbeddingError: If embedding generation fails.
+        """
+        if not texts:
+            return []
+
+        client = self._get_client()
+        last_error: Exception | None = None
+
+        for attempt in range(max_retries + 1):
+            try:
+                # Use OpenAI-compatible endpoint with dimensions parameter
+                response = await client.post(
+                    "/v1/embeddings",
+                    json={
+                        "model": self.settings.ollama_embedding_model,
+                        "input": texts,
+                        "dimensions": self.settings.rag_embedding_dimension,
+                    },
+                )
+                response.raise_for_status()
+
+                data = response.json()
+
+                # OpenAI-compatible response format: {"data": [{"embedding": [...], "index": 0}, ...]}
+                embedding_data = data.get("data", [])
+
+                if len(embedding_data) != len(texts):
+                    raise EmbeddingError(
+                        f"Embedding count mismatch: expected {len(texts)}, got {len(embedding_data)}"
+                    )
+
+                # Sort by index to ensure correct order and extract embeddings
+                sorted_data = sorted(embedding_data, key=lambda x: x.get("index", 0))
+                embeddings: list[list[float]] = [item["embedding"] for item in sorted_data]
+
+                logger.info(
+                    "rag.embeddings_generated",
+                    text_count=len(texts),
+                    model=self.settings.ollama_embedding_model,
+                    dimension=self.settings.rag_embedding_dimension,
+                    provider="ollama",
+                )
+
+                return embeddings
+
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                if e.response.status_code == 404:
+                    # Model not found - don't retry
+                    raise EmbeddingError(
+                        f"Ollama model '{self.settings.ollama_embedding_model}' not found. "
+                        f"Run: ollama pull {self.settings.ollama_embedding_model}"
+                    ) from e
+                if e.response.status_code >= 500 and attempt < max_retries:
+                    # Server error - retry
+                    wait_time = retry_delay * (2**attempt)
+                    logger.warning(
+                        "rag.ollama_server_error",
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                        wait_seconds=wait_time,
+                        status_code=e.response.status_code,
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                logger.error(
+                    "rag.embedding_error",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    status_code=e.response.status_code,
+                )
+                raise EmbeddingError(f"Ollama API error: {e}") from e
+
+            except httpx.ConnectError as e:
+                last_error = e
+                logger.error(
+                    "rag.ollama_connection_error",
+                    error=str(e),
+                    base_url=self.settings.ollama_base_url,
+                )
+                raise EmbeddingError(
+                    f"Failed to connect to Ollama at {self.settings.ollama_base_url}. "
+                    "Ensure Ollama is running."
+                ) from e
+
+            except Exception as e:
+                last_error = e
+                logger.error(
+                    "rag.embedding_error",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+                raise EmbeddingError(f"Failed to generate embeddings: {e}") from e
+
+        raise EmbeddingError(
+            f"Failed to generate embeddings after {max_retries} retries: {last_error}"
+        )
+
+    async def embed_query(self, query: str) -> list[float]:
+        """Generate embedding for a single query.
+
+        Args:
+            query: Query text to embed.
+
+        Returns:
+            Embedding vector.
+
+        Raises:
+            EmbeddingError: If embedding generation fails.
+        """
+        embeddings = await self.embed_texts([query])
+        return embeddings[0]
+
+    async def close(self) -> None:
+        """Close the HTTP client.
+
+        Should be called when done using the provider.
+        """
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
 
-def get_embedding_service() -> EmbeddingService:
-    """Get singleton embedding service instance.
+# Legacy alias for backwards compatibility
+EmbeddingService = OpenAIEmbeddingProvider
+
+
+# Singleton instances for dependency injection
+_embedding_provider: EmbeddingProvider | None = None
+
+
+def get_embedding_service() -> EmbeddingProvider:
+    """Get singleton embedding provider instance.
+
+    Returns provider based on RAG_EMBEDDING_PROVIDER config:
+    - "openai": OpenAI API (default)
+    - "ollama": Local Ollama server
 
     Returns:
-        EmbeddingService instance.
+        EmbeddingProvider instance.
     """
-    global _embedding_service
-    if _embedding_service is None:
-        _embedding_service = EmbeddingService()
-    return _embedding_service
+    global _embedding_provider
+    if _embedding_provider is None:
+        settings = get_settings()
+        if settings.rag_embedding_provider == "ollama":
+            _embedding_provider = OllamaEmbeddingProvider()
+            logger.info(
+                "rag.embedding_provider_initialized",
+                provider="ollama",
+                base_url=settings.ollama_base_url,
+                model=settings.ollama_embedding_model,
+            )
+        else:
+            _embedding_provider = OpenAIEmbeddingProvider()
+            logger.info(
+                "rag.embedding_provider_initialized",
+                provider="openai",
+                model=settings.rag_embedding_model,
+            )
+    return _embedding_provider
+
+
+def reset_embedding_service() -> None:
+    """Reset the singleton embedding provider.
+
+    Useful for testing or reconfiguration.
+    """
+    global _embedding_provider
+    _embedding_provider = None
