@@ -26,6 +26,9 @@ dependencies = [
     "tiktoken>=0.7.0",
     "httpx>=0.28.0",
     "pyyaml>=6.0.0",
+    # Agentic Layer dependencies
+    "pydantic-ai>=1.48.0",
+    "anthropic>=0.50.0",
 ]
 
 [project.optional-dependencies]
@@ -158,6 +161,12 @@ exclude = [
 pythonVersion = "3.12"
 pythonPlatform = "Linux"
 typeCheckingMode = "strict"
+
+# Agents feature uses PydanticAI which has partial type coverage
+# Relax unknown type checks for dynamic agent result handling
+reportUnknownVariableType = "warning"
+reportUnknownArgumentType = "warning"
+reportUnknownMemberType = "warning"
 
 # Test files can have unused functions (fixtures, route handlers)
 reportUnusedFunction = "none"
