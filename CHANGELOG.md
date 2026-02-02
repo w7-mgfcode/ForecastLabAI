@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.4...v0.2.5) (2026-02-02)
+
+
+### Features
+
+* **frontend:** Phase 10 ForecastLab Dashboard ([#63](https://github.com/w7-mgfcode/ForecastLabAI/issues/63)) ([4c0b35f](https://github.com/w7-mgfcode/ForecastLabAI/commit/4c0b35f91575bdf6913156a1be45948546f3a8b1))
+
 ## [0.2.4](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.3...v0.2.4) (2026-02-02)
 
 
