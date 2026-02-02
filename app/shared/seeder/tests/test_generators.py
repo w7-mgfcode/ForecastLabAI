@@ -1,5 +1,8 @@
 """Tests for data generators."""
 
+# mypy: disable-error-code="union-attr,arg-type,operator,return-value"
+# Tests access dict values with known runtime types; mypy infers overly broad unions
+
 import random
 from datetime import date
 from decimal import Decimal
