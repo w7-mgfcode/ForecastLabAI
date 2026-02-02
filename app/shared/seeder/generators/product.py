@@ -150,8 +150,11 @@ class ProductGenerator:
     def _generate_unique_sku(self) -> str:
         """Generate a unique SKU.
 
+        Uses randomized generation for efficiency, with deterministic fallback
+        when near capacity to guarantee success.
+
         Raises:
-            RuntimeError: If SKU space is exhausted or max attempts exceeded.
+            RuntimeError: If SKU space is completely exhausted.
         """
         # Check if SKU space is exhausted
         if len(self._used_skus) >= self.MAX_SKU_SPACE:
@@ -159,17 +162,30 @@ class ProductGenerator:
                 f"SKU space exhausted: {len(self._used_skus)} SKUs already generated"
             )
 
-        for _ in range(self.MAX_SKU_ATTEMPTS):
-            sku = f"SKU-{self.rng.randint(10000, 99999)}"
-            if sku not in self._used_skus:
-                self._used_skus.add(sku)
-                return sku
+        remaining = self.MAX_SKU_SPACE - len(self._used_skus)
 
-        # If we hit max attempts, likely near capacity - raise error
-        raise RuntimeError(
-            f"Failed to generate unique SKU after {self.MAX_SKU_ATTEMPTS} attempts. "
-            f"SKU space utilization: {len(self._used_skus)}/{self.MAX_SKU_SPACE}"
-        )
+        # If plenty of space remaining, use randomized approach
+        if remaining > self.MAX_SKU_ATTEMPTS:
+            for _ in range(self.MAX_SKU_ATTEMPTS):
+                sku = f"SKU-{self.rng.randint(10000, 99999)}"
+                if sku not in self._used_skus:
+                    self._used_skus.add(sku)
+                    return sku
+
+        # Near capacity or random attempts exhausted: use deterministic fallback
+        # Compute all available SKUs and pick one
+        all_skus = {f"SKU-{i}" for i in range(10000, 10000 + self.MAX_SKU_SPACE)}
+        available_skus = all_skus - self._used_skus
+
+        if not available_skus:
+            raise RuntimeError(
+                f"SKU space exhausted: {len(self._used_skus)} SKUs already generated"
+            )
+
+        # Pick deterministically (sorted first available)
+        sku = min(available_skus)
+        self._used_skus.add(sku)
+        return sku
 
     def _generate_name(self, category: str, brand: str) -> str:
         """Generate a realistic product name.

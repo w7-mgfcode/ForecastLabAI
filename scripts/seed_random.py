@@ -84,6 +84,13 @@ def load_config_from_yaml(path: Path) -> SeederConfig:
     with path.open() as f:
         data = yaml.safe_load(f)
 
+    # Validate that YAML loaded as a dictionary
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Invalid YAML config: expected a dictionary, got {type(data).__name__}. "
+            "Ensure the config file contains valid YAML with key-value pairs."
+        )
+
     # Parse dimensions
     dimensions_data = data.get("dimensions", {})
     dimensions = DimensionConfig(

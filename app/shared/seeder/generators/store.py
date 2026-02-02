@@ -101,8 +101,11 @@ class StoreGenerator:
     def _generate_unique_code(self) -> str:
         """Generate a unique store code.
 
+        Uses randomized generation for efficiency, with deterministic fallback
+        when near capacity to guarantee success.
+
         Raises:
-            RuntimeError: If code space is exhausted or max attempts exceeded.
+            RuntimeError: If code space is completely exhausted.
         """
         # Check if code space is exhausted
         if len(self._used_codes) >= self.MAX_CODE_SPACE:
@@ -110,17 +113,30 @@ class StoreGenerator:
                 f"Store code space exhausted: {len(self._used_codes)} codes already generated"
             )
 
-        for _ in range(self.MAX_CODE_ATTEMPTS):
-            code = f"S{self.rng.randint(1, 9999):04d}"
-            if code not in self._used_codes:
-                self._used_codes.add(code)
-                return code
+        remaining = self.MAX_CODE_SPACE - len(self._used_codes)
 
-        # If we hit max attempts, likely near capacity - raise error
-        raise RuntimeError(
-            f"Failed to generate unique store code after {self.MAX_CODE_ATTEMPTS} attempts. "
-            f"Code space utilization: {len(self._used_codes)}/{self.MAX_CODE_SPACE}"
-        )
+        # If plenty of space remaining, use randomized approach
+        if remaining > self.MAX_CODE_ATTEMPTS:
+            for _ in range(self.MAX_CODE_ATTEMPTS):
+                code = f"S{self.rng.randint(1, 9999):04d}"
+                if code not in self._used_codes:
+                    self._used_codes.add(code)
+                    return code
+
+        # Near capacity or random attempts exhausted: use deterministic fallback
+        # Compute all available codes and pick one
+        all_codes = {f"S{i:04d}" for i in range(1, self.MAX_CODE_SPACE + 1)}
+        available_codes = all_codes - self._used_codes
+
+        if not available_codes:
+            raise RuntimeError(
+                f"Store code space exhausted: {len(self._used_codes)} codes already generated"
+            )
+
+        # Pick deterministically (sorted first available)
+        code = min(available_codes)
+        self._used_codes.add(code)
+        return code
 
     def _generate_name(self) -> str:
         """Generate a realistic store name."""
