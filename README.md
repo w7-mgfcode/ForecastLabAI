@@ -11,6 +11,7 @@ Portfolio-grade end-to-end retail demand forecasting system.
 - **Dashboard**: React 19 + Vite + Tailwind CSS 4 + shadcn/ui for data exploration and model management
 - **RAG Knowledge Base**: Postgres pgvector embeddings + evidence-grounded answers with citations
 - **Agentic Layer**: PydanticAI agents for autonomous experimentation and evidence-grounded Q&A with human-in-the-loop approval
+- **Data Seeder (The Forge)**: Reproducible synthetic data generator with realistic time-series patterns, scenario presets, and retail effects
 
 ## Quick Start
 
@@ -154,7 +155,9 @@ pnpm preview
 ```
 app/                    # FastAPI backend
 ├── core/               # Config, database, logging, middleware, exceptions
-├── shared/             # Pagination, timestamps, error schemas
+├── shared/
+│   ├── seeder/         # The Forge - randomized database seeder
+│   └── ...             # Pagination, timestamps, error schemas
 ├── features/
 │   ├── data_platform/  # Store, product, calendar, sales tables
 │   ├── ingest/         # Batch upsert endpoints for sales data
@@ -187,6 +190,7 @@ examples/
 ├── queries/            # Example SQL queries
 ├── models/             # Baseline model examples (naive, seasonal_naive, moving_average)
 ├── backtest/           # Backtesting examples (run_backtest, inspect_splits, metrics_demo)
+├── seed/               # Data seeder configs and examples (YAML scenarios)
 ├── compute_features_demo.py  # Feature engineering demo
 └── registry_demo.py    # Model registry workflow demo
 scripts/                # Utility scripts
@@ -639,6 +643,52 @@ AGENT_APPROVAL_TIMEOUT_MINUTES=60
 # Streaming Configuration
 AGENT_ENABLE_STREAMING=true
 ```
+
+### Data Seeder (The Forge)
+
+Generate reproducible synthetic test data with realistic time-series patterns.
+
+**CLI Commands:**
+```bash
+# Generate complete dataset
+uv run python scripts/seed_random.py --full-new --seed 42 --confirm
+
+# Delete all data
+uv run python scripts/seed_random.py --delete --confirm
+
+# Append data for new date range
+uv run python scripts/seed_random.py --append --start-date 2025-01-01 --end-date 2025-03-31
+
+# Run pre-built scenario
+uv run python scripts/seed_random.py --full-new --scenario holiday_rush --confirm
+
+# Show current data counts
+uv run python scripts/seed_random.py --status
+
+# Verify data integrity
+uv run python scripts/seed_random.py --verify
+```
+
+**Scenario Presets:**
+
+| Scenario | Description |
+|----------|-------------|
+| `retail_standard` | Normal retail patterns with mild seasonality |
+| `holiday_rush` | Q4 surge with Black Friday/Christmas peaks |
+| `high_variance` | Noisy data with anomalies for robustness testing |
+| `stockout_heavy` | Frequent stockouts (25% probability) |
+| `new_launches` | 100 products with launch ramp patterns |
+| `sparse` | 50% missing combinations, random gaps |
+
+**Features:**
+- Deterministic generation with configurable seeds for reproducibility
+- Realistic time-series patterns (trend, weekly/monthly seasonality, noise, anomalies)
+- Retail effects (promotions, stockouts, price elasticity)
+- YAML configuration support for custom scenarios
+- Safe deletion with scope control (all/facts/dimensions)
+- Dry-run mode for previewing changes
+
+See [examples/seed/README.md](examples/seed/README.md) for detailed configuration options.
 
 ### Error Responses (RFC 7807)
 
