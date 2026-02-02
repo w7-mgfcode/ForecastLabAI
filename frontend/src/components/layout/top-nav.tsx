@@ -35,7 +35,7 @@ export function TopNav() {
 
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-      <div className="container flex h-14 items-center">
+      <div className="container mx-auto px-4 flex h-14 items-center">
         {/* Logo */}
         <Link to={ROUTES.DASHBOARD} className="mr-6 flex items-center space-x-2">
           <BarChart3 className="h-6 w-6" />
