@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.4](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.3...v0.2.4) (2026-02-02)
+
+
+### Features
+
+* **rag:** add Ollama embeddings + Gemini 2.5 agent support ([d822742](https://github.com/w7-mgfcode/ForecastLabAI/commit/d822742cb2ddf56944c0177d4adab67a1d3e5de7))
+* **rag:** add Ollama embeddings + Gemini 2.5 agent support ([#58](https://github.com/w7-mgfcode/ForecastLabAI/issues/58)) ([79cadc6](https://github.com/w7-mgfcode/ForecastLabAI/commit/79cadc642f86c8d4d3b70f63d01a813bec577a3f))
+
 ## [0.2.3](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.2...v0.2.3) (2026-02-01)
 
 
