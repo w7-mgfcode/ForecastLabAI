@@ -664,7 +664,7 @@ class AgentService:
         import dataclasses
         from datetime import datetime
 
-        def json_safe(obj: Any) -> Any:
+        def json_safe(obj: object) -> object:
             """Convert non-JSON-serializable objects to strings."""
             if isinstance(obj, datetime):
                 return obj.isoformat()

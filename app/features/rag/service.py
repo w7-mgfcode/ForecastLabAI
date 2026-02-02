@@ -294,7 +294,7 @@ class RAGService:
             db=db,
             query_embedding=query_embedding,
             top_k=request.top_k,
-            threshold=request.similarity_threshold,
+            threshold=request.similarity_threshold or self.settings.rag_similarity_threshold,
             filters=request.filters,
         )
 
