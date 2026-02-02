@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
@@ -70,6 +71,21 @@ def create_app() -> FastAPI:
     )
 
     # Middleware (order matters - first added = outermost)
+    # CORS middleware - allow frontend to access API
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:5173",  # Vite dev server (default)
+            "http://localhost:5174",  # Vite dev server (alternate port)
+            "http://localhost:5175",  # Vite dev server (alternate port)
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:5174",
+            "http://127.0.0.1:5175",
+        ] if settings.is_development else [],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.add_middleware(RequestIdMiddleware)
 
     # Exception handlers
