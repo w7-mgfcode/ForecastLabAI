@@ -27,3 +27,13 @@ infra/terraform.tfvars
 .terraform
 .terraform*
 .langgraph_api
+
+# Virtual environments
+.venv
+
+# Build caches
+.playwright-mcp/
+frontend/.vite/
+
+# Generated artifacts (models, backtest results)
+artifacts/

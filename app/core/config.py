@@ -119,6 +119,15 @@ class Settings(BaseSettings):
     # Streaming Configuration
     agent_enable_streaming: bool = True
 
+    # Seeder Configuration
+    seeder_default_seed: int = 42
+    seeder_default_stores: int = 10
+    seeder_default_products: int = 50
+    seeder_batch_size: int = 1000
+    seeder_enable_progress: bool = True
+    seeder_allow_production: bool = False
+    seeder_require_confirm: bool = True
+
     @field_validator("agent_default_model", "agent_fallback_model")
     @classmethod
     def validate_model_identifier(cls, v: str) -> str:
