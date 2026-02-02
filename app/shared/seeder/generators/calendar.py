@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 DEFAULT_US_HOLIDAYS = {
     # Fixed date holidays
     (1, 1): "New Year's Day",
+    (6, 19): "Juneteenth",
     (7, 4): "Independence Day",
     (11, 11): "Veterans Day",
     (12, 25): "Christmas Day",

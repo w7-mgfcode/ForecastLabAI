@@ -122,24 +122,54 @@ DEFAULT_NOUNS = [
 class ProductGenerator:
     """Generator for product dimension data."""
 
+    # Maximum SKU space: 10000-99999 = 90,000 unique SKUs
+    MAX_SKU_SPACE = 90000
+    MAX_SKU_ATTEMPTS = 1000
+
     def __init__(self, rng: random.Random, config: DimensionConfig) -> None:
         """Initialize the product generator.
 
         Args:
             rng: Random number generator for reproducibility.
             config: Dimension configuration.
+
+        Raises:
+            ValueError: If requested products exceed available SKU space.
         """
         self.rng = rng
         self.config = config
         self._used_skus: set[str] = set()
 
+        # Validate SKU space capacity
+        if config.products > self.MAX_SKU_SPACE:
+            raise ValueError(
+                f"Cannot generate {config.products} products: "
+                f"SKU space only supports {self.MAX_SKU_SPACE} unique SKUs"
+            )
+
     def _generate_unique_sku(self) -> str:
-        """Generate a unique SKU."""
-        while True:
+        """Generate a unique SKU.
+
+        Raises:
+            RuntimeError: If SKU space is exhausted or max attempts exceeded.
+        """
+        # Check if SKU space is exhausted
+        if len(self._used_skus) >= self.MAX_SKU_SPACE:
+            raise RuntimeError(
+                f"SKU space exhausted: {len(self._used_skus)} SKUs already generated"
+            )
+
+        for _ in range(self.MAX_SKU_ATTEMPTS):
             sku = f"SKU-{self.rng.randint(10000, 99999)}"
             if sku not in self._used_skus:
                 self._used_skus.add(sku)
                 return sku
+
+        # If we hit max attempts, likely near capacity - raise error
+        raise RuntimeError(
+            f"Failed to generate unique SKU after {self.MAX_SKU_ATTEMPTS} attempts. "
+            f"SKU space utilization: {len(self._used_skus)}/{self.MAX_SKU_SPACE}"
+        )
 
     def _generate_name(self, category: str, brand: str) -> str:
         """Generate a realistic product name.

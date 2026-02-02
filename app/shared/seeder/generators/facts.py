@@ -105,9 +105,11 @@ class SalesDailyGenerator:
         # Apply new product ramp
         if product_launch_date is not None:
             days_since_launch = (current_date - product_launch_date).days
-            if days_since_launch < self.retail_config.new_product_ramp_days:
-                ramp_factor = days_since_launch / self.retail_config.new_product_ramp_days
+            ramp_days = self.retail_config.new_product_ramp_days
+            if ramp_days > 0 and days_since_launch < ramp_days:
+                ramp_factor = days_since_launch / ramp_days
                 demand *= ramp_factor
+            # If ramp_days == 0, skip ramp calculation (demand unchanged)
 
         # Apply noise
         if self.ts_config.noise_sigma > 0:

@@ -353,6 +353,13 @@ async def run_full_new(
         print(f"Loading configuration from: {args.config}")
         config = load_config_from_yaml(args.config)
     elif args.scenario:
+        # Validate scenario is a valid ScenarioPreset (not "rag-agent" which is standalone)
+        valid_presets = {s.value for s in ScenarioPreset}
+        if args.scenario not in valid_presets:
+            print(f"ERROR: '{args.scenario}' is not a valid scenario for --full-new.")
+            print(f"Valid scenarios: {', '.join(sorted(valid_presets))}")
+            print("Note: 'rag-agent' is a standalone scenario. Use --run-scenario instead.")
+            return 1
         print(f"Using scenario: {args.scenario}")
         config = SeederConfig.from_scenario(ScenarioPreset(args.scenario), seed=args.seed)
     else:

@@ -73,24 +73,54 @@ CITIES = [
 class StoreGenerator:
     """Generator for store dimension data."""
 
+    # Maximum store code space: S0001-S9999 = 9,999 unique codes
+    MAX_CODE_SPACE = 9999
+    MAX_CODE_ATTEMPTS = 1000
+
     def __init__(self, rng: random.Random, config: DimensionConfig) -> None:
         """Initialize the store generator.
 
         Args:
             rng: Random number generator for reproducibility.
             config: Dimension configuration.
+
+        Raises:
+            ValueError: If requested stores exceed available code space.
         """
         self.rng = rng
         self.config = config
         self._used_codes: set[str] = set()
 
+        # Validate code space capacity
+        if config.stores > self.MAX_CODE_SPACE:
+            raise ValueError(
+                f"Cannot generate {config.stores} stores: "
+                f"store code space only supports {self.MAX_CODE_SPACE} unique codes"
+            )
+
     def _generate_unique_code(self) -> str:
-        """Generate a unique store code."""
-        while True:
+        """Generate a unique store code.
+
+        Raises:
+            RuntimeError: If code space is exhausted or max attempts exceeded.
+        """
+        # Check if code space is exhausted
+        if len(self._used_codes) >= self.MAX_CODE_SPACE:
+            raise RuntimeError(
+                f"Store code space exhausted: {len(self._used_codes)} codes already generated"
+            )
+
+        for _ in range(self.MAX_CODE_ATTEMPTS):
             code = f"S{self.rng.randint(1, 9999):04d}"
             if code not in self._used_codes:
                 self._used_codes.add(code)
                 return code
+
+        # If we hit max attempts, likely near capacity - raise error
+        raise RuntimeError(
+            f"Failed to generate unique store code after {self.MAX_CODE_ATTEMPTS} attempts. "
+            f"Code space utilization: {len(self._used_codes)}/{self.MAX_CODE_SPACE}"
+        )
 
     def _generate_name(self) -> str:
         """Generate a realistic store name."""

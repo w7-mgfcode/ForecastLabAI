@@ -17,6 +17,7 @@ from typing import Any
 
 import httpx
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -33,6 +34,8 @@ class RAGScenarioResult:
     response_received: bool = False
     citations_found: bool = False
     cleanup_completed: bool = False
+    skipped: bool = False
+    skip_reason: str | None = None
     errors: list[str] = field(default_factory=list)
 
 
@@ -118,6 +121,34 @@ Only SUCCESS runs can have aliases.
             },
         ]
         return documents
+
+    def _is_rag_configured(self) -> tuple[bool, str | None]:
+        """Check if RAG is properly configured.
+
+        Returns:
+            Tuple of (is_configured, skip_reason if not configured).
+        """
+        try:
+            settings = get_settings()
+
+            # Check if embedding provider is configured
+            rag_provider = getattr(settings, "rag_embedding_provider", None)
+            if not rag_provider:
+                return False, "RAG embedding provider not configured"
+
+            # Check for required API keys based on provider
+            if rag_provider == "openai":
+                openai_key = getattr(settings, "openai_api_key", None)
+                if not openai_key:
+                    return False, "OpenAI API key not configured for RAG"
+            elif rag_provider == "ollama":
+                ollama_url = getattr(settings, "ollama_base_url", None)
+                if not ollama_url:
+                    return False, "Ollama base URL not configured for RAG"
+
+            return True, None
+        except Exception as e:
+            return False, f"Failed to check RAG configuration: {e}"
 
     async def _check_api_health(self, client: httpx.AsyncClient) -> bool:
         """Check if the API is running.
@@ -285,6 +316,17 @@ Only SUCCESS runs can have aliases.
                     "verify_citations",
                     "cleanup",
                 ],
+            )
+            return self.result
+
+        # Preflight check: verify RAG is configured
+        is_configured, skip_reason = self._is_rag_configured()
+        if not is_configured:
+            self.result.skipped = True
+            self.result.skip_reason = skip_reason
+            logger.info(
+                "seeder.rag_scenario.skipped",
+                reason=skip_reason,
             )
             return self.result
 

@@ -111,7 +111,8 @@ class DataSeeder:
             cursor_result = await db.execute(stmt)
             # rowcount is available on CursorResult but not in Result type stubs
             row_count = getattr(cursor_result, "rowcount", None)
-            total_inserted += row_count if row_count else len(batch)
+            # Use explicit None check to avoid treating 0 as falsy
+            total_inserted += row_count if row_count is not None else len(batch)
 
         return total_inserted
 
@@ -483,8 +484,19 @@ class DataSeeder:
         if scope in ("all", "dimensions"):
             # Must delete facts first if deleting dimensions
             if scope == "dimensions":
-                for _name, model in fact_tables:
-                    await db.execute(delete(model))
+                # Get and log fact table counts before implicit deletion
+                for fact_name, fact_model in fact_tables:
+                    fact_result = await db.execute(
+                        select(func.count()).select_from(fact_model)
+                    )
+                    fact_count = fact_result.scalar() or 0
+                    counts[fact_name] = fact_count
+                    logger.info(
+                        f"seeder.delete.{fact_name}",
+                        count=fact_count,
+                        reason="implicit_fk_cleanup",
+                    )
+                    await db.execute(delete(fact_model))
 
             for name, model in dimension_tables:
                 logger.info(f"seeder.delete.{name}", count=counts.get(name, 0))

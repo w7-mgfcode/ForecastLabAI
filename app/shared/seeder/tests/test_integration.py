@@ -1,8 +1,13 @@
 """Integration tests for seeder (requires PostgreSQL).
 
 Run with: uv run pytest app/shared/seeder/tests/test_integration.py -v -m integration
+
+SAFETY: These tests perform destructive DELETE operations. They require either:
+- settings.testing = True, OR
+- ALLOW_DESTRUCTIVE_TEST_DB=true environment variable
 """
 
+import os
 from collections.abc import AsyncGenerator
 from contextlib import suppress
 from datetime import date
@@ -28,12 +33,39 @@ from app.shared.seeder.config import DimensionConfig, SparsityConfig
 pytestmark = pytest.mark.integration
 
 
+def _check_destructive_test_guard() -> None:
+    """Verify that destructive test operations are explicitly allowed.
+
+    Raises:
+        RuntimeError: If destructive operations are not explicitly enabled.
+    """
+    settings = get_settings()
+
+    # Check for testing flag on settings
+    is_testing = getattr(settings, "testing", False)
+
+    # Check for explicit env var override
+    allow_destructive = os.environ.get("ALLOW_DESTRUCTIVE_TEST_DB", "").lower() == "true"
+
+    if not is_testing and not allow_destructive:
+        raise RuntimeError(
+            "Destructive test operations require explicit opt-in. "
+            "Set ALLOW_DESTRUCTIVE_TEST_DB=true or ensure settings.testing=True"
+        )
+
+
 @pytest_asyncio.fixture(scope="function")
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Create a database session for testing.
 
     Cleans up data before and after each test for proper isolation.
+
+    Raises:
+        RuntimeError: If destructive operations are not explicitly enabled.
     """
+    # Safety guard before any destructive operations
+    _check_destructive_test_guard()
+
     settings = get_settings()
     engine = create_async_engine(settings.database_url, echo=False)
     session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -60,6 +92,9 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
             # Rollback any uncommitted changes
             with suppress(Exception):
                 await session.rollback()
+
+    # Safety guard before post-test cleanup
+    _check_destructive_test_guard()
 
     # Post-test cleanup
     async with session_maker() as cleanup_session:
