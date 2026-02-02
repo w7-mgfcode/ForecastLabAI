@@ -121,7 +121,7 @@ class TestChatRoutes:
         with patch("app.features.agents.agents.experiment.get_experiment_agent") as mock_get:
             mock_agent = MagicMock()
             mock_result = MagicMock()
-            mock_result.data = ExperimentReport(
+            mock_result.output = ExperimentReport(
                 run_id="run123",
                 status="success",
                 summary="Test completed",

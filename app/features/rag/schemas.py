@@ -79,8 +79,8 @@ class RetrieveRequest(BaseModel):
 
     query: str = Field(..., min_length=1, max_length=2000, description="Search query text")
     top_k: int = Field(default=5, ge=1, le=50, description="Number of results to return")
-    similarity_threshold: float = Field(
-        default=0.7, ge=0.0, le=1.0, description="Minimum similarity score"
+    similarity_threshold: float | None = Field(
+        default=None, ge=0.0, le=1.0, description="Minimum similarity score (default from settings)"
     )
     filters: dict[str, Any] | None = Field(
         None, description="Metadata filters (source_type, category, etc.)"

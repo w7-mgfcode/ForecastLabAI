@@ -87,7 +87,8 @@ class TestRetrieveRequest:
         request = RetrieveRequest(query="What is forecasting?")
         assert request.query == "What is forecasting?"
         assert request.top_k == 5
-        assert request.similarity_threshold == 0.7
+        # similarity_threshold defaults to None (service uses settings fallback)
+        assert request.similarity_threshold is None
         assert request.filters is None
 
     def test_valid_request_custom_params(self):

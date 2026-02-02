@@ -287,6 +287,13 @@ class RAGService:
         # Get total chunk count for statistics
         total_chunks = await self._get_total_chunk_count(db)
 
+        # Use local variable for effective threshold to avoid modifying request
+        effective_threshold = (
+            request.similarity_threshold
+            if request.similarity_threshold is not None
+            else self.settings.rag_similarity_threshold
+        )
+
         # Build similarity search query
         # CRITICAL: cosine_distance returns values 0-2, so relevance = 1 - distance/2
         # But for cosine similarity on normalized vectors, distance is 0-1
@@ -294,7 +301,7 @@ class RAGService:
             db=db,
             query_embedding=query_embedding,
             top_k=request.top_k,
-            threshold=request.similarity_threshold,
+            threshold=effective_threshold,
             filters=request.filters,
         )
 
