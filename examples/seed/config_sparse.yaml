@@ -1,0 +1,40 @@
+# Sparse data scenario configuration
+# Use with: uv run python scripts/seed_random.py --full-new --config examples/seed/config_sparse.yaml --confirm
+#
+# This configuration generates data with significant sparsity for testing
+# gap handling and missing data scenarios.
+
+dimensions:
+  stores:
+    count: 10
+    regions: ["North", "South", "East", "West"]
+    types: ["supermarket", "express"]
+  products:
+    count: 50
+    categories: ["Beverage", "Snack", "Dairy", "Frozen"]
+    brands: ["BrandA", "BrandB", "Generic"]
+
+date_range:
+  start: "2024-01-01"
+  end: "2024-06-30"
+
+time_series:
+  base_demand: 100
+  trend: "none"
+  noise_sigma: 0.2
+  anomaly_probability: 0.02
+  anomaly_magnitude: 2.5
+
+retail:
+  promotion_probability: 0.05
+  stockout_probability: 0.03
+
+sparsity:
+  # 50% of store/product combinations have no sales
+  missing_combinations_pct: 0.5
+  # Each active series has 3 random gaps
+  random_gaps_per_series: 3
+  gap_min_days: 2
+  gap_max_days: 14
+
+seed: 12345
