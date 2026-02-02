@@ -18,7 +18,7 @@ This document indexes all implementation phases of the ForecastLabAI project.
 | 7 | Serving Layer | Completed | PRP-8 | [7-SERVING_LAYER.md](./PHASE/7-SERVING_LAYER.md) |
 | 8 | RAG Knowledge Base | Completed | PRP-9 | [8-RAG_KNOWLEDGE_BASE.md](./PHASE/8-RAG_KNOWLEDGE_BASE.md) |
 | 9 | Agentic Layer | Completed | PRP-10 | [9-AGENTIC_LAYER.md](./PHASE/9-AGENTIC_LAYER.md) |
-| 10 | ForecastLab Dashboard | Pending | PRP-11 | - |
+| 10 | ForecastLab Dashboard | In Progress | PRP-11A/B/C | [10-DASHBOARD.md](./PHASE/10-DASHBOARD.md) |
 
 ---
 
@@ -371,15 +371,26 @@ agent_enable_streaming: bool = True
 
 ---
 
-## Pending Phases
+## In Progress Phases
 
-### Phase 10: ForecastLab Dashboard ("The Face")
+### [Phase 10: ForecastLab Dashboard ("The Face")](./PHASE/10-DASHBOARD.md)
+
 User interface, data visualization, and agent interaction.
-- React 19 + Vite + shadcn/ui + Tailwind CSS 4
-- TanStack Table for server-side data grids
-- TanStack Query for data fetching and caching
+
+| Sub-Phase | Description | Status |
+|-----------|-------------|--------|
+| 10A: Setup | Project scaffolding, Vite + React 19 + Tailwind CSS 4 + shadcn/ui | ✅ Completed |
+| 10B: Architecture | App shell, routing, layout, state management | 🔲 Pending |
+| 10C: Pages | Dashboard, Explorer, Visualize, Chat, Admin | 🔲 Pending |
+
+**Technology Stack**:
+- React 19 + TypeScript 5.9 (strict mode)
+- Vite 7 with Tailwind CSS 4 (@tailwindcss/vite plugin)
+- shadcn/ui (New York style, 26 components)
+- TanStack Query + TanStack Table for data management
+- React Router 7 for navigation
 - Recharts for time series visualization
-- Agent chat interface with streaming and citations
+- WebSocket integration for agent streaming
 
 ---
 
@@ -428,3 +439,4 @@ Each phase document (`docs/PHASE/X-PHASE_NAME.md`) contains:
 | 2026-02-01 | 7 | Serving Layer with RFC 7807, dimensions, analytics, and jobs completed |
 | 2026-02-01 | 8 | RAG Knowledge Base with pgvector and Ollama embedding provider completed |
 | 2026-02-01 | 9 | Agentic Layer with PydanticAI agents and human-in-the-loop approval completed |
+| 2026-02-01 | 10A | Frontend scaffolding: Vite + React 19 + Tailwind CSS 4 + shadcn/ui completed |
