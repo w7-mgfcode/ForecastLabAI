@@ -73,19 +73,23 @@ def validate_api_key_for_model(model: str) -> None:
             raise ValueError(
                 "Anthropic API key not configured. Set ANTHROPIC_API_KEY environment variable."
             )
-        os.environ["ANTHROPIC_API_KEY"] = settings.anthropic_api_key
+        # Only set env var if not already present to avoid repeated mutations
+        if "ANTHROPIC_API_KEY" not in os.environ:
+            os.environ["ANTHROPIC_API_KEY"] = settings.anthropic_api_key
     elif provider == "openai":
         if not settings.openai_api_key:
             raise ValueError(
                 "OpenAI API key not configured. Set OPENAI_API_KEY environment variable."
             )
-        os.environ["OPENAI_API_KEY"] = settings.openai_api_key
+        if "OPENAI_API_KEY" not in os.environ:
+            os.environ["OPENAI_API_KEY"] = settings.openai_api_key
     elif provider in ["google-gla", "google-vertex"]:
         if not settings.google_api_key:
             raise ValueError(
                 "Google API key not configured. Set GOOGLE_API_KEY environment variable."
             )
-        os.environ["GOOGLE_API_KEY"] = settings.google_api_key
+        if "GOOGLE_API_KEY" not in os.environ:
+            os.environ["GOOGLE_API_KEY"] = settings.google_api_key
 
     logger.debug(
         "agents.api_key_validated",
