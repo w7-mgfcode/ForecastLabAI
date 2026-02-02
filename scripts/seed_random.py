@@ -41,6 +41,7 @@ from app.shared.seeder.config import (
     SparsityConfig,
     TimeSeriesConfig,
 )
+from app.shared.seeder.rag_scenario import run_rag_scenario
 
 
 def parse_date(date_str: str) -> date:
@@ -207,6 +208,11 @@ Examples:
         action="store_true",
         help="Verify data integrity",
     )
+    mode_group.add_argument(
+        "--run-scenario",
+        action="store_true",
+        help="Run a standalone scenario (use with --scenario)",
+    )
 
     # Data generation options
     parser.add_argument(
@@ -249,8 +255,8 @@ Examples:
     # Scenario and config
     parser.add_argument(
         "--scenario",
-        choices=[s.value for s in ScenarioPreset],
-        help="Run pre-built scenario",
+        choices=[s.value for s in ScenarioPreset] + ["rag-agent"],
+        help="Run pre-built scenario (rag-agent is special E2E test)",
     )
     parser.add_argument(
         "--config",
@@ -493,12 +499,72 @@ async def run_verify(session: AsyncSession) -> int:
     return 0
 
 
+async def run_rag_agent_scenario(args: argparse.Namespace) -> int:
+    """Run RAG + Agent E2E validation scenario."""
+    settings = get_settings()
+
+    # Safety check for production
+    if settings.is_production and not settings.seeder_allow_production:
+        print("ERROR: Cannot run seeder scenarios in production environment.")
+        return 1
+
+    print("Running RAG + Agent E2E Scenario")
+    print("-" * 40)
+    print()
+
+    api_base = f"http://{settings.api_host}:{settings.api_port}"
+    if settings.api_host == "0.0.0.0":  # noqa: S104
+        api_base = f"http://localhost:{settings.api_port}"
+
+    result = await run_rag_scenario(
+        api_base_url=api_base,
+        seed=args.seed,
+        dry_run=args.dry_run,
+    )
+
+    if args.dry_run:
+        print("DRY RUN - No actions taken")
+        print(f"  Documents to index: {result.documents_indexed}")
+        print("  Steps: index_docs -> create_session -> query -> verify -> cleanup")
+        return 0
+
+    print("Results:")
+    print(f"  Documents indexed:   {result.documents_indexed}")
+    print(f"  Session created:     {'Y' if result.session_created else 'N'}")
+    print(f"  Query sent:          {'Y' if result.query_sent else 'N'}")
+    print(f"  Response received:   {'Y' if result.response_received else 'N'}")
+    print(f"  Citations found:     {'Y' if result.citations_found else 'N'}")
+    print(f"  Cleanup completed:   {'Y' if result.cleanup_completed else 'N'}")
+    print()
+
+    if result.errors:
+        print("Errors:")
+        for error in result.errors:
+            print(f"  - {error}")
+        return 1
+
+    print("RAG + Agent scenario completed successfully!")
+    return 0
+
+
 async def main() -> int:
     """Main entry point."""
     parser = create_parser()
     args = parser.parse_args()
 
     print_banner()
+
+    # Handle --run-scenario mode (for standalone scenarios like rag-agent)
+    if args.run_scenario:
+        if not args.scenario:
+            print("ERROR: --run-scenario requires --scenario to specify which scenario to run.")
+            return 1
+        if args.scenario == "rag-agent":
+            return await run_rag_agent_scenario(args)
+        else:
+            print(f"ERROR: Scenario '{args.scenario}' is not a standalone scenario.")
+            print("Use --full-new with --scenario for data generation scenarios.")
+            return 1
 
     session = await get_session()
 
