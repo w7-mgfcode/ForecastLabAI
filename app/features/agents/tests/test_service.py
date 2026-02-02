@@ -269,7 +269,7 @@ class TestAgentServiceChat:
         # Mock agent
         mock_agent = MagicMock()
         mock_agent_result = MagicMock()
-        mock_agent_result.data = sample_experiment_report
+        mock_agent_result.output = sample_experiment_report
         mock_usage = MagicMock()
         mock_usage.total_tokens = 100
         mock_agent_result.usage.return_value = mock_usage

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.exceptions import DatabaseError
 from app.core.logging import get_logger
@@ -150,7 +151,7 @@ Perform semantic search across indexed documents.
 
 **Parameters:**
 - `top_k`: Number of results (1-50, default: 5)
-- `similarity_threshold`: Minimum similarity (0.0-1.0, default: 0.7)
+- `similarity_threshold`: Minimum similarity (0.0-1.0, default from RAG_SIMILARITY_THRESHOLD)
 - `filters`: Optional metadata filters
 
 **Filters:**
@@ -183,6 +184,11 @@ async def retrieve(
         HTTPException: If embedding generation fails.
         DatabaseError: If database operation fails.
     """
+    # Apply settings default if threshold not provided
+    settings = get_settings()
+    if request.similarity_threshold is None:
+        request.similarity_threshold = settings.rag_similarity_threshold
+
     logger.info(
         "rag.retrieve_request_received",
         query_length=len(request.query),

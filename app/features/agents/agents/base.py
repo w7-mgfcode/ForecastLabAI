@@ -5,6 +5,7 @@ Provides shared configuration and utility functions for all agents.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import structlog
@@ -35,26 +36,28 @@ def get_fallback_model() -> str:
 
 
 def get_model_settings() -> dict[str, Any]:
-    """Get model settings from configuration.
+    """Get model settings from configuration for PydanticAI Agent.
 
     Returns:
-        Dictionary with temperature, max_tokens, and optional thinking settings.
+        Dictionary with model_settings wrapped for Agent constructor.
     """
     settings = get_settings()
-    model_settings: dict[str, Any] = {
+    inner_settings: dict[str, Any] = {
         "temperature": settings.agent_temperature,
         "max_tokens": settings.agent_max_tokens,
     }
 
     # Add thinking budget if configured (Gemini 2.5+ extended reasoning)
     if settings.agent_thinking_budget:
-        model_settings["thinking"] = {"budget": settings.agent_thinking_budget}
+        inner_settings["thinking"] = {"budget": settings.agent_thinking_budget}
 
-    return model_settings
+    return {"model_settings": inner_settings}
 
 
 def validate_api_key_for_model(model: str) -> None:
     """Validate that required API key is configured for model.
+
+    Also exports the API key to environment for PydanticAI compatibility.
 
     Args:
         model: Model identifier (provider:model-name).
@@ -65,14 +68,28 @@ def validate_api_key_for_model(model: str) -> None:
     settings = get_settings()
     provider = model.split(":")[0]
 
-    if provider == "anthropic" and not settings.anthropic_api_key:
-        raise ValueError(
-            "Anthropic API key not configured. Set ANTHROPIC_API_KEY environment variable."
-        )
-    elif provider == "openai" and not settings.openai_api_key:
-        raise ValueError("OpenAI API key not configured. Set OPENAI_API_KEY environment variable.")
-    elif provider in ["google-gla", "google-vertex"] and not settings.google_api_key:
-        raise ValueError("Google API key not configured. Set GOOGLE_API_KEY environment variable.")
+    if provider == "anthropic":
+        if not settings.anthropic_api_key:
+            raise ValueError(
+                "Anthropic API key not configured. Set ANTHROPIC_API_KEY environment variable."
+            )
+        # Only set env var if not already present to avoid repeated mutations
+        if "ANTHROPIC_API_KEY" not in os.environ:
+            os.environ["ANTHROPIC_API_KEY"] = settings.anthropic_api_key
+    elif provider == "openai":
+        if not settings.openai_api_key:
+            raise ValueError(
+                "OpenAI API key not configured. Set OPENAI_API_KEY environment variable."
+            )
+        if "OPENAI_API_KEY" not in os.environ:
+            os.environ["OPENAI_API_KEY"] = settings.openai_api_key
+    elif provider in ["google-gla", "google-vertex"]:
+        if not settings.google_api_key:
+            raise ValueError(
+                "Google API key not configured. Set GOOGLE_API_KEY environment variable."
+            )
+        if "GOOGLE_API_KEY" not in os.environ:
+            os.environ["GOOGLE_API_KEY"] = settings.google_api_key
 
     logger.debug(
         "agents.api_key_validated",

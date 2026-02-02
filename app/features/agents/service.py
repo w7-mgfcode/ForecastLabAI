@@ -15,7 +15,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import structlog
 from pydantic_ai import Agent
@@ -263,8 +263,8 @@ class AgentService:
         pending_approval = False
 
         # The structured output might indicate approval is needed
-        # NOTE: PydanticAI's result.data type is generic, cast to Any for attribute access
-        result_data: Any = result.data  # type: ignore[attr-defined]
+        # NOTE: PydanticAI v1.48.0 uses result.output (not result.data)
+        result_data: Any = result.output
 
         # Check for pending_action in result data (primary trigger)
         # The agent tools should return a pending_action dict with action_type and arguments
@@ -662,6 +662,21 @@ class AgentService:
             List of serializable dictionaries.
         """
         import dataclasses
+        from datetime import datetime
+
+        def json_safe(obj: object) -> object:
+            """Convert non-JSON-serializable objects to JSON-safe types."""
+            if isinstance(obj, datetime):
+                return obj.isoformat()
+            if isinstance(obj, dict):
+                return {k: json_safe(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [json_safe(item) for item in obj]
+            # Primitive JSON types pass through
+            if isinstance(obj, (str, int, float, bool, type(None))):
+                return obj
+            # Fallback: convert unknown types to string representation
+            return str(obj)
 
         serialized: list[dict[str, Any]] = []
         for msg in messages:
@@ -669,6 +684,9 @@ class AgentService:
                 # Convert dataclass to dict, handling nested types
                 try:
                     msg_dict = dataclasses.asdict(msg)
+                    # Convert datetime objects to ISO strings
+                    # Cast is safe: json_safe preserves dict structure
+                    msg_dict = cast(dict[str, Any], json_safe(msg_dict))
                     # Add kind discriminator for deserialization
                     if hasattr(msg, "kind"):
                         msg_dict["kind"] = msg.kind
