@@ -14,6 +14,7 @@ from typing import Any
 import structlog
 from pydantic_ai import Agent, RunContext
 
+from app.core.config import get_settings
 from app.features.agents.agents.base import (
     SAFETY_INSTRUCTIONS,
     SYSTEM_PROMPT_HEADER,
@@ -78,13 +79,17 @@ def create_rag_assistant_agent() -> Agent[AgentDeps, RAGAnswer]:
         **get_model_settings(),
     )
 
+    # Get default threshold from settings
+    settings = get_settings()
+    default_threshold = settings.rag_similarity_threshold
+
     # Register tools with the agent
     @agent.tool
     async def tool_retrieve_context(
         ctx: RunContext[AgentDeps],
         query: str,
         top_k: int = 5,
-        similarity_threshold: float = 0.7,
+        similarity_threshold: float | None = None,
         source_type: str | None = None,
     ) -> dict[str, Any]:
         """Retrieve relevant context from the knowledge base.
@@ -97,24 +102,28 @@ def create_rag_assistant_agent() -> Agent[AgentDeps, RAGAnswer]:
         Args:
             query: Search query describing what to find.
             top_k: Maximum results to return (default 5).
-            similarity_threshold: Minimum similarity score (default 0.7).
+            similarity_threshold: Minimum similarity score (default from settings).
             source_type: Filter by source type ('markdown', 'openapi').
 
         Returns:
             Dictionary with 'results' list containing chunks with citations.
         """
+        # Use settings default if not provided
+        threshold = similarity_threshold if similarity_threshold is not None else default_threshold
+
         ctx.deps.increment_tool_calls()
         logger.info(
             "agents.rag_assistant.tool_retrieve_context",
             session_id=ctx.deps.session_id,
             query_length=len(query),
             top_k=top_k,
+            threshold=threshold,
         )
         return await retrieve_context(
             db=ctx.deps.db,
             query=query,
             top_k=top_k,
-            similarity_threshold=similarity_threshold,
+            similarity_threshold=threshold,
             source_type=source_type,
         )
 
