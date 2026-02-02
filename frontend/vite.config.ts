@@ -11,6 +11,7 @@ export default defineConfig({
     },
   },
   server: {
+    host: true, // = 0.0.0.0 (LAN elérés)
     port: 5173,
     proxy: {
       // Proxy API requests to backend during development
@@ -20,5 +21,7 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/api/, ""),
       },
     },
+    // Ha telefonról megnyitva nincs HMR (auto-reload), add hozzá:
+    // hmr: { host: "10.0.0.226" }, // ide a géped LAN IP-je
   },
 })
