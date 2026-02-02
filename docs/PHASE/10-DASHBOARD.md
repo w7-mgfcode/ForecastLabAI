@@ -16,8 +16,8 @@ Phase 10 implements the **Dashboard** - the "Face" of ForecastLabAI that provide
 | Sub-Phase | Description | Status |
 |-----------|-------------|--------|
 | **10A: Setup** | Project scaffolding, dependencies, shadcn/ui | ✅ Completed |
-| **10B: Architecture** | App shell, routing, layout, state management | 🔲 Pending |
-| **10C: Pages** | Dashboard, Explorer, Visualize, Chat, Admin | 🔲 Pending |
+| **10B: Architecture** | App shell, routing, layout, state management | ✅ Completed |
+| **10C: Pages** | Dashboard, Explorer, Visualize, Chat, Admin | ✅ Completed |
 
 ---
 
@@ -268,43 +268,158 @@ ls src/components/ui/ | wc -l
 
 ---
 
-## Phase 10B: Architecture (Pending)
+## Phase 10B: Architecture (Completed)
 
-### Planned Deliverables
+**Completion Date**: 2026-02-02
+**PRP**: [PRP-11B-dashboard-architecture.md](../../PRPs/PRP-11B-dashboard-architecture.md)
+
+### Deliverables
 
 1. **App Shell**
-   - Sidebar navigation with collapsible sections
-   - Header with breadcrumbs and user actions
-   - Responsive layout (desktop/tablet/mobile)
+   - Top navigation bar with logo, nav links, and theme toggle
+   - Mobile-responsive drawer navigation
+   - Outlet-based content area with consistent layout
 
 2. **Routing**
-   - React Router 7 with lazy loading
-   - Protected routes (future auth)
-   - Nested layouts
+   - React Router 7 with lazy loading for all pages
+   - Code-split chunks for optimal loading
+   - Nested routes for Explorer and Visualize sections
 
 3. **State Management**
-   - TanStack Query for API data
-   - Context for UI state (theme, sidebar)
-   - URL-based state for filters
+   - TanStack Query for server state with optimized caching
+   - Theme context with system preference detection
+   - URL-based pagination state
 
 4. **API Client**
-   - Typed fetch wrapper
-   - Error handling with toast notifications
-   - Request/response interceptors
+   - Typed fetch wrapper (`src/lib/api.ts`)
+   - RFC 7807 Problem Details error handling
+   - `ApiError` class for structured error handling
+
+5. **TanStack Query Hooks**
+   - `useStores`, `useProducts` - Dimension data
+   - `useKPIs`, `useDrilldowns` - Analytics data
+   - `useRuns`, `useJobs` - Model operations
+   - `useRagSources` - RAG management
+   - `useWebSocket` - Agent streaming with reconnection
+
+6. **Reusable Components**
+   - `DataTable` - Server-side pagination with TanStack Table v8
+   - `DataTableToolbar` - Filters and search
+   - `StatusBadge` - Status indicators with variants
+   - `DateRangePicker` - Date range selection
+   - `ErrorDisplay` - Error states with retry
+   - `LoadingState` - Loading indicators
+   - `KPICard` - Metric display cards
+   - `TimeSeriesChart` - Forecast visualizations
+   - `BacktestFoldsChart` - Backtest fold results
+
+### Directory Structure (Phase 10B)
+
+```
+src/
+├── components/
+│   ├── charts/                 # Chart components
+│   │   ├── kpi-card.tsx
+│   │   ├── time-series-chart.tsx
+│   │   ├── backtest-folds-chart.tsx
+│   │   └── index.ts
+│   ├── chat/                   # Agent chat components
+│   │   ├── chat-message.tsx
+│   │   ├── chat-input.tsx
+│   │   ├── tool-call-display.tsx
+│   │   └── index.ts
+│   ├── common/                 # Shared components
+│   │   ├── status-badge.tsx
+│   │   ├── date-range-picker.tsx
+│   │   ├── error-display.tsx
+│   │   ├── loading-state.tsx
+│   │   └── index.ts
+│   ├── data-table/             # DataTable components
+│   │   ├── data-table.tsx
+│   │   ├── data-table-pagination.tsx
+│   │   ├── data-table-toolbar.tsx
+│   │   └── index.ts
+│   └── layout/                 # Layout components
+│       ├── app-shell.tsx
+│       ├── top-nav.tsx
+│       ├── theme-toggle.tsx
+│       └── index.ts
+├── hooks/                      # TanStack Query hooks
+│   ├── use-stores.ts
+│   ├── use-products.ts
+│   ├── use-kpis.ts
+│   ├── use-drilldowns.ts
+│   ├── use-runs.ts
+│   ├── use-jobs.ts
+│   ├── use-rag-sources.ts
+│   ├── use-websocket.ts
+│   └── index.ts
+├── lib/
+│   ├── api.ts                  # API client
+│   ├── query-client.ts         # TanStack Query config
+│   ├── constants.ts            # Routes and nav items
+│   ├── date-utils.ts           # Date helpers
+│   └── status-utils.ts         # Status mapping
+├── providers/
+│   └── theme-provider.tsx      # Theme context
+└── types/
+    ├── api.ts                  # API type definitions
+    └── index.ts
+```
+
+### Build Verification (Phase 10B)
+
+```bash
+pnpm build
+```
+
+**Result**: ✅ Build successful
+
+```
+vite v7.3.1 building client environment for production...
+✓ 3470 modules transformed.
+dist/index.html                   0.46 kB │ gzip:   0.29 kB
+dist/assets/index-[hash].css     79.08 kB │ gzip:  13.16 kB
+dist/assets/index-[hash].js     435.43 kB │ gzip: 137.51 kB
+✓ built in 7.96s
+```
+
+### ESLint Check (Phase 10B)
+
+**Result**: ✅ 0 errors, 1 warning (expected TanStack Table warning)
 
 ---
 
-## Phase 10C: Pages (Pending)
+## Phase 10C: Pages (Completed)
 
-### Planned Pages
+**Completion Date**: 2026-02-02
+**PRP**: [PRP-11B-dashboard-architecture.md](../../PRPs/PRP-11B-dashboard-architecture.md)
+
+### Implemented Pages
 
 | Page | Route | Description |
 |------|-------|-------------|
-| Dashboard | `/` | KPI cards, trend charts, recent activity |
-| Explorer | `/explorer` | Data browser with filters and search |
-| Visualize | `/visualize` | Interactive charts and forecasts |
-| Chat | `/chat` | Agent conversation interface |
-| Admin | `/admin` | Model registry, backtest runs, settings |
+| Dashboard | `/` | KPI cards, top stores/products by revenue |
+| Stores | `/explorer/stores` | Store list with region filter |
+| Products | `/explorer/products` | Product catalog with category filter |
+| Model Runs | `/explorer/runs` | Run history with model/status filters |
+| Jobs | `/explorer/jobs` | Job monitor with cancel action |
+| Sales | `/explorer/sales` | Drilldowns by store/product/category/region/date |
+| Forecast | `/visualize/forecast` | Time series forecast visualization |
+| Backtest | `/visualize/backtest` | Backtest fold metrics and comparison |
+| Chat | `/chat` | Agent conversation with tool call display |
+| Admin | `/admin` | RAG sources and deployment alias management |
+
+### Page Features
+
+- **Dashboard**: 4 KPI cards, top 5 stores, top 5 products with date range filter
+- **Explorer Pages**: Server-side pagination, column filters, reset functionality
+- **Jobs Page**: Cancel pending jobs with confirmation dialog
+- **Sales Page**: Tab-based dimension switching (store/product/category/region/date)
+- **Forecast Page**: Store/product selection, time series chart with actual vs predicted
+- **Backtest Page**: Run selection, fold metrics chart, metrics summary card
+- **Chat Page**: Message history, tool call visualization, WebSocket streaming
+- **Admin Page**: RAG source table, deployment alias table with CRUD operations
 
 ### Integration Points with Backend
 
@@ -329,12 +444,11 @@ ls src/components/ui/ | wc -l
 
 ---
 
-## Known Limitations (Phase 10A)
+## Known Limitations
 
-1. **No Application Code**: Only scaffolding and configuration (by design)
-2. **No Tests**: Frontend testing setup deferred to Phase 10B
-3. **No Authentication**: Auth UI deferred to future phase
-4. **No Dark Mode Toggle**: Theme system ready but UI not implemented
+1. **No Tests**: Frontend testing setup deferred to future phase
+2. **No Authentication**: Auth UI deferred to future phase
+3. **Mock-Ready**: Pages render with mock data patterns; backend integration required
 
 ---
 
@@ -347,9 +461,13 @@ ls src/components/ui/ | wc -l
 - [TanStack Table](https://tanstack.com/table/latest)
 - [React Router](https://reactrouter.com/)
 - [ADR-0002](../ADR/ADR-0002-frontend-architecture-vite-spa-first.md) - Frontend Architecture Decision
+- [PRP-11A](../../PRPs/PRP-11A-frontend-setup.md) - Frontend Setup PRP
+- [PRP-11B](../../PRPs/PRP-11B-dashboard-architecture.md) - Dashboard Architecture PRP
 
 ---
 
 **Phase 10A Completion Date**: 2026-02-01
-**Phase Status**: 🔄 In Progress (10A Complete, 10B/10C Pending)
-**Next Sub-Phase**: Phase 10B - Architecture
+**Phase 10B Completion Date**: 2026-02-02
+**Phase 10C Completion Date**: 2026-02-02
+**Phase Status**: ✅ Complete
+**Files Changed**: 49 files, 4404 insertions
