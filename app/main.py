@@ -84,7 +84,9 @@ def create_app() -> FastAPI:
             "http://10.0.0.121:5173",  # LAN access
             "http://10.0.0.121:5174",
             "http://10.0.0.121:5175",
-        ] if settings.is_development else [],
+        ]
+        if settings.is_development
+        else [],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
