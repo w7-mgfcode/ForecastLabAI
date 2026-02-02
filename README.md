@@ -8,6 +8,7 @@ Portfolio-grade end-to-end retail demand forecasting system.
 - **ForecastOps**: Model zoo with time-based backtesting (rolling/expanding splits) + metrics
 - **Serving Layer**: Typed FastAPI endpoints (Pydantic v2 validation)
 - **Model Registry**: Run configs, metrics, artifacts, and data windows for reproducibility
+- **Dashboard**: React 19 + Vite + Tailwind CSS 4 + shadcn/ui for data exploration and model management
 - **RAG Knowledge Base**: Postgres pgvector embeddings + evidence-grounded answers with citations
 - **Agentic Layer**: PydanticAI agents for autonomous experimentation and evidence-grounded Q&A with human-in-the-loop approval
 
@@ -16,6 +17,7 @@ Portfolio-grade end-to-end retail demand forecasting system.
 ### Prerequisites
 
 - Python 3.12+
+- Node.js 20+ and pnpm (for frontend)
 - Docker and Docker Compose
 - uv (recommended) or pip
 
@@ -65,6 +67,24 @@ curl http://localhost:8123/health
 # Response: {"status":"ok"}
 ```
 
+### Frontend Setup
+
+8. **Install frontend dependencies**
+
+```bash
+cd frontend
+pnpm install
+```
+
+9. **Start the development server**
+
+```bash
+pnpm dev
+# Frontend available at http://localhost:5173
+```
+
+The frontend proxies API requests to the backend at `http://localhost:8123`.
+
 ## Development
 
 ### Testing
@@ -92,7 +112,7 @@ uv run pytest app/features/backtesting/tests/ -v -m integration  # Backtesting i
   - Marked with `@pytest.mark.integration`
   - Require `docker-compose up -d` before running
 
-### Commands
+### Backend Commands
 
 ```bash
 # Type checking
@@ -108,12 +128,33 @@ uv run alembic revision --autogenerate -m "description"
 uv run alembic upgrade head
 ```
 
+### Frontend Commands
+
+```bash
+cd frontend
+
+# Development server (http://localhost:5173)
+pnpm dev
+
+# Production build
+pnpm build
+
+# Linting
+pnpm lint
+
+# Type checking
+pnpm tsc --noEmit
+
+# Preview production build
+pnpm preview
+```
+
 ### Project Structure
 
 ```
-app/
-├── core/           # Config, database, logging, middleware, exceptions
-├── shared/         # Pagination, timestamps, error schemas
+app/                    # FastAPI backend
+├── core/               # Config, database, logging, middleware, exceptions
+├── shared/             # Pagination, timestamps, error schemas
 ├── features/
 │   ├── data_platform/  # Store, product, calendar, sales tables
 │   ├── ingest/         # Batch upsert endpoints for sales data
@@ -126,19 +167,29 @@ app/
 │   ├── dimensions/     # Store/product discovery for LLM tool-calling
 │   ├── analytics/      # KPI aggregations and drilldown analysis
 │   └── jobs/           # Async-ready task orchestration
-└── main.py         # FastAPI entry point
+└── main.py             # FastAPI entry point
 
-tests/              # Test fixtures and helpers
-alembic/            # Database migrations
+frontend/               # React dashboard (Vite + shadcn/ui)
+├── src/
+│   ├── components/ui/  # shadcn/ui components (26 components)
+│   ├── lib/            # Utilities (cn helper)
+│   ├── App.tsx         # Main app component
+│   └── main.tsx        # Entry point
+├── components.json     # shadcn/ui configuration
+├── vite.config.ts      # Vite + Tailwind + path aliases
+└── package.json        # Dependencies
+
+tests/                  # Test fixtures and helpers
+alembic/                # Database migrations
 examples/
-├── api/            # HTTP client examples
-├── schema/         # Table documentation
-├── queries/        # Example SQL queries
-├── models/         # Baseline model examples (naive, seasonal_naive, moving_average)
-├── backtest/       # Backtesting examples (run_backtest, inspect_splits, metrics_demo)
+├── api/                # HTTP client examples
+├── schema/             # Table documentation
+├── queries/            # Example SQL queries
+├── models/             # Baseline model examples (naive, seasonal_naive, moving_average)
+├── backtest/           # Backtesting examples (run_backtest, inspect_splits, metrics_demo)
 ├── compute_features_demo.py  # Feature engineering demo
-└── registry_demo.py  # Model registry workflow demo
-scripts/            # Utility scripts
+└── registry_demo.py    # Model registry workflow demo
+scripts/                # Utility scripts
 ```
 
 ### Database Schema
@@ -613,10 +664,31 @@ All error responses follow RFC 7807 Problem Details format with `Content-Type: a
 
 ## API Documentation
 
-Once the server is running:
+Once the backend is running:
 
 - Swagger UI: http://localhost:8123/docs
 - ReDoc: http://localhost:8123/redoc
+
+## Frontend Stack
+
+The dashboard is built with modern React tooling:
+
+| Technology | Version | Purpose |
+|------------|---------|---------|
+| React | 19 | UI framework |
+| Vite | 7 | Build tool and dev server |
+| TypeScript | 5.9 | Type safety |
+| Tailwind CSS | 4 | Utility-first styling |
+| shadcn/ui | New York | Component library (26 components) |
+| TanStack Query | 5 | Server state management |
+| TanStack Table | 8 | Data tables |
+| React Router | 7 | Client-side routing |
+| Recharts | 2 | Charts and visualizations |
+
+**Development URLs:**
+- Frontend: http://localhost:5173
+- Backend API: http://localhost:8123
+- API Docs: http://localhost:8123/docs
 
 ## License
 
