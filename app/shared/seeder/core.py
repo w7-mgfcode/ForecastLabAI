@@ -486,9 +486,7 @@ class DataSeeder:
             if scope == "dimensions":
                 # Get and log fact table counts before implicit deletion
                 for fact_name, fact_model in fact_tables:
-                    fact_result = await db.execute(
-                        select(func.count()).select_from(fact_model)
-                    )
+                    fact_result = await db.execute(select(func.count()).select_from(fact_model))
                     fact_count = fact_result.scalar() or 0
                     counts[fact_name] = fact_count
                     logger.info(

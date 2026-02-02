@@ -44,13 +44,16 @@ def _check_destructive_test_guard() -> None:
     # Check for testing flag on settings
     is_testing = getattr(settings, "testing", False)
 
+    # Check for APP_ENV=testing (used in CI)
+    app_env_testing = os.environ.get("APP_ENV", "").lower() == "testing"
+
     # Check for explicit env var override
     allow_destructive = os.environ.get("ALLOW_DESTRUCTIVE_TEST_DB", "").lower() == "true"
 
-    if not is_testing and not allow_destructive:
+    if not is_testing and not app_env_testing and not allow_destructive:
         raise RuntimeError(
             "Destructive test operations require explicit opt-in. "
-            "Set ALLOW_DESTRUCTIVE_TEST_DB=true or ensure settings.testing=True"
+            "Set ALLOW_DESTRUCTIVE_TEST_DB=true, APP_ENV=testing, or ensure settings.testing=True"
         )
 
 
