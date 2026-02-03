@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.6](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.5...v0.2.6) (2026-02-03)
+
+
+### Features
+
+* **seeder:** add Data Seeder dashboard panel to admin UI ([30b7c9e](https://github.com/w7-mgfcode/ForecastLabAI/commit/30b7c9e45a6e9452da2cdf3ecba934643f61d03c))
+* **seeder:** add REST API endpoints for The Forge data seeder ([574a26c](https://github.com/w7-mgfcode/ForecastLabAI/commit/574a26cd7a1662573f1cdc4ca581deb2209843d6))
+* **seeder:** Data Seeder REST API + Dashboard UI (The Forge) ([0b4a878](https://github.com/w7-mgfcode/ForecastLabAI/commit/0b4a878827b11213111364fbba76cbee16e1377a))
+
+
+### Documentation
+
+* add Data Seeder (The Forge) documentation ([5c29488](https://github.com/w7-mgfcode/ForecastLabAI/commit/5c29488c319845fb93849ca12b6298a1691d4df1))
+
 ## [0.2.5](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.4...v0.2.5) (2026-02-02)
 
 
