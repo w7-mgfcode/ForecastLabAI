@@ -153,7 +153,9 @@ Backend follows **vertical slice architecture**:
 ```
 app/
 ├── core/               # config, database, logging, middleware, health, exceptions
-├── shared/             # pagination, timestamps, error schemas
+├── shared/
+│   ├── seeder/         # The Forge - randomized database seeder
+│   └── ...             # pagination, timestamps, error schemas
 └── features/
     ├── data_platform/  # core tables (store, product, calendar, sales)
     ├── ingest/         # idempotent ingest endpoints (sales_daily / sales_txn)
@@ -706,20 +708,146 @@ agent_enable_streaming: bool = True
 
 ---
 
-## 11) Dashboard (React + Vite) — Pending
+## 11) Dashboard (React + Vite) — ✅ IMPLEMENTED
 
-The UI is intentionally **table-first**:
-- Data Explorer
-- Model Runs (leaderboard + compare)
-- Train & Predict (forms + status)
-- Predictions (tabular forecasts)
-- **Agent Chat Interface** with streaming and citations
+**Implemented via PRP-11** - Modern React dashboard with shadcn/ui components:
+
+### 11.1 Technology Stack
+
+| Technology | Version | Purpose |
+|------------|---------|---------|
+| React | 19 | UI framework |
+| Vite | 7 | Build tool and dev server |
+| TypeScript | 5.9 | Type safety (strict mode) |
+| Tailwind CSS | 4 | Utility-first styling |
+| shadcn/ui | New York | Component library (26 components) |
+| TanStack Query | 5 | Server state management |
+| TanStack Table | 8 | Data tables with sorting/filtering |
+| React Router | 7 | Client-side routing |
+| Recharts | 2 | Charts and visualizations |
+
+### 11.2 Pages
+
+- **Dashboard**: KPI summary, recent sales, quick actions
+- **Data Explorer**: Store/product browsing with pagination and search
+- **Visualizations**: Time series charts, backtest comparisons
+- **Agent Chat**: Streaming chat interface with tool call displays
+- **Admin**: Configuration and system status
+
+### 11.3 Component Architecture
+
+```
+frontend/src/components/
+├── ui/             # shadcn/ui components (26 components)
+├── charts/         # KPI cards, time series, backtest charts
+├── data-table/     # TanStack Table wrapper components
+├── layout/         # AppShell, TopNav, ThemeToggle
+├── common/         # DateRangePicker, StatusBadge, LoadingState
+└── chat/           # Chat input, messages, tool displays
+```
+
+### 11.4 Location
+
+- Source: `frontend/src/`
+- Configuration: `frontend/vite.config.ts`, `frontend/components.json`
+- Environment: `frontend/.env.example`
 
 Decision reference: `docs/ADR/ADR-0002-frontend-architecture-vite-spa-first.md`
 
 ---
 
-## 12) Quality, CI, and Review Rules
+## 12) Data Seeder (The Forge) — ✅ IMPLEMENTED
+
+**Implemented via PRP-12** - Reproducible synthetic data generator for development and testing:
+
+### 12.1 Core Features
+
+**Reproducible Generation:**
+- Deterministic output with configurable seed parameter
+- Same seed = identical data across runs
+
+**Time-Series Patterns:**
+- Trend components: none, linear, exponential
+- Weekly seasonality (day-of-week multipliers)
+- Monthly seasonality (optional month multipliers)
+- Holiday effects with custom dates and multipliers
+- Gaussian noise with configurable variance
+- Random anomalies (spikes/dips) for robustness testing
+
+**Retail Effects:**
+- Promotions with demand lift
+- Stockouts (zero or partial sales)
+- Price elasticity
+- New product launch ramps
+
+**Scenario Presets:**
+| Scenario | Description |
+|----------|-------------|
+| `retail_standard` | Normal retail patterns with mild seasonality |
+| `holiday_rush` | Q4 surge with Black Friday/Christmas peaks |
+| `high_variance` | Noisy data with anomalies |
+| `stockout_heavy` | Frequent stockouts (25% probability) |
+| `new_launches` | 100 products with launch ramp patterns |
+| `sparse` | 50% missing combinations, random gaps |
+
+### 12.2 Architecture
+
+```
+app/shared/seeder/
+├── config.py           # Configuration dataclasses, scenario presets
+├── core.py             # DataSeeder orchestrator class
+├── rag_scenario.py     # RAG-specific seeding
+├── generators/
+│   ├── calendar.py     # CalendarGenerator (dates, holidays)
+│   ├── dimensions.py   # StoreGenerator, ProductGenerator
+│   ├── facts.py        # SalesDailyGenerator, time-series logic
+│   ├── inventory.py    # InventorySnapshotGenerator
+│   ├── price.py        # PriceHistoryGenerator
+│   └── promotions.py   # PromotionGenerator
+└── tests/              # 77 unit tests + integration tests
+```
+
+### 12.3 CLI Commands
+
+```bash
+# Generate complete dataset
+uv run python scripts/seed_random.py --full-new --seed 42 --confirm
+
+# Use scenario preset
+uv run python scripts/seed_random.py --full-new --scenario holiday_rush --confirm
+
+# Append data for new date range
+uv run python scripts/seed_random.py --append --start-date 2025-01-01 --end-date 2025-03-31
+
+# Delete data
+uv run python scripts/seed_random.py --delete --scope facts --confirm
+
+# Verify data integrity
+uv run python scripts/seed_random.py --verify
+```
+
+### 12.4 Configuration (Settings)
+
+```python
+seeder_default_seed: int = 42
+seeder_default_stores: int = 10
+seeder_default_products: int = 50
+seeder_batch_size: int = 1000
+seeder_enable_progress: bool = True
+seeder_allow_production: bool = False
+seeder_require_confirm: bool = True
+```
+
+### 12.5 Location
+
+- Module: `app/shared/seeder/`
+- CLI: `scripts/seed_random.py`
+- Examples: `examples/seed/` (YAML configs, README)
+- Documentation: `docs/DATA-SEEDER.md`
+
+---
+
+## 13) Quality, CI, and Review Rules
 
 The repo standards live in `docs/validation/` and are treated as merge gates:
 - Ruff lint/format
@@ -792,15 +920,23 @@ The repo standards live in `docs/validation/` and are treated as merge gates:
   - Tool integration with Registry, Backtesting, Forecasting, and RAG
   - PRP-10
 
-### Pending Phases
-
-- **Phase 10**: ForecastLab Dashboard (Pending)
+- **Phase 10**: ForecastLab Dashboard ✅
   - React 19 + Vite + shadcn/ui + Tailwind CSS 4
   - TanStack Table for server-side data grids
   - TanStack Query for data fetching and caching
   - Recharts for time series visualization
   - Agent chat interface with streaming and citations
   - PRP-11
+
+- **Phase 12**: Data Seeder (The Forge) ✅
+  - Reproducible synthetic data generator
+  - Scenario presets (retail_standard, holiday_rush, etc.)
+  - Time-series patterns (trend, seasonality, noise, anomalies)
+  - Retail effects (promotions, stockouts, price elasticity)
+  - YAML configuration support
+  - PRP-12
+
+### Pending Phases
 
 - **Phase 11**: ML Models (Future)
   - Advanced models (XGBoost, Prophet, etc.)

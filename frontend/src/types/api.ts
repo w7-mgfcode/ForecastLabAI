@@ -242,3 +242,81 @@ export interface ProblemDetail {
   code?: string
   request_id?: string
 }
+
+// === Seeder ===
+export interface SeederStatus {
+  stores: number
+  products: number
+  calendar: number
+  sales: number
+  inventory: number
+  price_history: number
+  promotions: number
+  date_range_start: string | null // ISO date "2024-01-01"
+  date_range_end: string | null
+  last_updated: string | null // ISO datetime
+}
+
+export interface ScenarioInfo {
+  name: string
+  description: string
+  stores: number
+  products: number
+  start_date: string // ISO date
+  end_date: string
+}
+
+export interface GenerateParams {
+  scenario?: string // default: "retail_standard"
+  seed?: number // default: 42
+  stores?: number // 1-100, default: 10
+  products?: number // 1-500, default: 50
+  start_date?: string // ISO date
+  end_date?: string
+  sparsity?: number // 0.0-1.0
+  dry_run?: boolean
+}
+
+export interface AppendParams {
+  start_date: string // Required
+  end_date: string // Required
+  seed?: number
+}
+
+export interface DeleteParams {
+  scope?: 'all' | 'facts' | 'dimensions' // default: "all"
+  dry_run?: boolean
+}
+
+export interface GenerateResult {
+  success: boolean
+  records_created: Record<string, number>
+  duration_seconds: number
+  message: string
+  seed: number
+}
+
+export interface DeleteResult {
+  success: boolean
+  records_deleted: Record<string, number>
+  message: string
+  dry_run: boolean
+}
+
+export type VerifyCheckStatus = 'passed' | 'warning' | 'failed'
+
+export interface VerifyCheck {
+  name: string
+  status: VerifyCheckStatus
+  message: string
+  details: string[] | null
+}
+
+export interface VerifyResult {
+  passed: boolean
+  checks: VerifyCheck[]
+  total_checks: number
+  passed_count: number
+  warning_count: number
+  failed_count: number
+}
