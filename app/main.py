@@ -22,6 +22,7 @@ from app.features.ingest.routes import router as ingest_router
 from app.features.jobs.routes import router as jobs_router
 from app.features.rag.routes import router as rag_router
 from app.features.registry.routes import router as registry_router
+from app.features.seeder.routes import router as seeder_router
 
 logger = get_logger(__name__)
 
@@ -109,6 +110,7 @@ def create_app() -> FastAPI:
     app.include_router(rag_router)
     app.include_router(agents_router)
     app.include_router(agents_ws_router)
+    app.include_router(seeder_router)
 
     return app
 
