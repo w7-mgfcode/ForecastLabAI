@@ -28,7 +28,7 @@ jobs:
       upload_url: ${{ steps.release.outputs.upload_url }}
 
     steps:
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         id: release
         with:
           # Use PAT to trigger CI workflows on release PRs
