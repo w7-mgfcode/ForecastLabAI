@@ -10,6 +10,7 @@ from app.shared.seeder.generators.facts import (
     SalesDailyGenerator,
 )
 from app.shared.seeder.generators.lifecycle import LifecycleGenerator
+from app.shared.seeder.generators.markdowns import MarkdownGenerator
 from app.shared.seeder.generators.product import ProductGenerator
 from app.shared.seeder.generators.returns import ReturnsGenerator
 from app.shared.seeder.generators.store import StoreGenerator
@@ -20,6 +21,7 @@ __all__ = [
     "ExogenousSignalGenerator",
     "InventorySnapshotGenerator",
     "LifecycleGenerator",
+    "MarkdownGenerator",
     "PriceHistoryGenerator",
     "ProductGenerator",
     "PromotionGenerator",
