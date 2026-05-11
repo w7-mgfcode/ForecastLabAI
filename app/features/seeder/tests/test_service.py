@@ -141,6 +141,45 @@ class TestBuildConfigFromParams:
         assert config.start_date == date(2025, 1, 1)
         assert config.end_date == date(2025, 6, 30)
 
+    def test_custom_scenario_preserves_dimension_customization(self):
+        """Overriding stores/products on a preset must keep scenario-defined
+        region/category/brand lists (regression against the older code path that
+        replaced the whole DimensionConfig and silently dropped them)."""
+        params = schemas.GenerateParams(
+            scenario="holiday_rush",
+            stores=25,
+            products=200,
+        )
+        config = service._build_config_from_params(params)
+
+        # Counts come from params
+        assert config.dimensions.stores == 25
+        assert config.dimensions.products == 200
+
+        # Lists come from the SeederConfig defaults (holiday_rush doesn't customize
+        # them today, but the test asserts the path that preserves them).
+        assert config.dimensions.store_regions == ["North", "South", "East", "West"]
+        assert config.dimensions.product_categories == [
+            "Beverage",
+            "Snack",
+            "Dairy",
+            "Frozen",
+            "Produce",
+            "Bakery",
+        ]
+
+    def test_custom_scenario_preserves_holiday_list(self):
+        """Holiday_rush scenario ships 4 holiday entries; overriding store/product
+        counts must not wipe them."""
+        params = schemas.GenerateParams(scenario="holiday_rush", stores=20, products=80)
+        config = service._build_config_from_params(params)
+
+        assert len(config.holidays) == 4
+        holiday_names = {h.name for h in config.holidays}
+        assert "Thanksgiving" in holiday_names
+        assert "Black Friday" in holiday_names
+        assert config.time_series.monthly_seasonality == {10: 1.0, 11: 1.3, 12: 1.8}
+
 
 class TestGetStatus:
     """Tests for get_status function."""
