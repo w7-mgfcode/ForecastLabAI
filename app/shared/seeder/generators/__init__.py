@@ -1,5 +1,6 @@
 """Data generators for dimensions and facts."""
 
+from app.shared.seeder.generators.bundles import BundleGenerator
 from app.shared.seeder.generators.calendar import CalendarGenerator
 from app.shared.seeder.generators.exogenous import ExogenousSignalGenerator
 from app.shared.seeder.generators.facts import (
@@ -14,6 +15,7 @@ from app.shared.seeder.generators.returns import ReturnsGenerator
 from app.shared.seeder.generators.store import StoreGenerator
 
 __all__ = [
+    "BundleGenerator",
     "CalendarGenerator",
     "ExogenousSignalGenerator",
     "InventorySnapshotGenerator",
