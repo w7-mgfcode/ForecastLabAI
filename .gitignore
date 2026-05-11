@@ -37,3 +37,8 @@ frontend/.vite/
 
 # Generated artifacts (models, backtest results)
 artifacts/
+
+# Local session artifacts (plans, handoffs, current session notes)
+.agents/
+.handoffs/
+HANDOFF.md
