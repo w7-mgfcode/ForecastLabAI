@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.2.6](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.5...v0.2.6) (2026-05-11)
+
+
+### Features
+
+* **api:** allow private LAN origins via regex in dev CORS ([#78](https://github.com/w7-mgfcode/ForecastLabAI/issues/78)) ([ab09bb2](https://github.com/w7-mgfcode/ForecastLabAI/commit/ab09bb211212419f08d965dbab9a512b92c5e7a2))
+* **api:** harden agent chat with timeouts and structured-output streaming ([#78](https://github.com/w7-mgfcode/ForecastLabAI/issues/78)) ([b21dd0a](https://github.com/w7-mgfcode/ForecastLabAI/commit/b21dd0acd7654b68246cf33c4d48c4e7465a43fa))
+* **data-platform:** implement randomized database seeder (The Forge) ([#66](https://github.com/w7-mgfcode/ForecastLabAI/issues/66)) ([cb230fd](https://github.com/w7-mgfcode/ForecastLabAI/commit/cb230fd42e67a956716d70b4292327e5e06421a2))
+* **seeder:** add Data Seeder dashboard panel to admin UI ([30b7c9e](https://github.com/w7-mgfcode/ForecastLabAI/commit/30b7c9e45a6e9452da2cdf3ecba934643f61d03c))
+* **seeder:** add REST API endpoints for The Forge data seeder ([574a26c](https://github.com/w7-mgfcode/ForecastLabAI/commit/574a26cd7a1662573f1cdc4ca581deb2209843d6))
+* **seeder:** Data Seeder REST API + Dashboard UI (The Forge) ([0b4a878](https://github.com/w7-mgfcode/ForecastLabAI/commit/0b4a878827b11213111364fbba76cbee16e1377a))
+* **ui:** align chat with backend stream events and harden API client ([#78](https://github.com/w7-mgfcode/ForecastLabAI/issues/78)) ([df9629b](https://github.com/w7-mgfcode/ForecastLabAI/commit/df9629bf292954ea4e2f9902f916fad37d59de6a))
+
+
+### Bug Fixes
+
+* **agents:** apply ruff format to normalize whitespace and line endings ([#78](https://github.com/w7-mgfcode/ForecastLabAI/issues/78)) ([00108db](https://github.com/w7-mgfcode/ForecastLabAI/commit/00108dbc0543fec6a6991c2e116e207b62f2ade3))
+* **agents:** narrow _extract_result_items param from Any to explicit union ([#78](https://github.com/w7-mgfcode/ForecastLabAI/issues/78)) ([d0f602a](https://github.com/w7-mgfcode/ForecastLabAI/commit/d0f602aae97cb0f21776bc00c4c787136276f576))
+* **agents:** replace constant-string getattr with attribute access ([#78](https://github.com/w7-mgfcode/ForecastLabAI/issues/78)) ([4d406f9](https://github.com/w7-mgfcode/ForecastLabAI/commit/4d406f95b87c7d09338173c34a1f812a7afcc193))
+* **seeder:** add deterministic fallback and YAML validation ([5a0df3f](https://github.com/w7-mgfcode/ForecastLabAI/commit/5a0df3f40b982b8837fcd3e9a8206536230fc53d))
+* **seeder:** address code review feedback for robustness and safety ([fb6dc0d](https://github.com/w7-mgfcode/ForecastLabAI/commit/fb6dc0d9f3ba2fb165d642b5819cc027563ba4e6))
+* **seeder:** apply ruff formatting and fix CI test guard ([6b552b7](https://github.com/w7-mgfcode/ForecastLabAI/commit/6b552b7aa3ebf402ea2b3745b24737cdacf3178d))
+
+
+### Documentation
+
+* add Data Seeder (The Forge) documentation ([5c29488](https://github.com/w7-mgfcode/ForecastLabAI/commit/5c29488c319845fb93849ca12b6298a1691d4df1))
+
 ## [0.2.5](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.4...v0.2.5) (2026-02-02)
 
 
