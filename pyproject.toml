@@ -19,7 +19,7 @@ dependencies = [
     "pandas>=3.0.0",
     "numpy>=2.4.1",
     "scikit-learn>=1.6.0",
-    "joblib>=1.4.0",
+    "joblib>=1.5.3",
     # RAG dependencies
     "pgvector>=0.3.0",
     "openai>=1.40.0",
