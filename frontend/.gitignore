@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Workspace uses pnpm; reject stray npm/yarn lockfiles
+package-lock.json
+yarn.lock
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
