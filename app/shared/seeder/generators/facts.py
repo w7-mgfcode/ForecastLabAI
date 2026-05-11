@@ -18,15 +18,17 @@ if TYPE_CHECKING:
         SubstitutionConfig,
         TimeSeriesConfig,
     )
+    from app.shared.seeder.generators.lifecycle import LifecycleGenerator
 
 
 class SalesDailyGenerator:
     """Generator for daily sales fact data with realistic time-series patterns.
 
     Phase 1 extensions (``multi_seasonality``, ``changepoints``,
-    ``substitution``, ``exogenous_weather``) are all opt-in. When every Phase
-    1 input is None / disabled, the generator's output is byte-identical to
-    its pre-Phase-1 behavior.
+    ``substitution``, ``exogenous_weather``) and Phase 2 extension
+    (``lifecycle``) are all opt-in. When every opt-in input is None /
+    disabled, the generator's output is byte-identical to its
+    pre-Phase-1 behavior.
     """
 
     def __init__(
@@ -42,6 +44,7 @@ class SalesDailyGenerator:
         exogenous_weather: dict[tuple[int, date], float] | None = None,
         weather_temperature_sensitivity: float = 0.0,
         weather_climatology_mean_c: float = 15.0,
+        lifecycle: LifecycleGenerator | None = None,
     ) -> None:
         """Initialize the sales generator.
 
@@ -66,6 +69,13 @@ class SalesDailyGenerator:
                 climatology mean (used only when ``exogenous_weather`` is set).
             weather_climatology_mean_c: Reference temperature for the linear
                 weather term.
+            lifecycle: Optional Phase 2 ``LifecycleGenerator``. When set
+                and ``lifecycle.enabled``, the per-(product, date) demand
+                multiplier from intro/growth/maturity/decline/discontinued
+                curves is applied. Also supersedes the pre-Phase-2
+                ``retail_config.new_product_ramp_days`` linear ramp —
+                that ramp is suppressed when ``lifecycle.enabled`` so
+                effects do not stack.
         """
         self.rng = rng
         self.ts_config = time_series_config
@@ -78,6 +88,7 @@ class SalesDailyGenerator:
         self.exogenous_weather = exogenous_weather
         self.weather_sensitivity = weather_temperature_sensitivity
         self.weather_climatology_mean_c = weather_climatology_mean_c
+        self.lifecycle = lifecycle
 
         # Pre-compute substitution group memberships for O(1) lookup.
         self._substitution_groups_by_product: dict[int, list[list[int]]] = {}
@@ -201,6 +212,7 @@ class SalesDailyGenerator:
         store_id: int | None = None,
         product_id: int | None = None,
         stockouts_today_for_store: set[int] | None = None,
+        product_discontinue_date: date | None = None,
     ) -> int:
         """Compute demand for a single observation.
 
@@ -257,8 +269,12 @@ class SalesDailyGenerator:
             price_change_pct = float((current_price - base_price) / base_price)
             demand *= 1 + (self.retail_config.price_elasticity * price_change_pct)
 
-        # Apply new product ramp
-        if product_launch_date is not None:
+        # Apply legacy new-product ramp (pre-Phase-2). Suppressed when a
+        # Phase 2 ``LifecycleGenerator`` is enabled — the lifecycle
+        # multiplier already encodes a richer launch curve and stacking
+        # both would double the launch suppression.
+        legacy_ramp_on = self.lifecycle is None or not self.lifecycle.enabled
+        if product_launch_date is not None and legacy_ramp_on:
             days_since_launch = (current_date - product_launch_date).days
             ramp_days = self.retail_config.new_product_ramp_days
             if ramp_days > 0 and days_since_launch < ramp_days:
@@ -273,6 +289,13 @@ class SalesDailyGenerator:
             demand *= self._weather_multiplier(current_date, store_id)
         if product_id is not None and stockouts_today_for_store is not None:
             demand *= self._substitution_multiplier(product_id, stockouts_today_for_store)
+
+        # Phase 2 lifecycle multiplier. Gated on ``lifecycle.enabled`` so
+        # the disabled path is byte-identical with pre-Phase-2 callers.
+        if self.lifecycle is not None and self.lifecycle.enabled:
+            demand *= self.lifecycle.multiplier_for(
+                current_date, product_launch_date, product_discontinue_date
+            )
 
         # Apply noise
         if self.ts_config.noise_sigma > 0:
@@ -296,6 +319,7 @@ class SalesDailyGenerator:
         dates: list[date],
         promotions: dict[tuple[int, int], set[date]],  # (store_id, product_id) -> promo dates
         stockouts: dict[tuple[int, int], set[date]],  # (store_id, product_id) -> stockout dates
+        product_lifecycle_data: dict[int, tuple[date | None, date | None]] | None = None,
     ) -> list[dict[str, date | int | Decimal]]:
         """Generate sales daily records.
 
@@ -305,6 +329,12 @@ class SalesDailyGenerator:
             dates: List of dates in the range.
             promotions: Mapping of (store_id, product_id) to promotion dates.
             stockouts: Mapping of (store_id, product_id) to stockout dates.
+            product_lifecycle_data: Optional Phase 2 mapping
+                ``product_id -> (launch_date, discontinue_date)``. Only
+                consulted when a ``LifecycleGenerator`` was passed to
+                :meth:`__init__`. Missing entries fall back to
+                ``(None, None)`` so the lifecycle multiplier evaluates to
+                1.0 for that product.
 
         Returns:
             List of sales dictionaries ready for database insertion.
@@ -366,6 +396,16 @@ class SalesDailyGenerator:
                 promo_dates = promotions.get(key, set())
                 stockout_dates = stockouts.get(key, set())
                 series_gaps = gap_dates.get(key, set())
+                # Phase 2 lifecycle lookup — defaults keep the disabled
+                # path byte-identical (legacy callers pass ``None`` for
+                # ``product_lifecycle_data``, so this is always ``(None,
+                # None)`` and the multiplier evaluates to 1.0).
+                lifecycle_dates = (
+                    product_lifecycle_data.get(product_id, (None, None))
+                    if product_lifecycle_data is not None
+                    else (None, None)
+                )
+                launch_date_for_product, discontinue_date_for_product = lifecycle_dates
 
                 for current_date in dates:
                     # Skip gap dates
@@ -384,10 +424,11 @@ class SalesDailyGenerator:
                         current_price=None,  # Simplified: use base price
                         is_promotion=is_promotion,
                         is_stockout=is_stockout,
-                        product_launch_date=None,  # Could be extended
+                        product_launch_date=launch_date_for_product,
                         store_id=store_id,
                         product_id=product_id,
                         stockouts_today_for_store=stockouts_today,
+                        product_discontinue_date=discontinue_date_for_product,
                     )
 
                     # Skip zero sales from stockouts to reduce data volume
