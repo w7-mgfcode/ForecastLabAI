@@ -84,9 +84,22 @@ def create_app() -> FastAPI:
             "http://10.0.0.121:5173",  # LAN access
             "http://10.0.0.121:5174",
             "http://10.0.0.121:5175",
+            "http://192.168.9.73:5173",
         ]
         if settings.is_development
         else [],
+        # Allow private LAN IP ranges in development so frontend can run from
+        # phones/laptops without hardcoding every host/IP combination.
+        allow_origin_regex=(
+            r"^https?://("
+            r"localhost|127\.0\.0\.1|"
+            r"10\.\d+\.\d+\.\d+|"
+            r"192\.168\.\d+\.\d+|"
+            r"172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+"
+            r")(:\d+)?$"
+            if settings.is_development
+            else None
+        ),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
