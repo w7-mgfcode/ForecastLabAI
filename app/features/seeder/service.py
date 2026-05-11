@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from datetime import date, datetime
 
 from sqlalchemy import func, select
@@ -55,8 +56,10 @@ def _build_config_from_params(params: schemas.GenerateParams) -> SeederConfig:
     if preset:
         # Start from scenario preset and override with explicit params
         config = SeederConfig.from_scenario(preset, seed=params.seed)
-        # Override dimensions if explicitly set (different from defaults)
-        config.dimensions = DimensionConfig(
+        # Override store/product counts while preserving scenario-customized
+        # region/category/brand lists (dataclasses.replace is field-precise).
+        config.dimensions = replace(
+            config.dimensions,
             stores=params.stores,
             products=params.products,
         )

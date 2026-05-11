@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { format } from 'date-fns'
+import type { DateRange } from 'react-day-picker'
 import {
   Trash2,
   Plus,
@@ -26,6 +27,7 @@ import {
   useDeleteData,
   useVerifyData,
 } from '@/hooks/use-seeder'
+import { DateRangePicker } from '@/components/common/date-range-picker'
 import { ErrorDisplay } from '@/components/common/error-display'
 import { LoadingState } from '@/components/common/loading-state'
 import { Button } from '@/components/ui/button'
@@ -381,6 +383,40 @@ function AliasesPanel() {
   )
 }
 
+const SEEDER_FORM_STORAGE_KEY = 'forecastlab.seederForm.v1'
+
+interface SeederFormState {
+  scenario: string
+  startDate: string // ISO yyyy-MM-dd
+  endDate: string
+  stores: number
+  products: number
+  seed: number
+  sparsity: number
+}
+
+const DEFAULT_SEEDER_FORM: SeederFormState = {
+  scenario: 'retail_standard',
+  startDate: '2024-01-01',
+  endDate: '2024-12-31',
+  stores: 10,
+  products: 50,
+  seed: 42,
+  sparsity: 0,
+}
+
+function loadSeederForm(): SeederFormState {
+  if (typeof window === 'undefined') return DEFAULT_SEEDER_FORM
+  try {
+    const raw = window.localStorage.getItem(SEEDER_FORM_STORAGE_KEY)
+    if (!raw) return DEFAULT_SEEDER_FORM
+    const parsed = JSON.parse(raw) as Partial<SeederFormState>
+    return { ...DEFAULT_SEEDER_FORM, ...parsed }
+  } catch {
+    return DEFAULT_SEEDER_FORM
+  }
+}
+
 function SeederPanel() {
   const { data: status, isLoading, error, refetch } = useSeederStatus()
   const { data: scenarios } = useSeederScenarios()
@@ -388,7 +424,7 @@ function SeederPanel() {
   const deleteMutation = useDeleteData()
   const verifyMutation = useVerifyData()
 
-  const [selectedScenario, setSelectedScenario] = useState('retail_standard')
+  const [form, setForm] = useState<SeederFormState>(loadSeederForm)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [verifyResult, setVerifyResult] = useState<{
     passed: boolean
@@ -398,13 +434,43 @@ function SeederPanel() {
     failed_count: number
   } | null>(null)
 
+  // Persist form state across reloads (operator-friendly).
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(SEEDER_FORM_STORAGE_KEY, JSON.stringify(form))
+  }, [form])
+
+  const dateRange: DateRange | undefined = form.startDate
+    ? {
+        from: new Date(`${form.startDate}T00:00:00`),
+        to: form.endDate ? new Date(`${form.endDate}T00:00:00`) : undefined,
+      }
+    : undefined
+
+  const handleDateRangeChange = (range: DateRange | undefined) => {
+    setForm((f) => ({
+      ...f,
+      startDate: range?.from ? format(range.from, 'yyyy-MM-dd') : f.startDate,
+      endDate: range?.to ? format(range.to, 'yyyy-MM-dd') : f.endDate,
+    }))
+  }
+
+  const handleResetForm = () => setForm(DEFAULT_SEEDER_FORM)
+
   const handleGenerate = async () => {
     try {
       const result = await generateMutation.mutateAsync({
-        scenario: selectedScenario,
+        scenario: form.scenario,
+        seed: form.seed,
+        stores: form.stores,
+        products: form.products,
+        start_date: form.startDate,
+        end_date: form.endDate,
+        sparsity: form.sparsity,
       })
       toast.success(
-        `Generated ${result.records_created.sales?.toLocaleString() ?? 0} sales records in ${result.duration_seconds.toFixed(1)}s`
+        `Generated ${result.records_created.sales?.toLocaleString() ?? 0} sales records ` +
+          `(${form.startDate} → ${form.endDate}) in ${result.duration_seconds.toFixed(1)}s`
       )
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Generation failed')
@@ -540,23 +606,114 @@ function SeederPanel() {
             </Button>
           </div>
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Scenario</label>
-            <Select value={selectedScenario} onValueChange={setSelectedScenario}>
-              <SelectTrigger className="w-[300px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {scenarios?.map((s: ScenarioInfo) => (
-                  <SelectItem key={s.name} value={s.name}>
-                    <div className="flex flex-col">
-                      <span>{formatScenarioLabel(s.name)}</span>
-                      <span className="text-xs text-muted-foreground">{s.description}</span>
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="seeder-scenario">
+                Scenario
+              </label>
+              <Select
+                value={form.scenario}
+                onValueChange={(value) => setForm((f) => ({ ...f, scenario: value }))}
+              >
+                <SelectTrigger id="seeder-scenario" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {scenarios?.map((s: ScenarioInfo) => (
+                    <SelectItem key={s.name} value={s.name}>
+                      <div className="flex flex-col">
+                        <span>{formatScenarioLabel(s.name)}</span>
+                        <span className="text-xs text-muted-foreground">{s.description}</span>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Date range</label>
+              <DateRangePicker value={dateRange} onChange={handleDateRangeChange} />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="seeder-stores">
+                Stores ({form.stores})
+              </label>
+              <Input
+                id="seeder-stores"
+                type="number"
+                min={1}
+                max={100}
+                value={form.stores}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    stores: Math.max(1, Math.min(100, Number(e.target.value) || 1)),
+                  }))
+                }
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="seeder-products">
+                Products ({form.products})
+              </label>
+              <Input
+                id="seeder-products"
+                type="number"
+                min={1}
+                max={500}
+                value={form.products}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    products: Math.max(1, Math.min(500, Number(e.target.value) || 1)),
+                  }))
+                }
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="seeder-seed">
+                Seed
+              </label>
+              <Input
+                id="seeder-seed"
+                type="number"
+                min={0}
+                value={form.seed}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    seed: Math.max(0, Number(e.target.value) || 0),
+                  }))
+                }
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="seeder-sparsity">
+                Sparsity ({form.sparsity.toFixed(2)})
+              </label>
+              <Input
+                id="seeder-sparsity"
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={form.sparsity}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, sparsity: Number(e.target.value) }))
+                }
+              />
+            </div>
+          </div>
+
+          <div className="flex justify-end">
+            <Button variant="ghost" size="sm" onClick={handleResetForm}>
+              Reset to scenario defaults
+            </Button>
           </div>
         </CardContent>
       </Card>
