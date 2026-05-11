@@ -192,7 +192,7 @@ def has_sufficient_evidence(
     return True
 
 
-def _extract_result_items(retrieval_result: Any) -> list[Any]:
+def _extract_result_items(retrieval_result: dict[str, Any] | list[Any] | str | None) -> list[Any]:
     """Normalize retrieval results into a list of result items.
 
     PydanticAI tool args can arrive as dicts, JSON strings, or already-parsed lists.
