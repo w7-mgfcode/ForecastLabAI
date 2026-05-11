@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from app.shared.seeder.config import (
         ChangepointConfig,
+        ChannelConfig,
         HolidayConfig,
         MultiSeasonalityConfig,
         RetailPatternConfig,
@@ -19,6 +20,10 @@ if TYPE_CHECKING:
         TimeSeriesConfig,
     )
     from app.shared.seeder.generators.lifecycle import LifecycleGenerator
+
+
+_VALID_CHANNELS = frozenset({"in_store", "online", "click_collect", "wholesale"})
+"""Mirrors the SQL CHECK on ``sales_daily.channel`` (see PRP-12 §schema)."""
 
 
 class SalesDailyGenerator:
@@ -45,6 +50,7 @@ class SalesDailyGenerator:
         weather_temperature_sensitivity: float = 0.0,
         weather_climatology_mean_c: float = 15.0,
         lifecycle: LifecycleGenerator | None = None,
+        channels: ChannelConfig | None = None,
     ) -> None:
         """Initialize the sales generator.
 
@@ -76,6 +82,13 @@ class SalesDailyGenerator:
                 ``retail_config.new_product_ramp_days`` linear ramp —
                 that ramp is suppressed when ``lifecycle.enabled`` so
                 effects do not stack.
+            channels: Optional Phase 2 ``ChannelConfig``. When set and
+                ``enable_multichannel``, each emitted row's ``channel``
+                column is drawn from ``channel_mix``. During promos the
+                effective mix shifts per
+                ``online_substitution_to_instore`` and online rows pick
+                up ``online_promo_uplift``. Consumes one rng draw per
+                emitted row when enabled; zero draws when disabled.
         """
         self.rng = rng
         self.ts_config = time_series_config
@@ -89,6 +102,7 @@ class SalesDailyGenerator:
         self.weather_sensitivity = weather_temperature_sensitivity
         self.weather_climatology_mean_c = weather_climatology_mean_c
         self.lifecycle = lifecycle
+        self.channels = channels
 
         # Pre-compute substitution group memberships for O(1) lookup.
         self._substitution_groups_by_product: dict[int, list[list[int]]] = {}
@@ -150,6 +164,92 @@ class SalesDailyGenerator:
         if temp_c is None:
             return 1.0
         return 1.0 + self.weather_sensitivity * (temp_c - self.weather_climatology_mean_c)
+
+    # ---------------------------------------------------------------- #
+    # Phase 2 channel helpers
+    # ---------------------------------------------------------------- #
+
+    def _validate_channels(self) -> None:
+        """Validate ``ChannelConfig`` at the start of ``generate()``.
+
+        No-op when channels is unset or disabled — keeps the
+        regression invariant intact (no extra work when off).
+        """
+        if self.channels is None or not self.channels.enable_multichannel:
+            return
+        cfg = self.channels
+        if not cfg.channel_mix:
+            raise ValueError("ChannelConfig.channel_mix must be non-empty when enabled")
+        invalid = set(cfg.channel_mix.keys()) - _VALID_CHANNELS
+        if invalid:
+            raise ValueError(
+                f"ChannelConfig.channel_mix contains invalid channels {sorted(invalid)}; "
+                f"allow-list is {sorted(_VALID_CHANNELS)}"
+            )
+        for name, weight in cfg.channel_mix.items():
+            if weight < 0:
+                raise ValueError(f"ChannelConfig.channel_mix['{name}']={weight} must be >= 0")
+        if sum(cfg.channel_mix.values()) <= 0:
+            raise ValueError("ChannelConfig.channel_mix must have at least one positive weight")
+        if cfg.online_promo_uplift < 0:
+            raise ValueError(
+                f"ChannelConfig.online_promo_uplift={cfg.online_promo_uplift} must be >= 0"
+            )
+        if not 0.0 <= cfg.online_substitution_to_instore <= 1.0:
+            raise ValueError(
+                "ChannelConfig.online_substitution_to_instore="
+                f"{cfg.online_substitution_to_instore} must be in [0, 1]"
+            )
+
+    def _effective_channel_mix(self, is_promotion: bool) -> dict[str, float]:
+        """Build the effective channel mix for a single row.
+
+        Applies ``online_substitution_to_instore`` as a weight shift
+        from ``in_store`` to ``online`` when a promo is active. Returns
+        the pristine mix otherwise.
+        """
+        if self.channels is None:
+            return {}
+        mix = dict(self.channels.channel_mix)
+        if not is_promotion:
+            return mix
+        if "online" not in mix or "in_store" not in mix:
+            return mix
+        sub = self.channels.online_substitution_to_instore
+        if sub <= 0:
+            return mix
+        shift = mix["online"] * sub
+        mix["online"] += shift
+        mix["in_store"] = max(0.0, mix["in_store"] - shift)
+        return mix
+
+    def _maybe_apply_channel(
+        self,
+        quantity: int,
+        is_promotion: bool,
+    ) -> tuple[int, str | None]:
+        """Choose a channel and apply per-channel uplift.
+
+        Returns ``(unchanged_quantity, None)`` when the channel feature
+        is disabled — caller emits no ``channel`` key and the DB
+        ``server_default='in_store'`` applies, preserving the
+        byte-identical regression invariant.
+
+        When enabled, draws a channel from the effective mix and
+        multiplies ``quantity`` by ``online_promo_uplift`` for online
+        rows on promo dates. Consumes exactly one rng draw per call.
+        """
+        if self.channels is None or not self.channels.enable_multichannel:
+            return quantity, None
+        mix = self._effective_channel_mix(is_promotion)
+        if not mix or sum(mix.values()) <= 0:
+            return quantity, None
+        names = list(mix.keys())
+        weights = list(mix.values())
+        chosen = self.rng.choices(names, weights=weights, k=1)[0]
+        if chosen == "online" and is_promotion:
+            quantity = max(0, round(quantity * self.channels.online_promo_uplift))
+        return quantity, chosen
 
     def _substitution_multiplier(
         self,
@@ -339,6 +439,7 @@ class SalesDailyGenerator:
         Returns:
             List of sales dictionaries ready for database insertion.
         """
+        self._validate_channels()
         sales: list[dict[str, date | int | Decimal]] = []
         base_date = dates[0] if dates else date(2024, 1, 1)
 
@@ -431,24 +532,29 @@ class SalesDailyGenerator:
                         product_discontinue_date=discontinue_date_for_product,
                     )
 
-                    # Skip zero sales from stockouts to reduce data volume
+                    # Skip zero sales from stockouts to reduce data volume.
+                    # Channel rng is drawn only for emitted rows so the
+                    # channel stream is stable per emitted-row across runs.
                     if quantity == 0 and is_stockout:
                         continue
+
+                    quantity, chosen_channel = self._maybe_apply_channel(quantity, is_promotion)
 
                     # Calculate total amount
                     unit_price = base_price
                     total_amount = unit_price * quantity
 
-                    sales.append(
-                        {
-                            "date": current_date,
-                            "store_id": store_id,
-                            "product_id": product_id,
-                            "quantity": quantity,
-                            "unit_price": unit_price,
-                            "total_amount": total_amount,
-                        }
-                    )
+                    row: dict[str, date | int | Decimal | str] = {
+                        "date": current_date,
+                        "store_id": store_id,
+                        "product_id": product_id,
+                        "quantity": quantity,
+                        "unit_price": unit_price,
+                        "total_amount": total_amount,
+                    }
+                    if chosen_channel is not None:
+                        row["channel"] = chosen_channel
+                    sales.append(row)  # type: ignore[arg-type]
 
         return sales
 

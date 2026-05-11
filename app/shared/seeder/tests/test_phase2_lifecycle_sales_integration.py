@@ -8,7 +8,7 @@ tests cover the new multiplier behaviour (pre-launch zero, decline
 attenuation, discontinue cutoff) plus the legacy ramp suppression.
 """
 
-# mypy: disable-error-code="union-attr,arg-type,operator,return-value"
+# mypy: disable-error-code="union-attr,arg-type,operator,return-value,misc"
 
 from __future__ import annotations
 
