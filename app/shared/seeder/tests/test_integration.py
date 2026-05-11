@@ -20,11 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.config import get_settings
 from app.features.data_platform.models import (
     Calendar,
+    ExogenousSignal,
     InventorySnapshotDaily,
     PriceHistory,
     Product,
     Promotion,
     SalesDaily,
+    SalesReturn,
     Store,
 )
 from app.shared.seeder import DataSeeder, SeederConfig
@@ -76,7 +78,10 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
     # Pre-test cleanup for proper isolation
     async with session_maker() as cleanup_session:
         try:
-            # Delete in FK order (facts before dimensions)
+            # Delete in FK order (facts before dimensions). Phase 1 tables
+            # come first because they FK to store/product/calendar.
+            await cleanup_session.execute(delete(SalesReturn))
+            await cleanup_session.execute(delete(ExogenousSignal))
             await cleanup_session.execute(delete(SalesDaily))
             await cleanup_session.execute(delete(InventorySnapshotDaily))
             await cleanup_session.execute(delete(PriceHistory))
@@ -102,7 +107,10 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
     # Post-test cleanup
     async with session_maker() as cleanup_session:
         try:
-            # Delete in FK order (facts before dimensions)
+            # Delete in FK order (facts before dimensions). Phase 1 tables
+            # come first because they FK to store/product/calendar.
+            await cleanup_session.execute(delete(SalesReturn))
+            await cleanup_session.execute(delete(ExogenousSignal))
             await cleanup_session.execute(delete(SalesDaily))
             await cleanup_session.execute(delete(InventorySnapshotDaily))
             await cleanup_session.execute(delete(PriceHistory))

@@ -196,6 +196,93 @@ uv run python scripts/seed_random.py --full-new --config examples/seed/config_cu
 - **Price Elasticity**: Demand adjustment based on price changes
 - **New Product Ramps**: Gradual demand increase for new launches
 
+## Phase 1 Realism Extensions
+
+Phase 1 adds opt-in realism: exogenous signals, multi-seasonality, trend changepoints,
+returns volume, and stockout substitution. Each extension is gated behind its own flag
+on `GenerateParams` (or its dataclass on `SeederConfig`). **Existing scenarios with no
+flags set produce byte-identical seeded data to pre-Phase-1** — the regression invariant
+is enforced by `app/shared/seeder/tests/test_phase1_regression.py`.
+
+### Exogenous Signals
+
+Persisted in the `exogenous_signal` table. Three signals available:
+
+| Signal | Scope | Shape |
+|--------|-------|-------|
+| `weather_temp_c` | per (store, date) | sinusoidal climatology + Gaussian noise |
+| `macro_index` | per date (global) | random walk from `macro_initial_value` |
+| `event_flag` | per `event_dates` entry | binary 1.0 marker on configured dates |
+
+Toggle via `GenerateParams.enable_exogenous=true` (turns on weather + macro). To also
+drive demand from weather, pass `weather_temperature_sensitivity` (e.g. `0.02` = +2%
+demand per °C above the climatology mean).
+
+Read back:
+
+```bash
+curl "http://localhost:8123/seeder/exogenous?signal_name=weather_temp_c&start_date=2024-01-01&end_date=2024-01-31"
+```
+
+### Multi-Seasonality
+
+Yearly sin wave on top of weekly + monthly seasonality:
+
+```json
+{"yearly_seasonality_amplitude": 0.15}
+```
+
+Amplitude is a fraction of base demand (0–1). 0 or unset = disabled.
+
+### Changepoints
+
+COVID-style demand impulses with exponential decay:
+
+```json
+{
+  "changepoints": [
+    {"date": "2024-03-15", "demand_multiplier": 2.0, "decay_days": 60}
+  ]
+}
+```
+
+`decay_days=0` means a pure impulse on the changepoint date.
+
+### Returns
+
+Synthetic returns volume in the `sales_returns` table. A configurable fraction of
+sales rows generates a delayed return:
+
+```json
+{"enable_returns": true}
+```
+
+Tune via `ReturnsConfig` on `SeederConfig` (default ~2% of sales, lag 1–14 days, with
+reasons drawn from `defective`/`wrong_size`/`not_as_described`/`changed_mind`/
+`damaged_in_transit`).
+
+### Substitution on Stockout
+
+When a member of a substitute group is stocked out, the surviving members pick up a
+share of demand:
+
+```json
+{
+  "enable_substitution": true,
+  "substitute_groups": [[1, 2, 3]],
+  "substitution_lift_on_stockout": 0.5
+}
+```
+
+`product_id` values must already exist in the dataset. The lift is split across in-stock
+group-mates.
+
+### Phase 1 API surface
+
+- `POST /seeder/generate` accepts the Phase 1 fields above; defaults keep Phase 1 off.
+- `GET /seeder/exogenous?signal_name=&start_date=&end_date=&store_id=` returns signal rows.
+- `GET /seeder/status` adds `exogenous_signals` and `sales_returns` counts.
+
 ## Data Integrity
 
 The seeder enforces data integrity:
@@ -204,6 +291,10 @@ The seeder enforces data integrity:
 2. **Non-Negative Values**: Quantities and prices are always non-negative
 3. **Date Coverage**: Calendar table covers entire date range
 4. **Uniqueness**: Store codes and product SKUs are unique
+5. **Phase 1 — Returns positive**: `sales_returns.return_quantity` is always ≥ 1
+6. **Phase 1 — Exogenous consistency**: every `exogenous_signal` row satisfies
+   `is_global = true ⇔ store_id IS NULL` (enforced by a CHECK constraint and verified
+   by `verify_data_integrity`)
 
 Verify with:
 ```bash

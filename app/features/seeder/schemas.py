@@ -1,9 +1,10 @@
 """Pydantic schemas for the seeder feature."""
 
+import datetime as _datetime_module
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class SeederStatus(BaseModel):
@@ -16,6 +17,14 @@ class SeederStatus(BaseModel):
     inventory: int = Field(description="Number of inventory_snapshot_daily records")
     price_history: int = Field(description="Number of price_history records")
     promotions: int = Field(description="Number of promotion records")
+    exogenous_signals: int = Field(
+        default=0,
+        description="Number of exogenous_signal records (Phase 1)",
+    )
+    sales_returns: int = Field(
+        default=0,
+        description="Number of sales_returns records (Phase 1)",
+    )
     date_range_start: date | None = Field(
         default=None,
         description="Earliest date in sales_daily",
@@ -27,6 +36,22 @@ class SeederStatus(BaseModel):
     last_updated: datetime | None = Field(
         default=None,
         description="Timestamp of last data modification",
+    )
+
+
+class ChangepointEventParam(BaseModel):
+    """API-facing representation of a demand changepoint (Phase 1)."""
+
+    date: _datetime_module.date = Field(description="Changepoint impulse date")
+    demand_multiplier: float = Field(
+        ge=0.0,
+        description="Peak multiplier on the changepoint date",
+    )
+    decay_days: int = Field(
+        default=30,
+        ge=0,
+        le=3650,
+        description="Exponential decay e-folding time (days). 0 = pure impulse.",
     )
 
 
@@ -83,6 +108,69 @@ class GenerateParams(BaseModel):
         default=False,
         description="Preview only, do not execute",
     )
+
+    # Phase 1 — realism extension. All flags default off so existing
+    # scenarios remain byte-identical when this endpoint is called without
+    # the new fields.
+    enable_exogenous: bool = Field(
+        default=False,
+        description="Seed weather/macro/event exogenous signals (Phase 1)",
+    )
+    enable_returns: bool = Field(
+        default=False,
+        description="Seed sales_returns rows derived from sales (Phase 1)",
+    )
+    enable_substitution: bool = Field(
+        default=False,
+        description="Apply cross-product substitution lift on stockouts (Phase 1)",
+    )
+    yearly_seasonality_amplitude: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Yearly sin-wave demand amplitude (fraction). None or 0 = disabled. (Phase 1)"
+        ),
+    )
+    weather_temperature_sensitivity: float | None = Field(
+        default=None,
+        ge=-1.0,
+        le=1.0,
+        description=(
+            "Demand delta per °C above the climatology mean. "
+            "Only applied when enable_exogenous=true. (Phase 1)"
+        ),
+    )
+    changepoints: list[ChangepointEventParam] | None = Field(
+        default=None,
+        description="Optional list of demand changepoints (Phase 1)",
+    )
+    substitute_groups: list[list[int]] | None = Field(
+        default=None,
+        description=(
+            "Optional list of product-ID groups whose members substitute for "
+            "each other on stockout. Only applied when enable_substitution=true. "
+            "(Phase 1)"
+        ),
+    )
+    substitution_lift_on_stockout: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=10.0,
+        description=(
+            "Demand lift distributed across in-stock group-mates when a member "
+            "is stocked out. Only applied when enable_substitution=true. (Phase 1)"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_date_range(self) -> "GenerateParams":
+        """Reject inverted date ranges with a clear message."""
+        if self.end_date < self.start_date:
+            raise ValueError(
+                f"end_date ({self.end_date}) must be on or after start_date ({self.start_date})"
+            )
+        return self
 
 
 class AppendParams(BaseModel):
@@ -156,3 +244,37 @@ class VerifyResult(BaseModel):
     passed_count: int = Field(description="Number of passed checks")
     warning_count: int = Field(description="Number of warnings")
     failed_count: int = Field(description="Number of failures")
+
+
+# ============================================================================
+# PHASE 1 — Exogenous signal read API
+# ============================================================================
+
+
+class ExogenousSignalRecord(BaseModel):
+    """One row of the exogenous_signal table."""
+
+    date: _datetime_module.date = Field(description="Signal date")
+    signal_name: str = Field(description="Signal identifier")
+    store_id: int | None = Field(
+        default=None,
+        description="Store ID. None for chain-wide (global) signals.",
+    )
+    is_global: bool = Field(description="True for chain-wide signals")
+    value: float = Field(description="Numeric signal value")
+
+
+class ExogenousSignalResponse(BaseModel):
+    """Response payload for GET /seeder/exogenous."""
+
+    signal_name: str = Field(description="Signal identifier queried")
+    start_date: date = Field(description="Start of the query window")
+    end_date: date = Field(description="End of the query window")
+    store_id: int | None = Field(
+        default=None,
+        description="Specific store filter, if applied",
+    )
+    records: list[ExogenousSignalRecord] = Field(
+        description="Signal rows in ascending date order",
+    )
+    total: int = Field(description="Row count in the response")
