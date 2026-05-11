@@ -496,7 +496,10 @@ class AgentService:
                         session.status = SessionStatus.AWAITING_APPROVAL.value
                         pending_action = self._format_pending_action(session.pending_action)
                     # Fallback: check approval_required flag (legacy trigger)
-                    elif hasattr(final_result, "approval_required") and final_result.approval_required:
+                    elif (
+                        hasattr(final_result, "approval_required")
+                        and final_result.approval_required
+                    ):
                         pending_approval = True
                         session.pending_action = {
                             "action_id": uuid.uuid4().hex[:16],
@@ -532,7 +535,10 @@ class AgentService:
                             response_message = str(final_result.answer)
                         elif hasattr(final_result, "summary") and final_result.summary:
                             response_message = str(final_result.summary)
-                        elif hasattr(final_result, "recommendations") and final_result.recommendations:
+                        elif (
+                            hasattr(final_result, "recommendations")
+                            and final_result.recommendations
+                        ):
                             recommendations = final_result.recommendations
                             if isinstance(recommendations, list) and recommendations:
                                 response_message = "\n".join(str(item) for item in recommendations)
