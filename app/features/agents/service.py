@@ -347,12 +347,12 @@ class AgentService:
         # Format response message
         response_message: str = "No response generated."
         if result_data:
-            if hasattr(result_data, "answer") and getattr(result_data, "answer"):
-                response_message = str(getattr(result_data, "answer"))
-            elif hasattr(result_data, "summary") and getattr(result_data, "summary"):
-                response_message = str(getattr(result_data, "summary"))
-            elif hasattr(result_data, "recommendations") and getattr(result_data, "recommendations"):
-                recommendations = getattr(result_data, "recommendations")
+            if hasattr(result_data, "answer") and result_data.answer:
+                response_message = str(result_data.answer)
+            elif hasattr(result_data, "summary") and result_data.summary:
+                response_message = str(result_data.summary)
+            elif hasattr(result_data, "recommendations") and result_data.recommendations:
+                recommendations = result_data.recommendations
                 if isinstance(recommendations, list) and recommendations:
                     response_message = "\n".join(str(item) for item in recommendations)
                 else:
@@ -528,14 +528,12 @@ class AgentService:
                     # Yield completion event
                     response_message: str = "No response generated."
                     if final_result:
-                        if hasattr(final_result, "answer") and getattr(final_result, "answer"):
-                            response_message = str(getattr(final_result, "answer"))
-                        elif hasattr(final_result, "summary") and getattr(final_result, "summary"):
-                            response_message = str(getattr(final_result, "summary"))
-                        elif hasattr(final_result, "recommendations") and getattr(
-                            final_result, "recommendations"
-                        ):
-                            recommendations = getattr(final_result, "recommendations")
+                        if hasattr(final_result, "answer") and final_result.answer:
+                            response_message = str(final_result.answer)
+                        elif hasattr(final_result, "summary") and final_result.summary:
+                            response_message = str(final_result.summary)
+                        elif hasattr(final_result, "recommendations") and final_result.recommendations:
+                            recommendations = final_result.recommendations
                             if isinstance(recommendations, list) and recommendations:
                                 response_message = "\n".join(str(item) for item in recommendations)
                             else:
