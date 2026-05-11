@@ -21,6 +21,7 @@ from app.features.data_platform.models import (
     PriceHistory,
     Product,
     Promotion,
+    ReplenishmentEvent,
     SalesDaily,
     Store,
 )
@@ -57,6 +58,7 @@ async def db_session():
             # Clean up test data (delete in correct order due to FK constraints)
             await cleanup_session.execute(delete(SalesDaily))
             await cleanup_session.execute(delete(InventorySnapshotDaily))
+            await cleanup_session.execute(delete(ReplenishmentEvent))
             await cleanup_session.execute(delete(PriceHistory))
             await cleanup_session.execute(delete(Promotion))
             await cleanup_session.execute(delete(Product).where(Product.sku.like("SKU-TEST%")))

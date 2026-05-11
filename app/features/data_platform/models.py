@@ -24,7 +24,9 @@ from sqlalchemy import (
     Numeric,
     String,
     UniqueConstraint,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -71,9 +73,17 @@ class Product(TimestampMixin, Base):
         sku: Stock keeping unit (unique product identifier).
         name: Product display name.
         category: Product category.
+        subcategory: Optional finer-grain category (Phase 2 retail-depth).
         brand: Product brand.
         base_price: Standard retail price.
         base_cost: Standard cost/COGS.
+        pack_size: Optional units-per-pack (Phase 2). NULL means single-unit.
+        lifecycle_stage: One of ``intro|growth|maturity|decline|discontinued``
+            (Phase 2). NULL when the lifecycle generator is disabled.
+        launch_date: Date the product became sellable (Phase 2). NULL when
+            lifecycle is disabled.
+        discontinue_date: Date the product was retired (Phase 2). NULL when
+            still active or lifecycle is disabled.
     """
 
     __tablename__ = "product"
@@ -82,9 +92,14 @@ class Product(TimestampMixin, Base):
     sku: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(200))
     category: Mapped[str | None] = mapped_column(String(100), index=True, nullable=True)
+    subcategory: Mapped[str | None] = mapped_column(String(100), index=True, nullable=True)
     brand: Mapped[str | None] = mapped_column(String(100), nullable=True)
     base_price: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
     base_cost: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
+    pack_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    lifecycle_stage: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    launch_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
+    discontinue_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
 
     # Relationships (one-to-many)
     sales: Mapped[list[SalesDaily]] = relationship(back_populates="product")
@@ -92,6 +107,22 @@ class Product(TimestampMixin, Base):
     promotions: Mapped[list[Promotion]] = relationship(back_populates="product")
     inventory_snapshots: Mapped[list[InventorySnapshotDaily]] = relationship(
         back_populates="product"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "lifecycle_stage IS NULL OR lifecycle_stage IN "
+            "('intro', 'growth', 'maturity', 'decline', 'discontinued')",
+            name="ck_product_lifecycle_stage_allowlist",
+        ),
+        CheckConstraint(
+            "pack_size IS NULL OR pack_size > 0",
+            name="ck_product_pack_size_positive",
+        ),
+        CheckConstraint(
+            "discontinue_date IS NULL OR launch_date IS NULL OR discontinue_date >= launch_date",
+            name="ck_product_lifecycle_dates_order",
+        ),
     )
 
 
@@ -142,7 +173,11 @@ class SalesDaily(TimestampMixin, Base):
     """Daily sales fact table.
 
     CRITICAL: Grain is (date, store_id, product_id) - one row per store/product/day.
-    Enforced by unique constraint for idempotent upserts.
+    Enforced by unique constraint for idempotent upserts. The Phase 2
+    ``channel`` column is intentionally **outside** the grain — pre-Phase-2
+    rows default to ``in_store``; multi-channel scenarios are emitted as a
+    single row per (date, store, product) with a channel mix encoded in
+    downstream aggregates rather than splitting the grain.
 
     Attributes:
         id: Surrogate primary key.
@@ -152,6 +187,9 @@ class SalesDaily(TimestampMixin, Base):
         quantity: Units sold.
         unit_price: Price per unit at time of sale.
         total_amount: Total sales amount (quantity * unit_price).
+        channel: Sales channel — one of ``in_store|online|click_collect|wholesale``.
+            Defaults to ``in_store`` server-side so existing scenarios stay
+            byte-identical.
     """
 
     __tablename__ = "sales_daily"
@@ -164,6 +202,9 @@ class SalesDaily(TimestampMixin, Base):
     quantity: Mapped[int] = mapped_column(Integer)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(10, 2))
     total_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    channel: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'in_store'")
+    )
 
     # Relationships
     store: Mapped[Store] = relationship(back_populates="sales")
@@ -177,10 +218,16 @@ class SalesDaily(TimestampMixin, Base):
         Index("ix_sales_daily_date_store", "date", "store_id"),
         # Composite index for date range + product
         Index("ix_sales_daily_date_product", "date", "product_id"),
+        # Composite index for date range + channel (Phase 2)
+        Index("ix_sales_daily_date_channel", "date", "channel"),
         # Check constraint for data quality
         CheckConstraint("quantity >= 0", name="ck_sales_daily_quantity_positive"),
         CheckConstraint("unit_price >= 0", name="ck_sales_daily_price_positive"),
         CheckConstraint("total_amount >= 0", name="ck_sales_daily_amount_positive"),
+        CheckConstraint(
+            "channel IN ('in_store', 'online', 'click_collect', 'wholesale')",
+            name="ck_sales_daily_channel_allowlist",
+        ),
     )
 
 
@@ -227,15 +274,22 @@ class PriceHistory(TimestampMixin, Base):
 class Promotion(TimestampMixin, Base):
     """Promotion fact table.
 
-    Tracks promotional campaigns with discount mechanics.
+    Tracks promotional campaigns with discount mechanics. Phase 2 adds the
+    ``kind`` discriminator (with server default ``pct_off`` preserving the
+    pre-Phase-2 behaviour) and a JSONB ``bundle_member_product_ids`` for
+    BOGO/bundle mechanics.
 
     Attributes:
         id: Primary key.
         product_id: Product (FK).
         store_id: Store (FK) - NULL for chain-wide promos.
         name: Promotion name/description.
+        kind: ``pct_off | bogo | bundle | markdown`` (Phase 2). Server-default
+            ``pct_off``.
         discount_pct: Discount percentage (e.g., 0.15 for 15% off).
         discount_amount: Fixed discount amount (alternative to %).
+        bundle_member_product_ids: JSONB list of related product IDs when
+            ``kind in (bundle, bogo)``; NULL otherwise.
         start_date: Promotion start date.
         end_date: Promotion end date.
     """
@@ -248,8 +302,16 @@ class Promotion(TimestampMixin, Base):
         Integer, ForeignKey("store.id"), index=True, nullable=True
     )
     name: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'pct_off'"))
     discount_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 4), nullable=True)
     discount_amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
+    # ``none_as_null=True`` is load-bearing: Python ``None`` must serialize
+    # to SQL ``NULL`` (not JSON ``null``) so the
+    # ``ck_promotion_bundle_members_consistency`` CHECK constraint correctly
+    # rejects bundle/BOGO rows that omit member IDs.
+    bundle_member_product_ids: Mapped[list[int] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     start_date: Mapped[datetime.date] = mapped_column(Date, index=True)
     end_date: Mapped[datetime.date] = mapped_column(Date)
 
@@ -267,6 +329,15 @@ class Promotion(TimestampMixin, Base):
         CheckConstraint(
             "discount_amount IS NULL OR discount_amount >= 0",
             name="ck_promotion_discount_amount_positive",
+        ),
+        CheckConstraint(
+            "kind IN ('pct_off', 'bogo', 'bundle', 'markdown')",
+            name="ck_promotion_kind_allowlist",
+        ),
+        CheckConstraint(
+            "(kind IN ('bundle', 'bogo') AND bundle_member_product_ids IS NOT NULL)"
+            " OR (kind NOT IN ('bundle', 'bogo') AND bundle_member_product_ids IS NULL)",
+            name="ck_promotion_bundle_members_consistency",
         ),
     )
 
@@ -394,4 +465,50 @@ class SalesReturn(TimestampMixin, Base):
         Index("ix_sales_returns_store_product_date", "store_id", "product_id", "date"),
         Index("ix_sales_returns_date", "date"),
         CheckConstraint("return_quantity >= 1", name="ck_sales_returns_quantity_positive"),
+    )
+
+
+class ReplenishmentEvent(TimestampMixin, Base):
+    """Synthetic replenishment / inbound stock event (Phase 2).
+
+    Drives lead-time-aware stockout clustering. A row marks the date a
+    purchase order was *received* at a store for a given product, along
+    with how many days the order was in transit and the ordered vs.
+    received quantities. The inventory generator consumes these to
+    schedule realistic stockout windows.
+
+    Attributes:
+        id: Surrogate primary key.
+        date: Date of receipt at the store (FK to calendar).
+        store_id: Store (FK).
+        product_id: Product (FK).
+        lead_time_days: Days between order placement and receipt.
+        ordered_qty: Units ordered.
+        received_qty: Units actually received (``<= ordered_qty``).
+    """
+
+    __tablename__ = "replenishment_event"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    date: Mapped[datetime.date] = mapped_column(Date, ForeignKey("calendar.date"), index=True)
+    store_id: Mapped[int] = mapped_column(Integer, ForeignKey("store.id"), index=True)
+    product_id: Mapped[int] = mapped_column(Integer, ForeignKey("product.id"), index=True)
+    lead_time_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    ordered_qty: Mapped[int] = mapped_column(Integer, nullable=False)
+    received_qty: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (
+        Index(
+            "ix_replenishment_event_store_product_date",
+            "store_id",
+            "product_id",
+            "date",
+        ),
+        CheckConstraint("lead_time_days >= 0", name="ck_replenishment_event_lead_time_positive"),
+        CheckConstraint("ordered_qty >= 0", name="ck_replenishment_event_ordered_qty_positive"),
+        CheckConstraint("received_qty >= 0", name="ck_replenishment_event_received_qty_positive"),
+        CheckConstraint(
+            "received_qty <= ordered_qty",
+            name="ck_replenishment_event_received_le_ordered",
+        ),
     )

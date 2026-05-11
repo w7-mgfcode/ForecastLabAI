@@ -268,6 +268,181 @@ class SubstitutionConfig:
     substitution_lift_on_stockout: float = 0.0
 
 
+SalesChannel = Literal["in_store", "online", "click_collect", "wholesale"]
+"""Valid values for ``sales_daily.channel`` — mirrors the SQL CHECK allow-list."""
+
+LifecycleStage = Literal["intro", "growth", "maturity", "decline", "discontinued"]
+"""Valid values for ``product.lifecycle_stage`` — mirrors the SQL CHECK allow-list."""
+
+PromotionKind = Literal["pct_off", "bogo", "bundle", "markdown"]
+"""Valid values for ``promotion.kind`` — mirrors the SQL CHECK allow-list."""
+
+MarkdownTrigger = Literal["age_days", "stockout_risk", "lifecycle_decline"]
+"""How a markdown event fires: stale inventory, projected stockout, or
+lifecycle decline."""
+
+
+@dataclass
+class ChannelConfig:
+    """Configuration for multi-channel sales (Phase 2).
+
+    When ``enable_multichannel=False`` (default), every ``sales_daily`` row
+    carries ``channel='in_store'`` via the SQL server default, keeping the
+    regression invariant intact. When enabled, daily demand at a
+    ``(store, product, date)`` is split across the configured channel mix.
+
+    Attributes:
+        enable_multichannel: Whether to split demand across channels.
+        channel_mix: Probability weights per channel name. Keys must be a
+            subset of ``("in_store", "online", "click_collect", "wholesale")``.
+            Weights are normalized at use time; sum need not equal 1.
+        online_promo_uplift: Multiplier applied to the online slice when a
+            promotion is active (e.g. 1.2 = +20%).
+        online_substitution_to_instore: Fraction of online-channel demand
+            that cannibalizes from the in-store channel when both are active
+            (0.0 = independent; 1.0 = pure substitution).
+    """
+
+    enable_multichannel: bool = False
+    channel_mix: dict[str, float] = field(default_factory=dict)
+    online_promo_uplift: float = 1.0
+    online_substitution_to_instore: float = 0.0
+
+
+@dataclass
+class LifecycleConfig:
+    """Configuration for product lifecycle stages (Phase 2).
+
+    Disabled by default. When enabled, each product is assigned a
+    ``launch_date`` (drawn from a distribution within or before
+    ``start_date``) and optionally a ``discontinue_date``; the
+    lifecycle multiplier shapes demand over the ramp / steady / decay
+    curves.
+
+    Attributes:
+        enable: Whether the lifecycle generator emits stage + dates.
+        intro_ramp_days: Days from ``launch_date`` to full velocity.
+        growth_ramp_days: Days the ``growth`` stage lasts.
+        maturity_steady_days: Days the ``maturity`` stage lasts before
+            decline begins.
+        decline_decay_days: e-folding time of demand decay in the
+            ``decline`` stage.
+        auto_progression: If True, the current stage is computed from
+            ``launch_date`` relative to each sales date; if False, the
+            stage is set once on the product row and held constant.
+        discontinue_probability: Probability that a given product is
+            discontinued during the seeded range (assigned a
+            ``discontinue_date`` after launch).
+        intro_multiplier: Demand floor at launch day (e.g. 0.1 = 10% of
+            base for the first day, ramping to 1.0 over ``intro_ramp_days``).
+        decline_multiplier: Demand floor at end of decline (e.g. 0.0
+            means demand decays toward zero in the decline stage).
+    """
+
+    enable: bool = False
+    intro_ramp_days: int = 30
+    growth_ramp_days: int = 60
+    maturity_steady_days: int = 180
+    decline_decay_days: int = 90
+    auto_progression: bool = True
+    discontinue_probability: float = 0.0
+    intro_multiplier: float = 0.1
+    decline_multiplier: float = 0.0
+
+
+@dataclass
+class BundleConfig:
+    """Configuration for BOGO/bundle promotion mechanics (Phase 2).
+
+    Disabled by default. When enabled, a fraction of generated promotions
+    become bundle/BOGO promotions with explicit member product IDs.
+
+    Attributes:
+        enable: Whether to emit bundle/BOGO promotions.
+        bundle_probability: Per-promotion probability that the promotion is
+            a bundle rather than the default ``pct_off``.
+        bogo_share_within_bundles: Of the bundle-classed promotions, the
+            fraction that are BOGO (the rest are multi-SKU bundles).
+        min_bundle_size: Minimum number of member products (>= 2).
+        max_bundle_size: Maximum number of member products.
+        bundle_discount_pct_min: Lower bound of the bundle discount.
+        bundle_discount_pct_max: Upper bound of the bundle discount.
+        bundle_uplift: Demand lift on each member when a bundle promo is
+            active (e.g. 1.4 = +40%).
+    """
+
+    enable: bool = False
+    bundle_probability: float = 0.0
+    bogo_share_within_bundles: float = 0.5
+    min_bundle_size: int = 2
+    max_bundle_size: int = 3
+    bundle_discount_pct_min: float = 0.10
+    bundle_discount_pct_max: float = 0.30
+    bundle_uplift: float = 1.4
+
+
+@dataclass
+class MarkdownConfig:
+    """Configuration for clearance markdowns (Phase 2).
+
+    Markdowns are price-driven clearance events distinct from promo lifts.
+    Disabled by default. When enabled, eligible products are marked down
+    according to the chosen trigger, and the markdown is recorded both as
+    a ``price_history`` drop and a ``promotion`` row with ``kind='markdown'``.
+
+    Attributes:
+        enable: Whether markdowns fire.
+        trigger: Criterion: ``age_days`` (inventory older than X days),
+            ``stockout_risk`` (projected stockout within Y days), or
+            ``lifecycle_decline`` (product in decline stage).
+        markdown_depth_pct: Fraction below base price (0.0-1.0).
+        markdown_min_units_remaining: Required inventory level for the
+            markdown to fire under ``age_days`` / ``stockout_risk``.
+        age_days_threshold: Days of stale inventory under ``age_days``.
+        markdown_demand_lift: Demand multiplier while markdown is active.
+        markdown_duration_days: How long a markdown lasts.
+    """
+
+    enable: bool = False
+    trigger: MarkdownTrigger = "lifecycle_decline"
+    markdown_depth_pct: float = 0.30
+    markdown_min_units_remaining: int = 5
+    age_days_threshold: int = 60
+    markdown_demand_lift: float = 1.2
+    markdown_duration_days: int = 14
+
+
+@dataclass
+class LeadTimeConfig:
+    """Configuration for lead-time-driven replenishment (Phase 2).
+
+    Disabled by default. When enabled, ``ReplenishmentGenerator`` emits
+    ``replenishment_event`` rows that drive inventory and stockout
+    clustering: orders are placed every ``order_frequency_days`` and
+    received ``lead_time_days`` later; on-hand inventory between
+    receipts can drop to zero, producing realistic stockout windows.
+
+    Attributes:
+        enable: Whether to emit replenishment events.
+        mean_lead_time_days: Mean of the Normal-distributed lead time.
+        lead_time_sigma_days: Standard deviation of the lead time.
+        safety_stock_days: Days of average demand kept as safety stock.
+        order_frequency_days: How often a new PO is placed per
+            (store, product).
+        fill_rate_mean: Mean fraction of ordered units that arrive
+            (1.0 = always fully shipped).
+        fill_rate_sigma: Standard deviation of the fill rate.
+    """
+
+    enable: bool = False
+    mean_lead_time_days: int = 7
+    lead_time_sigma_days: float = 1.5
+    safety_stock_days: int = 3
+    order_frequency_days: int = 14
+    fill_rate_mean: float = 0.97
+    fill_rate_sigma: float = 0.05
+
+
 @dataclass
 class SeederConfig:
     """Master configuration for the data seeder.
@@ -286,6 +461,11 @@ class SeederConfig:
         changepoints: Phase 1 trend changepoints (empty by default).
         returns: Phase 1 returns volume (disabled by default).
         substitution: Phase 1 stockout substitution (disabled by default).
+        channels: Phase 2 multi-channel sales (disabled by default).
+        lifecycle: Phase 2 product lifecycle (disabled by default).
+        bundles: Phase 2 BOGO/bundle promotions (disabled by default).
+        markdowns: Phase 2 clearance markdowns (disabled by default).
+        lead_time: Phase 2 replenishment lead time (disabled by default).
         batch_size: Batch size for database inserts.
         enable_progress: Whether to show progress bars.
     """
@@ -303,6 +483,11 @@ class SeederConfig:
     changepoints: ChangepointConfig = field(default_factory=ChangepointConfig)
     returns: ReturnsConfig = field(default_factory=ReturnsConfig)
     substitution: SubstitutionConfig = field(default_factory=SubstitutionConfig)
+    channels: ChannelConfig = field(default_factory=ChannelConfig)
+    lifecycle: LifecycleConfig = field(default_factory=LifecycleConfig)
+    bundles: BundleConfig = field(default_factory=BundleConfig)
+    markdowns: MarkdownConfig = field(default_factory=MarkdownConfig)
+    lead_time: LeadTimeConfig = field(default_factory=LeadTimeConfig)
     batch_size: int = 1000
     enable_progress: bool = True
 
