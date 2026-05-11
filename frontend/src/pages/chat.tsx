@@ -24,7 +24,11 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessageType[]>([])
   const [streamingContent, setStreamingContent] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
-  const [pendingAction, setPendingAction] = useState<{ action: string; details?: Record<string, unknown> } | null>(null)
+  const [pendingAction, setPendingAction] = useState<{
+    actionId?: string
+    action: string
+    details?: Record<string, unknown>
+  } | null>(null)
   const [currentToolCall, setCurrentToolCall] = useState<string | null>(null)
   const [isCreatingSession, setIsCreatingSession] = useState(false)
   const [isApproving, setIsApproving] = useState(false)
@@ -40,7 +44,7 @@ export default function ChatPage() {
     switch (event.event_type) {
       case 'text_delta':
         setIsStreaming(true)
-        setStreamingContent((prev) => prev + (event.data.content as string))
+        setStreamingContent((prev) => prev + ((event.data.delta as string) ?? ''))
         break
 
       case 'tool_call_start':
@@ -52,23 +56,24 @@ export default function ChatPage() {
         break
 
       case 'approval_required':
+        // Backend sends full pending action under "action"
+        const action = event.data.action as Record<string, unknown> | undefined
         setPendingAction({
-          action: event.data.action as string,
-          details: event.data.details as Record<string, unknown>,
+          actionId: action?.action_id as string | undefined,
+          action: (action?.action_type as string | undefined) ?? 'unknown',
+          details: action ?? (event.data.details as Record<string, unknown> | undefined),
         })
         break
 
       case 'complete':
         // Finalize the streaming message
-        if (streamingContent || event.data.content) {
-          const content = (event.data.content as string) || streamingContent
+        if (streamingContent || event.data.message) {
+          const content = (event.data.message as string) || streamingContent
           setMessages((prev) => [
             ...prev,
             {
               role: 'assistant',
               content,
-              tool_calls: event.data.tool_calls as ChatMessageType['tool_calls'],
-              citations: event.data.citations as ChatMessageType['citations'],
               timestamp: new Date().toISOString(),
             },
           ])
@@ -83,7 +88,7 @@ export default function ChatPage() {
           ...prev,
           {
             role: 'assistant',
-            content: `Error: ${event.data.message as string}`,
+            content: `Error: ${(event.data.error as string) ?? 'Unknown error'}`,
             timestamp: new Date().toISOString(),
           },
         ])
@@ -123,23 +128,25 @@ export default function ChatPage() {
   }
 
   const handleSend = (content: string) => {
+    if (!sessionId) return
+
     // Add user message
     setMessages((prev) => [
       ...prev,
       { role: 'user', content, timestamp: new Date().toISOString() },
     ])
 
-    // Send via WebSocket
-    send({ type: 'chat', content })
+    // Send via WebSocket (must match backend protocol)
+    send({ session_id: sessionId, message: content })
   }
 
   const handleApprove = async () => {
-    if (!sessionId || !pendingAction) return
+    if (!sessionId || !pendingAction?.actionId) return
     setIsApproving(true)
     try {
       await api(`/agents/sessions/${sessionId}/approve`, {
         method: 'POST',
-        body: { approved: true },
+        body: { action_id: pendingAction.actionId, approved: true },
       })
       setPendingAction(null)
     } catch (error) {
@@ -150,12 +157,12 @@ export default function ChatPage() {
   }
 
   const handleReject = async () => {
-    if (!sessionId || !pendingAction) return
+    if (!sessionId || !pendingAction?.actionId) return
     setIsApproving(true)
     try {
       await api(`/agents/sessions/${sessionId}/approve`, {
         method: 'POST',
-        body: { approved: false },
+        body: { action_id: pendingAction.actionId, approved: false },
       })
       setPendingAction(null)
     } catch (error) {

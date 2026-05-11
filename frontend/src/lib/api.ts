@@ -46,20 +46,41 @@ export async function api<T>(endpoint: string, config: RequestConfig = {}): Prom
     return undefined as T
   }
 
+  const contentType = response.headers.get('content-type') || ''
+  const rawBody = await response.text()
+  const isJson = contentType.includes('application/json')
+
+  let data: unknown = undefined
+  if (rawBody && isJson) {
+    try {
+      data = JSON.parse(rawBody)
+    } catch {
+      throw new ApiError(
+        `Invalid JSON response from API (${response.status})`,
+        response.status
+      )
+    }
+  }
+
+  if (!response.ok) {
+    const detail = (data ?? {}) as ProblemDetail
+    const fallbackDetail = rawBody?.trim() || response.statusText
+    throw new ApiError(
+      detail.detail || fallbackDetail,
+      response.status,
+      detail
+    )
+  }
+
   // Handle 202 Accepted (for async job creation)
   if (response.status === 202) {
-    const data = await response.json()
     return data as T
   }
 
-  const data = await response.json()
-
-  if (!response.ok) {
-    const detail = data as ProblemDetail
+  if (!isJson) {
     throw new ApiError(
-      detail.detail || response.statusText,
-      response.status,
-      detail
+      `Expected JSON response but received '${contentType || 'unknown'}'`,
+      response.status
     )
   }
 
