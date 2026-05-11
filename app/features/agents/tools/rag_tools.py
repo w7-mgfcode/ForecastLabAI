@@ -2,6 +2,7 @@
 
 Provides PydanticAI-compatible tool functions for:
 - Retrieving context from the indexed knowledge base
+- Listing indexed sources in the knowledge base
 - Formatting citations for evidence-grounded responses
 
 CRITICAL: Returns evidence with stable citations for grounded answers.
@@ -9,6 +10,7 @@ CRITICAL: Returns evidence with stable citations for grounded answers.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import structlog
@@ -82,6 +84,24 @@ async def retrieve_context(
     service = RAGService()
     result: RetrieveResponse = await service.retrieve(db=db, request=request)
 
+    # Fallback for terse/ambiguous queries:
+    # If strict threshold returns nothing, retry once with lower threshold.
+    if not result.results and similarity_threshold > 0.5:
+        fallback_threshold = 0.5
+        logger.info(
+            "agents.rag_tool.retrieve_context_fallback",
+            original_threshold=similarity_threshold,
+            fallback_threshold=fallback_threshold,
+            query_length=len(query),
+        )
+        fallback_request = RetrieveRequest(
+            query=query,
+            top_k=min(max(top_k, 8), 50),
+            similarity_threshold=fallback_threshold,
+            filters=filters,
+        )
+        result = await service.retrieve(db=db, request=fallback_request)
+
     logger.info(
         "agents.rag_tool.retrieve_context_completed",
         results_count=len(result.results),
@@ -112,10 +132,12 @@ def format_citations(
         - relevance: Relevance score
         - snippet: First 200 chars of content
     """
-    results = retrieval_result.get("results", [])
+    results = _extract_result_items(retrieval_result)
     citations: list[dict[str, str]] = []
 
     for chunk in results:
+        if not isinstance(chunk, dict):
+            continue
         content = chunk.get("content", "")
         snippet = content[:200] + "..." if len(content) > 200 else content
 
@@ -151,15 +173,70 @@ def has_sufficient_evidence(
     Returns:
         True if sufficient evidence exists, False otherwise.
     """
-    results = retrieval_result.get("results", [])
+    results = _extract_result_items(retrieval_result)
 
     if len(results) < min_results:
         return False
 
-    # Check average relevance
-    if results:
-        avg_relevance = sum(r.get("relevance_score", 0) for r in results) / len(results)
-        if avg_relevance < min_relevance:
+    # Keep only dict chunks to avoid model/tool argument shape issues.
+    dict_results = [r for r in results if isinstance(r, dict)]
+    if not dict_results:
+        return False
+
+    # Check strongest match relevance (more robust for short queries).
+    if dict_results:
+        max_relevance = max(r.get("relevance_score", 0) for r in dict_results)
+        if max_relevance < min_relevance:
             return False
 
     return True
+
+
+def _extract_result_items(retrieval_result: Any) -> list[Any]:
+    """Normalize retrieval results into a list of result items.
+
+    PydanticAI tool args can arrive as dicts, JSON strings, or already-parsed lists.
+    This helper makes downstream logic resilient to those shapes.
+    """
+    # Direct dict shape: {"results": [...]}
+    if isinstance(retrieval_result, dict):
+        results = retrieval_result.get("results", [])
+        return results if isinstance(results, list) else []
+
+    # Direct list shape: [...]
+    if isinstance(retrieval_result, list):
+        return retrieval_result
+
+    # JSON string shape
+    if isinstance(retrieval_result, str):
+        try:
+            parsed = json.loads(retrieval_result)
+        except json.JSONDecodeError:
+            return []
+        return _extract_result_items(parsed)
+
+    return []
+
+
+async def list_indexed_sources(
+    db: AsyncSession,
+) -> dict[str, Any]:
+    """List indexed sources and chunk statistics from the knowledge base.
+
+    Use this tool when users ask what content exists in the knowledge base.
+
+    Args:
+        db: Database session (injected via agent context).
+
+    Returns:
+        Dictionary containing sources, total_sources, and total_chunks.
+    """
+    logger.info("agents.rag_tool.list_sources_called")
+    service = RAGService()
+    response = await service.list_sources(db=db)
+    logger.info(
+        "agents.rag_tool.list_sources_completed",
+        total_sources=response.total_sources,
+        total_chunks=response.total_chunks,
+    )
+    return response.model_dump()
