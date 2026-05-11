@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.7](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.6...v0.2.7) (2026-05-11)
+
+
+### Dependencies
+
+* update alembic requirement from &gt;=1.14.0 to &gt;=1.18.4 ([#76](https://github.com/w7-mgfcode/ForecastLabAI/issues/76)) ([dfde2ee](https://github.com/w7-mgfcode/ForecastLabAI/commit/dfde2eeca0894e80d3433594cf2f97d7891cc08b))
+* update asyncpg requirement from &gt;=0.30.0 to &gt;=0.31.0 ([#75](https://github.com/w7-mgfcode/ForecastLabAI/issues/75)) ([7626858](https://github.com/w7-mgfcode/ForecastLabAI/commit/76268584acac24472ab8c3ae527211a1364ef766))
+* update joblib requirement from &gt;=1.4.0 to &gt;=1.5.3 ([#73](https://github.com/w7-mgfcode/ForecastLabAI/issues/73)) ([2eb3e06](https://github.com/w7-mgfcode/ForecastLabAI/commit/2eb3e06b07d6e5169ccaa38996d04e9ff51a28c0))
+* update pandas requirement from &gt;=3.0.0 to &gt;=3.0.2 ([#74](https://github.com/w7-mgfcode/ForecastLabAI/issues/74)) ([8354a9f](https://github.com/w7-mgfcode/ForecastLabAI/commit/8354a9fa704038a681b92d836c3c8336daefc4ab))
+* update pydantic-ai requirement from &gt;=1.48.0 to &gt;=1.80.0 ([#72](https://github.com/w7-mgfcode/ForecastLabAI/issues/72)) ([68dd10c](https://github.com/w7-mgfcode/ForecastLabAI/commit/68dd10c934b0d3c0dffc9bd0f7ee124086d530c2))
+
 ## [0.2.6](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.5...v0.2.6) (2026-05-11)
 
 
