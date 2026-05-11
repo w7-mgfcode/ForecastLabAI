@@ -233,12 +233,13 @@ class TestVerifyDataIntegrity:
     async def test_returns_empty_list_when_valid(self, seeder):
         """Test empty list returned when data is valid."""
         mock_db = AsyncMock()
-        # Create separate mock results for each execute call
-        # verify_data_integrity makes 4 calls:
+        # verify_data_integrity now makes 6 execute calls:
         # 1. orphan check
         # 2. negative qty check
         # 3. min/max date check
         # 4. calendar count
+        # 5. (Phase 1) sales_returns non-positive check
+        # 6. (Phase 1) exogenous_signal is_global/store_id consistency
         mock_result1 = MagicMock()
         mock_result1.scalar.return_value = 0  # no orphans
         mock_result2 = MagicMock()
@@ -247,8 +248,19 @@ class TestVerifyDataIntegrity:
         mock_result3.fetchone.return_value = (date(2024, 1, 1), date(2024, 1, 31))
         mock_result4 = MagicMock()
         mock_result4.scalar.return_value = 31  # 31 days matches Jan 1-31
+        mock_result5 = MagicMock()
+        mock_result5.scalar.return_value = 0  # no bad returns
+        mock_result6 = MagicMock()
+        mock_result6.scalar.return_value = 0  # no inconsistent exogenous rows
 
-        mock_db.execute.side_effect = [mock_result1, mock_result2, mock_result3, mock_result4]
+        mock_db.execute.side_effect = [
+            mock_result1,
+            mock_result2,
+            mock_result3,
+            mock_result4,
+            mock_result5,
+            mock_result6,
+        ]
 
         errors = await seeder.verify_data_integrity(mock_db)
 
@@ -258,7 +270,6 @@ class TestVerifyDataIntegrity:
     async def test_detects_orphaned_sales(self, seeder):
         """Test orphaned sales are detected."""
         mock_db = AsyncMock()
-        # Create separate mock results for each execute call
         mock_result1 = MagicMock()
         mock_result1.scalar.return_value = 5  # orphan check returns 5 errors
         mock_result2 = MagicMock()
@@ -267,8 +278,19 @@ class TestVerifyDataIntegrity:
         mock_result3.fetchone.return_value = (date(2024, 1, 1), date(2024, 1, 31))
         mock_result4 = MagicMock()
         mock_result4.scalar.return_value = 31  # calendar count
+        mock_result5 = MagicMock()
+        mock_result5.scalar.return_value = 0  # bad returns
+        mock_result6 = MagicMock()
+        mock_result6.scalar.return_value = 0  # inconsistent exogenous
 
-        mock_db.execute.side_effect = [mock_result1, mock_result2, mock_result3, mock_result4]
+        mock_db.execute.side_effect = [
+            mock_result1,
+            mock_result2,
+            mock_result3,
+            mock_result4,
+            mock_result5,
+            mock_result6,
+        ]
 
         errors = await seeder.verify_data_integrity(mock_db)
 
@@ -278,7 +300,6 @@ class TestVerifyDataIntegrity:
     async def test_detects_negative_quantities(self, seeder):
         """Test negative quantities are detected."""
         mock_db = AsyncMock()
-        # Create separate mock results for each execute call
         mock_result1 = MagicMock()
         mock_result1.scalar.return_value = 0  # orphan check
         mock_result2 = MagicMock()
@@ -287,8 +308,19 @@ class TestVerifyDataIntegrity:
         mock_result3.fetchone.return_value = (date(2024, 1, 1), date(2024, 1, 31))
         mock_result4 = MagicMock()
         mock_result4.scalar.return_value = 31  # calendar count
+        mock_result5 = MagicMock()
+        mock_result5.scalar.return_value = 0  # bad returns
+        mock_result6 = MagicMock()
+        mock_result6.scalar.return_value = 0  # inconsistent exogenous
 
-        mock_db.execute.side_effect = [mock_result1, mock_result2, mock_result3, mock_result4]
+        mock_db.execute.side_effect = [
+            mock_result1,
+            mock_result2,
+            mock_result3,
+            mock_result4,
+            mock_result5,
+            mock_result6,
+        ]
 
         errors = await seeder.verify_data_integrity(mock_db)
 

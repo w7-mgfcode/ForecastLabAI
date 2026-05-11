@@ -13,9 +13,11 @@ import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -307,4 +309,89 @@ class InventorySnapshotDaily(TimestampMixin, Base):
         Index("ix_inventory_snapshot_date_store", "date", "store_id"),
         CheckConstraint("on_hand_qty >= 0", name="ck_inventory_on_hand_positive"),
         CheckConstraint("on_order_qty >= 0", name="ck_inventory_on_order_positive"),
+    )
+
+
+class ExogenousSignal(TimestampMixin, Base):
+    """Exogenous demand-relevant signals (weather, macro index, events).
+
+    A signal is either chain-wide (``is_global=True``, ``store_id IS NULL``)
+    or per-store (``is_global=False``, ``store_id IS NOT NULL``). The two
+    cases are enforced by ``ck_exogenous_signal_global_consistency`` and made
+    unique by two partial indexes so re-runs of the seeder are idempotent.
+
+    Attributes:
+        id: Surrogate primary key.
+        date: Signal date (FK to calendar).
+        signal_name: Short identifier (e.g. ``"weather_temp_c"``, ``"macro_index"``).
+        store_id: Store (FK) — NULL when ``is_global=True``.
+        is_global: True for chain-wide signals; mirrors ``store_id IS NULL``.
+        value: Numeric value of the signal on the given date.
+    """
+
+    __tablename__ = "exogenous_signal"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    date: Mapped[datetime.date] = mapped_column(Date, ForeignKey("calendar.date"), index=True)
+    signal_name: Mapped[str] = mapped_column(String(50), index=True)
+    store_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("store.id"), nullable=True, index=True
+    )
+    is_global: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+
+    __table_args__ = (
+        Index("ix_exogenous_signal_name_date", "signal_name", "date"),
+        Index(
+            "uq_exogenous_signal_global",
+            "date",
+            "signal_name",
+            unique=True,
+            postgresql_where=("is_global = true"),
+        ),
+        Index(
+            "uq_exogenous_signal_per_store",
+            "date",
+            "signal_name",
+            "store_id",
+            unique=True,
+            postgresql_where=("is_global = false"),
+        ),
+        CheckConstraint(
+            "(is_global = true AND store_id IS NULL) OR "
+            "(is_global = false AND store_id IS NOT NULL)",
+            name="ck_exogenous_signal_global_consistency",
+        ),
+    )
+
+
+class SalesReturn(TimestampMixin, Base):
+    """Synthetic sales return event.
+
+    Returns are not subtracted from ``sales_daily.quantity``; they live in a
+    separate table so featuresets/forecasting can opt into them as a signal.
+
+    Attributes:
+        id: Surrogate primary key.
+        date: Return date (FK to calendar).
+        store_id: Store (FK).
+        product_id: Product (FK).
+        return_quantity: Units returned (>= 1).
+        return_reason: Free-form short reason (e.g. ``"defective"``,
+            ``"changed_mind"``).
+    """
+
+    __tablename__ = "sales_returns"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    date: Mapped[datetime.date] = mapped_column(Date, ForeignKey("calendar.date"))
+    store_id: Mapped[int] = mapped_column(Integer, ForeignKey("store.id"), index=True)
+    product_id: Mapped[int] = mapped_column(Integer, ForeignKey("product.id"), index=True)
+    return_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    return_reason: Mapped[str] = mapped_column(String(50), nullable=False)
+
+    __table_args__ = (
+        Index("ix_sales_returns_store_product_date", "store_id", "product_id", "date"),
+        Index("ix_sales_returns_date", "date"),
+        CheckConstraint("return_quantity >= 1", name="ck_sales_returns_quantity_positive"),
     )

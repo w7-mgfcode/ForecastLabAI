@@ -15,22 +15,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.logging import get_logger
 from app.features.data_platform.models import (
     Calendar,
+    ExogenousSignal,
     InventorySnapshotDaily,
     PriceHistory,
     Product,
     Promotion,
     SalesDaily,
+    SalesReturn,
     Store,
 )
 from app.shared.seeder.generators import (
     CalendarGenerator,
+    ExogenousSignalGenerator,
     InventorySnapshotGenerator,
     PriceHistoryGenerator,
     ProductGenerator,
     PromotionGenerator,
+    ReturnsGenerator,
     SalesDailyGenerator,
     StoreGenerator,
 )
+from app.shared.seeder.generators.exogenous import WEATHER_SIGNAL_NAME
 
 if TYPE_CHECKING:
     from app.shared.seeder.config import SeederConfig
@@ -50,6 +55,8 @@ class SeederResult:
         price_history_count: Number of price history records.
         promotions_count: Number of promotions generated.
         inventory_count: Number of inventory snapshots.
+        exogenous_count: Number of exogenous signal records (Phase 1).
+        returns_count: Number of sales return records (Phase 1).
         seed: Random seed used.
     """
 
@@ -60,6 +67,8 @@ class SeederResult:
     price_history_count: int = 0
     promotions_count: int = 0
     inventory_count: int = 0
+    exogenous_count: int = 0
+    returns_count: int = 0
     seed: int = 42
 
 
@@ -182,13 +191,53 @@ class DataSeeder:
 
         return store_ids, product_data, dates
 
+    async def _generate_exogenous(
+        self,
+        db: AsyncSession,
+        store_ids: list[int],
+        dates: list[date],
+    ) -> tuple[int, dict[tuple[int, date], float]]:
+        """Generate exogenous signals (Phase 1).
+
+        Returns:
+            Tuple of (rows_inserted, weather_lookup) where ``weather_lookup``
+            is ``{(store_id, date): temp_c}`` for downstream demand math.
+            Empty dict if weather is disabled.
+        """
+        exo_gen = ExogenousSignalGenerator(self.rng, self.config.exogenous)
+        records = exo_gen.generate(dates, store_ids)
+
+        if not records:
+            return 0, {}
+
+        logger.info("seeder.exogenous.generating", count=len(records))
+        inserted = await self._batch_insert(db, ExogenousSignal, records)
+
+        weather_lookup: dict[tuple[int, date], float] = {}
+        if self.config.exogenous.enable_weather:
+            for r in records:
+                if r["signal_name"] != WEATHER_SIGNAL_NAME:
+                    continue
+                store_id = r["store_id"]
+                signal_date = r["date"]
+                value = r["value"]
+                if (
+                    isinstance(store_id, int)
+                    and isinstance(signal_date, date)
+                    and isinstance(value, float)
+                ):
+                    weather_lookup[(store_id, signal_date)] = value
+
+        return inserted, weather_lookup
+
     async def _generate_facts(
         self,
         db: AsyncSession,
         store_ids: list[int],
         product_data: list[tuple[int, Decimal]],
         dates: list[date],
-    ) -> tuple[int, int, int, int]:
+        weather_lookup: dict[tuple[int, date], float] | None = None,
+    ) -> tuple[int, int, int, int, int]:
         """Generate and insert fact tables.
 
         Args:
@@ -196,9 +245,14 @@ class DataSeeder:
             store_ids: List of store IDs.
             product_data: List of (product_id, base_price) tuples.
             dates: List of dates.
+            weather_lookup: Optional ``{(store_id, date): temp_c}`` from the
+                exogenous generator. Demand picks up weather sensitivity only
+                when this dict is non-empty AND
+                ``config.exogenous.weather_temperature_sensitivity`` is non-zero.
 
         Returns:
-            Tuple of (sales_count, price_history_count, promotions_count, inventory_count).
+            Tuple of (sales_count, price_history_count, promotions_count,
+            inventory_count, returns_count).
         """
         product_ids = [pid for pid, _ in product_data]
 
@@ -255,13 +309,26 @@ class DataSeeder:
 
         await self._batch_insert(db, InventorySnapshotDaily, inventory_records)
 
-        # Generate sales (depends on promotions and stockouts)
+        # Generate sales (depends on promotions and stockouts). Phase 1
+        # extensions stay as None / 0 when their config flags are off so the
+        # disabled-path is byte-identical with pre-Phase-1.
+        weather_lookup_for_sales = (
+            weather_lookup
+            if weather_lookup and self.config.exogenous.weather_temperature_sensitivity != 0.0
+            else None
+        )
         sales_gen = SalesDailyGenerator(
             self.rng,
             self.config.time_series,
             self.config.retail,
             self.config.sparsity,
             self.config.holidays,
+            multi_seasonality=self.config.multi_seasonality,
+            changepoints=self.config.changepoints,
+            substitution=self.config.substitution,
+            exogenous_weather=weather_lookup_for_sales,
+            weather_temperature_sensitivity=(self.config.exogenous.weather_temperature_sensitivity),
+            weather_climatology_mean_c=self.config.exogenous.weather_climatology_mean_c,
         )
         sales_records = sales_gen.generate(
             store_ids,
@@ -278,11 +345,20 @@ class DataSeeder:
 
         await self._batch_insert(db, SalesDaily, sales_records)
 
+        # Generate returns (Phase 1) — depends on sales. Returns config is
+        # disabled by default; generator short-circuits to an empty list.
+        returns_gen = ReturnsGenerator(self.rng, self.config.returns)
+        returns_records = returns_gen.generate(sales_records, self.config.end_date)
+        if returns_records:
+            logger.info("seeder.returns.generating", count=len(returns_records))
+            await self._batch_insert(db, SalesReturn, returns_records)
+
         return (
             len(sales_records),
             len(price_records),
             len(promo_records),
             len(inventory_records),
+            len(returns_records),
         )
 
     async def generate_full(self, db: AsyncSession) -> SeederResult:
@@ -309,10 +385,17 @@ class DataSeeder:
         # Generate dimensions first
         store_ids, product_data, dates = await self._generate_dimensions(db)
 
+        # Phase 1: generate exogenous signals (no-op when no signal is enabled).
+        exogenous_count, weather_lookup = await self._generate_exogenous(db, store_ids, dates)
+
         # Generate facts
-        sales_count, price_count, promo_count, inventory_count = await self._generate_facts(
-            db, store_ids, product_data, dates
-        )
+        (
+            sales_count,
+            price_count,
+            promo_count,
+            inventory_count,
+            returns_count,
+        ) = await self._generate_facts(db, store_ids, product_data, dates, weather_lookup)
 
         # Commit all changes
         await db.commit()
@@ -325,6 +408,8 @@ class DataSeeder:
             price_history_count=price_count,
             promotions_count=promo_count,
             inventory_count=inventory_count,
+            exogenous_count=exogenous_count,
+            returns_count=returns_count,
             seed=self.config.seed,
         )
 
@@ -334,6 +419,8 @@ class DataSeeder:
             products=result.products_count,
             calendar_days=result.calendar_days,
             sales=result.sales_count,
+            exogenous=result.exogenous_count,
+            returns=result.returns_count,
             seed=self.config.seed,
         )
 
@@ -397,10 +484,17 @@ class DataSeeder:
             dates.append(current)
             current += timedelta(days=1)
 
+        # Phase 1: append exogenous signals for the new range (no-op when off).
+        exogenous_count, weather_lookup = await self._generate_exogenous(db, store_ids, dates)
+
         # Generate facts for new date range
-        sales_count, price_count, promo_count, inventory_count = await self._generate_facts(
-            db, store_ids, product_data, dates
-        )
+        (
+            sales_count,
+            price_count,
+            promo_count,
+            inventory_count,
+            returns_count,
+        ) = await self._generate_facts(db, store_ids, product_data, dates, weather_lookup)
 
         await db.commit()
 
@@ -412,6 +506,8 @@ class DataSeeder:
             price_history_count=price_count,
             promotions_count=promo_count,
             inventory_count=inventory_count,
+            exogenous_count=exogenous_count,
+            returns_count=returns_count,
             seed=self.config.seed,
         )
 
@@ -419,6 +515,8 @@ class DataSeeder:
             "seeder.append.completed",
             calendar_days=result_data.calendar_days,
             sales=result_data.sales_count,
+            exogenous=result_data.exogenous_count,
+            returns=result_data.returns_count,
         )
 
         return result_data
@@ -441,8 +539,13 @@ class DataSeeder:
         """
         counts: dict[str, int] = {}
 
-        # Get current counts
+        # Get current counts. Phase 1 tables are listed BEFORE the older fact
+        # tables so they're deleted first — sales_returns FKs to product/store
+        # and exogenous_signal FKs to store/calendar, so cleaning them up
+        # ahead of the dimension/calendar wipe avoids FK violations.
         fact_tables = [
+            ("sales_returns", SalesReturn),
+            ("exogenous_signal", ExogenousSignal),
             ("sales_daily", SalesDaily),
             ("inventory_snapshot_daily", InventorySnapshotDaily),
             ("price_history", PriceHistory),
@@ -527,6 +630,8 @@ class DataSeeder:
             ("price_history", PriceHistory),
             ("promotion", Promotion),
             ("inventory_snapshot_daily", InventorySnapshotDaily),
+            ("exogenous_signal", ExogenousSignal),
+            ("sales_returns", SalesReturn),
         ]
 
         counts: dict[str, int] = {}
@@ -584,5 +689,28 @@ class DataSeeder:
                 errors.append(
                     f"Calendar gap detected: expected {expected_days} days, found {actual_days}"
                 )
+
+        # Phase 1: sales_returns must never carry quantity <= 0 (CHECK
+        # constraint guards this at the DB layer, but a defensive count
+        # catches drift if a future generator drops the invariant).
+        neg_return_check = text("SELECT COUNT(*) FROM sales_returns WHERE return_quantity < 1")
+        result = await db.execute(neg_return_check)
+        neg_returns = result.scalar() or 0
+        if neg_returns > 0:
+            errors.append(f"Found {neg_returns} sales_returns with non-positive quantity")
+
+        # Phase 1: exogenous_signal global/per-store consistency.
+        bad_global_check = text(
+            "SELECT COUNT(*) FROM exogenous_signal "
+            "WHERE (is_global = true AND store_id IS NOT NULL) "
+            "   OR (is_global = false AND store_id IS NULL)"
+        )
+        result = await db.execute(bad_global_check)
+        bad_global = result.scalar() or 0
+        if bad_global > 0:
+            errors.append(
+                f"Found {bad_global} exogenous_signal rows violating "
+                "is_global / store_id consistency"
+            )
 
         return errors

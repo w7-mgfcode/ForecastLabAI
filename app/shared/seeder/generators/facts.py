@@ -10,15 +10,24 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.shared.seeder.config import (
+        ChangepointConfig,
         HolidayConfig,
+        MultiSeasonalityConfig,
         RetailPatternConfig,
         SparsityConfig,
+        SubstitutionConfig,
         TimeSeriesConfig,
     )
 
 
 class SalesDailyGenerator:
-    """Generator for daily sales fact data with realistic time-series patterns."""
+    """Generator for daily sales fact data with realistic time-series patterns.
+
+    Phase 1 extensions (``multi_seasonality``, ``changepoints``,
+    ``substitution``, ``exogenous_weather``) are all opt-in. When every Phase
+    1 input is None / disabled, the generator's output is byte-identical to
+    its pre-Phase-1 behavior.
+    """
 
     def __init__(
         self,
@@ -27,6 +36,12 @@ class SalesDailyGenerator:
         retail_config: RetailPatternConfig,
         sparsity_config: SparsityConfig,
         holidays: list[HolidayConfig],
+        multi_seasonality: MultiSeasonalityConfig | None = None,
+        changepoints: ChangepointConfig | None = None,
+        substitution: SubstitutionConfig | None = None,
+        exogenous_weather: dict[tuple[int, date], float] | None = None,
+        weather_temperature_sensitivity: float = 0.0,
+        weather_climatology_mean_c: float = 15.0,
     ) -> None:
         """Initialize the sales generator.
 
@@ -36,12 +51,143 @@ class SalesDailyGenerator:
             retail_config: Retail-specific pattern configuration.
             sparsity_config: Data sparsity configuration.
             holidays: List of holiday configurations with multipliers.
+            multi_seasonality: Optional yearly seasonality configuration.
+                When None or amplitude=0, no yearly multiplier is applied.
+            changepoints: Optional list of demand changepoints. When None or
+                empty, no changepoint multiplier is applied.
+            substitution: Optional substitution configuration. When None or
+                disabled, no substitution lift is applied.
+            exogenous_weather: Optional lookup ``{(store_id, date): temp_c}``.
+                Each entry shifts demand by
+                ``weather_temperature_sensitivity * (temp_c - climatology_mean_c)``
+                fraction (i.e. linear, centered on the climatology mean).
+                When None, no weather effect.
+            weather_temperature_sensitivity: Demand delta per °C above the
+                climatology mean (used only when ``exogenous_weather`` is set).
+            weather_climatology_mean_c: Reference temperature for the linear
+                weather term.
         """
         self.rng = rng
         self.ts_config = time_series_config
         self.retail_config = retail_config
         self.sparsity_config = sparsity_config
         self.holiday_map = {h.date: h.multiplier for h in holidays}
+        self.multi_seasonality = multi_seasonality
+        self.changepoints = changepoints
+        self.substitution = substitution
+        self.exogenous_weather = exogenous_weather
+        self.weather_sensitivity = weather_temperature_sensitivity
+        self.weather_climatology_mean_c = weather_climatology_mean_c
+
+        # Pre-compute substitution group memberships for O(1) lookup.
+        self._substitution_groups_by_product: dict[int, list[list[int]]] = {}
+        if self.substitution is not None and self.substitution.enable:
+            for group in self.substitution.substitute_groups:
+                for product_id in group:
+                    self._substitution_groups_by_product.setdefault(product_id, []).append(group)
+
+    def _yearly_seasonality_multiplier(self, current_date: date) -> float:
+        """Return the yearly seasonality multiplier for ``current_date``.
+
+        Returns 1.0 when multi-seasonality is unset or amplitude is 0 — that
+        preserves the pre-Phase-1 output byte-for-byte.
+        """
+        if (
+            self.multi_seasonality is None
+            or self.multi_seasonality.yearly_seasonality_amplitude == 0.0
+        ):
+            return 1.0
+        day_of_year = current_date.timetuple().tm_yday
+        offset = self.multi_seasonality.yearly_phase_offset_days
+        phase = 2.0 * math.pi * (day_of_year + offset) / 365.0
+        return 1.0 + self.multi_seasonality.yearly_seasonality_amplitude * math.sin(phase)
+
+    def _changepoint_multiplier(self, current_date: date) -> float:
+        """Aggregate multiplier from all changepoints active on ``current_date``.
+
+        Each changepoint contributes ``(multiplier - 1) * exp(-Δ/decay)`` if
+        ``current_date >= changepoint.date`` and 0 otherwise. The total
+        multiplier is ``1 + Σ contributions``.
+
+        Returns 1.0 when there are no changepoints — preserving byte-identical
+        output for callers that don't opt in.
+        """
+        if self.changepoints is None or not self.changepoints.changepoints:
+            return 1.0
+        contribution = 0.0
+        for cp in self.changepoints.changepoints:
+            delta_days = (current_date - cp.date).days
+            if delta_days < 0:
+                continue
+            if cp.decay_days <= 0:
+                # Pure impulse on the changepoint date only.
+                if delta_days == 0:
+                    contribution += cp.demand_multiplier - 1.0
+                continue
+            decay = math.exp(-delta_days / cp.decay_days)
+            contribution += (cp.demand_multiplier - 1.0) * decay
+        return 1.0 + contribution
+
+    def _weather_multiplier(self, current_date: date, store_id: int) -> float:
+        """Linear weather effect centered on the climatology mean.
+
+        Returns 1.0 when no weather data is configured.
+        """
+        if self.exogenous_weather is None or self.weather_sensitivity == 0.0:
+            return 1.0
+        temp_c = self.exogenous_weather.get((store_id, current_date))
+        if temp_c is None:
+            return 1.0
+        return 1.0 + self.weather_sensitivity * (temp_c - self.weather_climatology_mean_c)
+
+    def _substitution_multiplier(
+        self,
+        product_id: int,
+        stockouts_today: set[int],
+    ) -> float:
+        """Lift demand for ``product_id`` when stocked-out group-mates exist.
+
+        ``stockouts_today`` is the set of product IDs stocked out on the
+        current date at the same store. For each substitution group the
+        product belongs to, we count how many other members are stocked out
+        and distribute ``substitution_lift_on_stockout`` across the surviving
+        in-stock members.
+
+        Returns 1.0 when substitution is disabled or no group-mate is out.
+        """
+        if (
+            self.substitution is None
+            or not self.substitution.enable
+            or self.substitution.substitution_lift_on_stockout == 0.0
+        ):
+            return 1.0
+        groups = self._substitution_groups_by_product.get(product_id)
+        if not groups:
+            return 1.0
+        if product_id in stockouts_today:
+            return 1.0  # A stocked-out product can't pick up lift.
+
+        contribution = 0.0
+        for group in groups:
+            out_members = sum(
+                1 for member in group if member != product_id and member in stockouts_today
+            )
+            survivors = sum(
+                1 for member in group if member != product_id and member not in stockouts_today
+            )
+            if out_members == 0 or survivors == 0:
+                # Either no group-mate is out, or we'd divide by zero (e.g.
+                # everyone but this product is out — in that case give all
+                # the lift to this product).
+                if out_members > 0 and survivors == 0:
+                    contribution += self.substitution.substitution_lift_on_stockout * out_members
+                continue
+            # Each out member's lift is split among (survivors + 1) including
+            # this product, so this product captures one share per out member.
+            contribution += (
+                self.substitution.substitution_lift_on_stockout * out_members / (survivors + 1)
+            )
+        return 1.0 + contribution
 
     def _compute_demand(
         self,
@@ -52,6 +198,9 @@ class SalesDailyGenerator:
         is_promotion: bool,
         is_stockout: bool,
         product_launch_date: date | None,
+        store_id: int | None = None,
+        product_id: int | None = None,
+        stockouts_today_for_store: set[int] | None = None,
     ) -> int:
         """Compute demand for a single observation.
 
@@ -63,6 +212,12 @@ class SalesDailyGenerator:
             is_promotion: Whether there's an active promotion.
             is_stockout: Whether there's a stockout.
             product_launch_date: Optional launch date for new product ramp.
+            store_id: Store ID (used only by Phase 1 weather + substitution
+                effects). Required when those features are enabled.
+            product_id: Product ID (used only by Phase 1 substitution).
+                Required when substitution is enabled.
+            stockouts_today_for_store: Set of product IDs stocked out at
+                ``store_id`` on ``current_date``. Used only by substitution.
 
         Returns:
             Computed demand quantity (non-negative integer).
@@ -110,6 +265,14 @@ class SalesDailyGenerator:
                 ramp_factor = days_since_launch / ramp_days
                 demand *= ramp_factor
             # If ramp_days == 0, skip ramp calculation (demand unchanged)
+
+        # Phase 1 multipliers (each returns 1.0 when its feature is off).
+        demand *= self._yearly_seasonality_multiplier(current_date)
+        demand *= self._changepoint_multiplier(current_date)
+        if store_id is not None:
+            demand *= self._weather_multiplier(current_date, store_id)
+        if product_id is not None and stockouts_today_for_store is not None:
+            demand *= self._substitution_multiplier(product_id, stockouts_today_for_store)
 
         # Apply noise
         if self.ts_config.noise_sigma > 0:
@@ -182,6 +345,15 @@ class SalesDailyGenerator:
                             gaps.add(dates[gap_start_idx + i])
                 gap_dates[key] = gaps
 
+        # Phase 1: per-(store, date) lookup of stocked-out product IDs for
+        # substitution. Only build it when substitution is enabled — keeps
+        # the disabled-path byte-identical with pre-Phase-1.
+        stockouts_by_store_date: dict[tuple[int, date], set[int]] = {}
+        if self.substitution is not None and self.substitution.enable:
+            for (s_id, p_id), out_dates in stockouts.items():
+                for d in out_dates:
+                    stockouts_by_store_date.setdefault((s_id, d), set()).add(p_id)
+
         # Generate sales for each active combination and date
         for store_id in store_ids:
             for product_id, base_price in product_data:
@@ -203,6 +375,8 @@ class SalesDailyGenerator:
                     is_promotion = current_date in promo_dates
                     is_stockout = current_date in stockout_dates
 
+                    stockouts_today = stockouts_by_store_date.get((store_id, current_date))
+
                     quantity = self._compute_demand(
                         current_date=current_date,
                         base_date=base_date,
@@ -211,6 +385,9 @@ class SalesDailyGenerator:
                         is_promotion=is_promotion,
                         is_stockout=is_stockout,
                         product_launch_date=None,  # Could be extended
+                        store_id=store_id,
+                        product_id=product_id,
+                        stockouts_today_for_store=stockouts_today,
                     )
 
                     # Skip zero sales from stockouts to reduce data volume
