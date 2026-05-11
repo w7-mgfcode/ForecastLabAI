@@ -351,8 +351,8 @@ class ExperimentReport(BaseModel):
         recommendations: Follow-up recommendations.
     """
 
-    run_id: str = Field(..., description="Registry run identifier")
-    status: str = Field(..., description="Run status")
+    run_id: str | None = Field(None, description="Registry run identifier")
+    status: str | None = Field(None, description="Run status")
     summary: str = Field(..., description="Human-readable summary")
     metrics: dict[str, float] = Field(default_factory=dict, description="Performance metrics")
     recommendations: list[str] = Field(

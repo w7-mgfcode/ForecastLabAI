@@ -27,6 +27,7 @@ from app.features.agents.schemas import RAGAnswer
 from app.features.agents.tools.rag_tools import (
     format_citations,
     has_sufficient_evidence,
+    list_indexed_sources,
     retrieve_context,
 )
 
@@ -54,6 +55,12 @@ RESPONSE FORMAT:
 - Support with specific evidence from context
 - Include citations in [source_path:chunk_id] format
 - End with confidence assessment
+
+WHEN ASKED ABOUT KB CONTENT:
+- If user asks what is in the knowledge base (sources, indexed docs, coverage),
+  call tool_list_sources first and summarize the returned sources.
+- Do not answer "insufficient evidence" for source inventory questions without
+  checking tool_list_sources.
 
 {SAFETY_INSTRUCTIONS}
 """
@@ -167,6 +174,27 @@ def create_rag_assistant_agent() -> Agent[AgentDeps, RAGAnswer]:
             min_results=min_results,
             min_relevance=min_relevance,
         )
+
+    @agent.tool
+    async def tool_list_sources(
+        ctx: RunContext[AgentDeps],
+    ) -> dict[str, Any]:
+        """List indexed sources and chunk counts from the knowledge base.
+
+        Use this for questions like:
+        - "What is in your knowledge base?"
+        - "Which documents are indexed?"
+        - "How many chunks/sources do you have?"
+
+        Returns:
+            Source list with total_sources and total_chunks.
+        """
+        ctx.deps.increment_tool_calls()
+        logger.info(
+            "agents.rag_assistant.tool_list_sources",
+            session_id=ctx.deps.session_id,
+        )
+        return await list_indexed_sources(db=ctx.deps.db)
 
     return agent
 
