@@ -12,6 +12,9 @@ from app.features.featuresets.schemas import (
     FeatureSetConfig,
     ImputationConfig,
     LagConfig,
+    LifecycleConfig,
+    PromotionConfig,
+    ReplenishmentConfig,
     RollingConfig,
 )
 
@@ -138,6 +141,122 @@ class TestImputationConfig:
             ImputationConfig(strategies={"quantity": "invalid"})  # type: ignore[dict-item]
 
 
+class TestLifecycleConfig:
+    """Tests for LifecycleConfig validation (PRP-3.1A)."""
+
+    def test_default_values(self):
+        """Default values should be set correctly."""
+        config = LifecycleConfig()
+        assert config.include_days_since_launch is True
+        assert config.include_days_since_discontinue is True
+        assert config.lag_days == 1
+        assert config.schema_version == "1.0"
+
+    def test_rejects_lag_days_zero(self):
+        """lag_days=0 should be rejected (no leakage allowance)."""
+        with pytest.raises(ValidationError):
+            LifecycleConfig(lag_days=0)
+
+    def test_rejects_lag_days_above_max(self):
+        """lag_days above 30 should be rejected."""
+        with pytest.raises(ValidationError):
+            LifecycleConfig(lag_days=31)
+
+    def test_frozen_after_construction(self):
+        """Config should be immutable after construction."""
+        config = LifecycleConfig()
+        with pytest.raises(ValidationError):
+            config.lag_days = 7  # type: ignore[misc]
+
+    def test_rejects_extra_fields(self):
+        """Unknown fields should be rejected."""
+        with pytest.raises(ValidationError):
+            LifecycleConfig(unknown_field="value")  # type: ignore[call-arg]
+
+
+class TestReplenishmentConfig:
+    """Tests for ReplenishmentConfig validation (PRP-3.1A)."""
+
+    def test_default_values(self):
+        """Default values should be set correctly."""
+        config = ReplenishmentConfig()
+        assert config.include_days_since_last is True
+        assert config.include_count_window is True
+        assert config.lag_days == 1
+        assert config.count_window_days == 14
+        assert config.schema_version == "1.0"
+
+    def test_rejects_lag_days_out_of_bounds(self):
+        """lag_days outside [1, 30] should be rejected."""
+        with pytest.raises(ValidationError):
+            ReplenishmentConfig(lag_days=0)
+        with pytest.raises(ValidationError):
+            ReplenishmentConfig(lag_days=31)
+
+    def test_rejects_count_window_below_min(self):
+        """count_window_days below 7 should be rejected."""
+        with pytest.raises(ValidationError):
+            ReplenishmentConfig(count_window_days=6)
+
+    def test_rejects_count_window_above_max(self):
+        """count_window_days above 60 should be rejected."""
+        with pytest.raises(ValidationError):
+            ReplenishmentConfig(count_window_days=61)
+
+    def test_frozen_after_construction(self):
+        """Config should be immutable after construction."""
+        config = ReplenishmentConfig()
+        with pytest.raises(ValidationError):
+            config.lag_days = 7  # type: ignore[misc]
+
+
+class TestPromotionConfig:
+    """Tests for PromotionConfig validation (PRP-3.1A)."""
+
+    def test_default_values(self):
+        """Default values should be set correctly."""
+        config = PromotionConfig()
+        assert config.kinds_to_track == ("markdown",)
+        assert config.include_active is True
+        assert config.include_intensity is True
+        assert config.lag_days == 1
+
+    def test_accepts_all_kinds(self):
+        """All four allow-listed kinds should be accepted together."""
+        config = PromotionConfig(kinds_to_track=("pct_off", "bogo", "bundle", "markdown"))
+        assert len(config.kinds_to_track) == 4
+
+    def test_rejects_empty_kinds(self):
+        """Empty kinds_to_track should be rejected."""
+        with pytest.raises(ValidationError) as exc_info:
+            PromotionConfig(kinds_to_track=())
+        assert "at least one promotion kind" in str(exc_info.value).lower()
+
+    def test_rejects_duplicate_kinds(self):
+        """Duplicate kinds should be rejected."""
+        with pytest.raises(ValidationError) as exc_info:
+            PromotionConfig(kinds_to_track=("markdown", "markdown"))
+        assert "duplicate" in str(exc_info.value).lower()
+
+    def test_rejects_invalid_kind(self):
+        """Allow-list violation handled by Pydantic Literal narrowing."""
+        with pytest.raises(ValidationError):
+            PromotionConfig(kinds_to_track=("invalid_kind",))  # type: ignore[arg-type]
+
+    def test_rejects_lag_days_out_of_bounds(self):
+        """lag_days outside [1, 30] should be rejected."""
+        with pytest.raises(ValidationError):
+            PromotionConfig(lag_days=0)
+        with pytest.raises(ValidationError):
+            PromotionConfig(lag_days=31)
+
+    def test_frozen_after_construction(self):
+        """Config should be immutable after construction."""
+        config = PromotionConfig()
+        with pytest.raises(ValidationError):
+            config.lag_days = 7  # type: ignore[misc]
+
+
 class TestFeatureSetConfig:
     """Tests for FeatureSetConfig."""
 
@@ -213,6 +332,55 @@ class TestFeatureSetConfig:
         """Extra fields should be rejected."""
         with pytest.raises(ValidationError):
             FeatureSetConfig(name="test", unknown_field="value")  # type: ignore[call-arg]
+
+    def test_get_enabled_features_includes_phase2(self):
+        """get_enabled_features should emit Phase 2 tokens when set (PRP-3.1A)."""
+        config = FeatureSetConfig(
+            name="test",
+            lifecycle_config=LifecycleConfig(),
+            replenishment_config=ReplenishmentConfig(),
+            promotion_config=PromotionConfig(),
+        )
+        enabled = config.get_enabled_features()
+        assert "lifecycle" in enabled
+        assert "replenishment" in enabled
+        assert "promotion" in enabled
+        # Order: Phase 2 tokens appear AFTER the legacy tokens.
+        assert enabled.index("lifecycle") > -1
+        assert enabled.index("replenishment") > enabled.index("lifecycle")
+        assert enabled.index("promotion") > enabled.index("replenishment")
+
+    def test_get_enabled_features_omits_phase2_when_none(self):
+        """Phase 2 tokens absent when their sub-configs are None."""
+        config = FeatureSetConfig(name="test", lag_config=LagConfig())
+        enabled = config.get_enabled_features()
+        assert "lifecycle" not in enabled
+        assert "replenishment" not in enabled
+        assert "promotion" not in enabled
+
+    def test_config_hash_unchanged_when_phase2_omitted(self):
+        """Additive-contract regression guard (PRD §6, PRP-3.1A §15 Decision E).
+
+        Pins the hash of a minimal FeatureSetConfig (no Phase 2 fields set).
+        Adding new optional ``T | None = None`` sub-configs to FeatureSetConfig
+        MUST NOT change this hash, because ``config_hash()`` excludes None
+        values from its JSON dump. If this fails, either:
+          1. The base ``config_hash()`` semantics changed (e.g. lost
+             ``exclude_none=True``), OR
+          2. A new field with a non-None default was added to FeatureSetConfig,
+             OR
+          3. An existing field's default was changed.
+        """
+        # Baseline captured locally after PRP-3.1A landed (exclude_none=True
+        # in FeatureConfigBase.config_hash). DO NOT regenerate without
+        # confirming the change is intentional and additive.
+        expected_hash = "6c12b1a783eccdd4"
+        actual_hash = FeatureSetConfig(name="x").config_hash()
+        assert actual_hash == expected_hash, (
+            f"config_hash for minimal FeatureSetConfig changed "
+            f"(expected {expected_hash}, got {actual_hash}) — "
+            f"the additive-contract invariant is broken."
+        )
 
 
 class TestComputeFeaturesRequest:
