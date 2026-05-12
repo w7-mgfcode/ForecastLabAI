@@ -702,3 +702,236 @@ class TestPromotionFeatures:
         assert str(result.df["promo_markdown_active_lag1"].dtype) == "Int64"
         # Intensity stays plain float64.
         assert str(result.df["promo_markdown_intensity_lag1"].dtype) == "float64"
+
+
+class TestReplenishmentFeatures:
+    """Unit tests for replenishment-event features (PRP-3.1C).
+
+    These cases exercise the happy path, zero-event entities, single-event
+    entities, cutoff-boundary alignment, and dtype contracts. Time-safety is
+    covered separately in ``TestReplenishmentLeakage``.
+    """
+
+    def test_happy_path_three_events(self) -> None:
+        """Three events on (1,1) yield monotonically growing rolling counts."""
+        from app.features.featuresets.schemas import ReplenishmentConfig
+
+        sales = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=10, freq="D"),
+                "store_id": [1] * 10,
+                "product_id": [1] * 10,
+                "quantity": list(range(1, 11)),
+            }
+        )
+        events = pd.DataFrame(
+            {
+                "store_id": [1, 1, 1],
+                "product_id": [1, 1, 1],
+                "event_date": [date(2024, 1, 2), date(2024, 1, 5), date(2024, 1, 8)],
+            }
+        )
+        config = FeatureSetConfig(
+            name="test",
+            replenishment_config=ReplenishmentConfig(
+                include_days_since_last=True,
+                include_count_window=True,
+                lag_days=1,
+                count_window_days=7,
+            ),
+        )
+        service = FeatureEngineeringService(config)
+        service._replenishment_events_df = events  # type: ignore[attr-defined]
+        result = service.compute_features(sales)
+
+        # Both columns should be in feature_columns.
+        assert "days_since_last_replenishment_lag1" in result.feature_columns
+        assert "replenishment_count_w7_lag1" in result.feature_columns
+
+        # Per-row event_count = [0,1,0,0,1,0,0,1,0,0]; shifted then rolling:
+        # shift(1) = [NaN,0,1,0,0,1,0,0,1,0]; rolling(7,min_periods=1).sum():
+        # pos 7 window=[0,1,0,0,1,0,0] -> 2
+        # pos 8 window=[1,0,0,1,0,0,1] -> 3
+        # pos 9 window=[0,0,1,0,0,1,0] -> 2  (the day-2 event has now rolled
+        #   out of the trailing-7 window — this is the expected behavior of
+        #   ``count_window_days=7``).
+        # fillna 0 -> [0,0,1,1,1,2,2,2,3,2].
+        counts = result.df["replenishment_count_w7_lag1"].tolist()
+        assert counts == [0, 0, 1, 1, 1, 2, 2, 2, 3, 2]
+
+    def test_zero_events_entity(self) -> None:
+        """An entity with zero events must have count=0 and days-since=NaN.
+
+        Dtype contracts: count is int64 (with 0 fill), days-since is float64
+        (NaN for no-prior-event). PRP-3.1C §15 Decision B.
+        """
+        from app.features.featuresets.schemas import ReplenishmentConfig
+
+        sales = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=5, freq="D"),
+                "store_id": [1] * 5,
+                "product_id": [1] * 5,
+                "quantity": [1, 2, 3, 4, 5],
+            }
+        )
+        # Zero events — DataFrame with named columns but no rows.
+        events = pd.DataFrame(
+            {
+                "store_id": pd.Series([], dtype="int64"),
+                "product_id": pd.Series([], dtype="int64"),
+                "event_date": pd.Series([], dtype="datetime64[ns]"),
+            }
+        )
+        config = FeatureSetConfig(
+            name="test",
+            replenishment_config=ReplenishmentConfig(
+                include_days_since_last=True,
+                include_count_window=True,
+                lag_days=1,
+                count_window_days=7,
+            ),
+        )
+        service = FeatureEngineeringService(config)
+        service._replenishment_events_df = events  # type: ignore[attr-defined]
+        result = service.compute_features(sales)
+
+        count_col = "replenishment_count_w7_lag1"
+        days_col = "days_since_last_replenishment_lag1"
+        assert result.df[count_col].tolist() == [0, 0, 0, 0, 0]
+        assert result.df[count_col].dtype == "int64"
+        assert result.df[days_col].isna().all()
+        assert result.df[days_col].dtype == "float64"
+
+    def test_single_event_entity(self) -> None:
+        """One event on day 3; days-since and count cross the boundary cleanly."""
+        from app.features.featuresets.schemas import ReplenishmentConfig
+
+        sales = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=5, freq="D"),
+                "store_id": [1] * 5,
+                "product_id": [1] * 5,
+                "quantity": [1, 2, 3, 4, 5],
+            }
+        )
+        events = pd.DataFrame(
+            {
+                "store_id": [1],
+                "product_id": [1],
+                "event_date": [date(2024, 1, 3)],
+            }
+        )
+        config = FeatureSetConfig(
+            name="test",
+            replenishment_config=ReplenishmentConfig(
+                include_days_since_last=True,
+                include_count_window=True,
+                lag_days=1,
+                count_window_days=7,
+            ),
+        )
+        service = FeatureEngineeringService(config)
+        service._replenishment_events_df = events  # type: ignore[attr-defined]
+        result = service.compute_features(sales)
+
+        count_col = "replenishment_count_w7_lag1"
+        days_col = "days_since_last_replenishment_lag1"
+        # event_count = [0,0,1,0,0]; shift(1)=[NaN,0,0,1,0]; rolling sum =
+        # [NaN,0,0,1,1] -> fillna 0 -> [0,0,0,1,1].
+        assert result.df[count_col].tolist() == [0, 0, 0, 1, 1]
+        # Per-row days-since = [NaN, NaN, 0, 1, 2]; shift(1) =
+        # [NaN, NaN, NaN, 0, 1].
+        values = result.df[days_col].tolist()
+        for i in (0, 1, 2):
+            assert pd.isna(values[i]), f"row {i} should be NaN, got {values[i]}"
+        assert values[3] == pytest.approx(0.0)
+        assert values[4] == pytest.approx(1.0)
+
+    def test_cutoff_excludes_post_events(self) -> None:
+        """Events AFTER cutoff (filtered by caller) must not influence features.
+
+        Mirrors the loader's SQL-side ``date <= cutoff_date`` predicate.
+        """
+        from app.features.featuresets.schemas import ReplenishmentConfig
+
+        sales = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=5, freq="D"),
+                "store_id": [1] * 5,
+                "product_id": [1] * 5,
+                "quantity": [1, 2, 3, 4, 5],
+            }
+        )
+        cutoff = date(2024, 1, 4)
+        # Build events with one pre-cutoff and one post-cutoff row, then
+        # apply the same time-safety filter the loader applies SQL-side.
+        all_events = pd.DataFrame(
+            {
+                "store_id": [1, 1],
+                "product_id": [1, 1],
+                "event_date": [date(2024, 1, 2), date(2024, 1, 5)],
+            }
+        )
+        events = all_events[all_events["event_date"] <= cutoff].reset_index(drop=True)
+        assert len(events) == 1  # post-cutoff event filtered out
+
+        config = FeatureSetConfig(
+            name="test",
+            replenishment_config=ReplenishmentConfig(
+                include_days_since_last=True,
+                include_count_window=True,
+                lag_days=1,
+                count_window_days=7,
+            ),
+        )
+        service = FeatureEngineeringService(config)
+        service._replenishment_events_df = events  # type: ignore[attr-defined]
+        result = service.compute_features(sales, cutoff_date=cutoff)
+
+        # 4 rows survive the cutoff (01..04).
+        assert len(result.df) == 4
+        count_col = "replenishment_count_w7_lag1"
+        # event_count = [0,1,0,0] (post-cutoff filtered); shift(1) =
+        # [NaN,0,1,0]; rolling = [NaN,0,1,1] -> [0,0,1,1].
+        assert result.df[count_col].tolist() == [0, 0, 1, 1]
+
+    def test_dtypes_are_int64_and_float64(self) -> None:
+        """Column dtype contracts: count=int64, days-since=float64.
+
+        Verifies PRP-3.1C §15 Decision B. Tested against a small frame
+        with mixed-population entities so both NaN-then-fill paths are
+        exercised.
+        """
+        from app.features.featuresets.schemas import ReplenishmentConfig
+
+        sales = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=4, freq="D"),
+                "store_id": [1] * 4,
+                "product_id": [1] * 4,
+                "quantity": [1, 2, 3, 4],
+            }
+        )
+        events = pd.DataFrame(
+            {
+                "store_id": [1],
+                "product_id": [1],
+                "event_date": [date(2024, 1, 2)],
+            }
+        )
+        config = FeatureSetConfig(
+            name="test",
+            replenishment_config=ReplenishmentConfig(
+                include_days_since_last=True,
+                include_count_window=True,
+                lag_days=1,
+                count_window_days=7,
+            ),
+        )
+        service = FeatureEngineeringService(config)
+        service._replenishment_events_df = events  # type: ignore[attr-defined]
+        result = service.compute_features(sales)
+
+        assert result.df["replenishment_count_w7_lag1"].dtype == "int64"
+        assert result.df["days_since_last_replenishment_lag1"].dtype == "float64"
