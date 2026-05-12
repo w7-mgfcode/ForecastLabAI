@@ -42,7 +42,7 @@ Never log decrypted values, even at DEBUG. Log key NAMES only (`openai_api_key_s
 
 ## Network Security
 
-- Backend binds `0.0.0.0:8123` by default (`api_host` / `api_port` in `Settings`). [UNVERIFIED — fine on a personal LAN; would need a reverse proxy + TLS for any public exposure.]
+- Backend binds `0.0.0.0:8123` by default (`api_host` / `api_port` in `Settings`, `app/core/config.py:32-33`; the `# noqa: S104` is intentional for single-host LAN demo). Fine on a personal LAN; would need a reverse proxy + TLS for any public exposure.
 - CORS allow-list in `app/main.py`: dev permits `localhost`/`127.0.0.1`/private LAN ranges via regex; **production sets explicit origins via empty list + no regex** — review before any non-dev deploy.
 - No TLS at the app layer; rely on `docker-compose` private network for DB. Postgres password is the dev default `forecastlab/forecastlab` — change if exposing the host.
 
@@ -82,7 +82,7 @@ Dependabot watches `.github/workflows/` weekly (`.github/dependabot.yml`) — ke
 | Integration tests | pytest -m integration against Postgres service | every PR | Yes |
 | Migration apply check | alembic upgrade head on fresh DB | every PR | Yes |
 | Dependency audit | `.github/workflows/dependency-check.yml` | Weekly cron (Sun 00:00 UTC) + manual dispatch | No (out-of-band; not a per-PR gate) — but `fail_on_vulnerabilities` input defaults `true` |
-| Secrets detection | none configured [UNVERIFIED — consider adding gitleaks pre-commit hook] | — | — |
+| Secrets detection | partial — `detect-private-key` hook in `.pre-commit-config.yaml` catches private SSH/TLS keys; no broader gitleaks/trufflehog scanner is wired in | every commit (pre-commit) | No — local hook only, not a CI gate |
 
 ## Compliance Constraints
 
