@@ -48,9 +48,17 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 
 ## WebSocket Events (`/agents/stream`)
 
-[UNVERIFIED — verify against `app/features/agents/websocket.py`]
-- Client → server: `{"session_id": str, "message": str}`
-- Server → client (streamed): token deltas, tool-call announcements, tool-call results, completion event, error frames.
+Verified against `app/features/agents/websocket.py` and `app/features/agents/schemas.py:229` (`StreamEvent`):
+
+- **Client → server (per message):** `{"session_id": str, "message": str}` — both fields required; missing fields return a recoverable `error` event. The connection stays open for multiple messages within one session; each message gets a fresh DB session.
+- **Server → client (every frame):** `{"event_type": <one of below>, "data": {...}, "timestamp": <iso8601 UTC>}` (Pydantic-serialized `StreamEvent`).
+- **`event_type` values (Literal in `StreamEvent`):**
+  - `text_delta` — `data: {"delta": str}` (`TextDeltaEvent`)
+  - `tool_call_start` — `data: {"tool_name": str, "tool_call_id": str, "arguments": dict}` (`ToolCallStartEvent`)
+  - `tool_call_end` — `data: {"tool_name": str, "tool_call_id": str, "result": Any, "duration_ms": float}` (`ToolCallEndEvent`)
+  - `approval_required` — emitted when a tool in `agent_require_approval` is pending; the chat REST `/agents/sessions/{id}/approve` endpoint releases it
+  - `complete` — `data: {"message": str, "tokens_used": int, "tool_calls_count": int}` (`CompleteEvent`)
+  - `error` — `data: {"error": str, "error_type": str, "recoverable": bool}` (`ErrorEvent`). On `recoverable: false` (e.g., `session_not_found`, `session_expired`), the client should close.
 
 ## Async Events / Queues
 

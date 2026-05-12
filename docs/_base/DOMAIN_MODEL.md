@@ -1,5 +1,5 @@
 # ForecastLabAI Domain Model
-> Source: heuristic discovery from `app/features/data_platform/models.py`, `app/features/registry/models.py`, `app/features/rag/models.py`, `app/features/agents/models.py`, `app/features/forecasting/models.py`, `app/features/jobs/models.py`, `app/shared/seeder/`. [UNVERIFIED] tags mark anything that would benefit from KB cross-check.
+> Source: heuristic discovery from `app/features/data_platform/models.py`, `app/features/registry/models.py`, `app/features/rag/models.py`, `app/features/agents/models.py`, `app/features/forecasting/models.py`, `app/features/jobs/models.py`, `app/shared/seeder/`. Body spot-verified against the SQLAlchemy models on 2026-05-12.
 
 ## Bounded Contexts
 

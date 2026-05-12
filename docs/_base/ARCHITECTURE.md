@@ -1,6 +1,6 @@
 # ForecastLabAI Architecture
-> Source: heuristic discovery of `README.md`, `app/main.py`, `app/core/config.py`, `docker-compose.yml`, `.github/workflows/`, `.claude/rules/`. [UNVERIFIED] tags mark heuristic-derived content awaiting `docs/_kB/repo-map/` ground truth.
-> Last generated: 2026-05-11
+> Source: heuristic discovery of `README.md`, `app/main.py`, `app/core/config.py`, `docker-compose.yml`, `.github/workflows/`, `.claude/rules/`. Spot-verified against code on 2026-05-12.
+> Last generated: 2026-05-11 · Last verified: 2026-05-12
 
 ## System Boundaries
 
@@ -76,7 +76,7 @@ dev → main PR     →  release-please opens Release PR  →  merge Release PR 
 Local install     →  docker-compose up -d  →  alembic upgrade head  →  uvicorn  →  vite
 ```
 
-No staging/prod environments configured. Deployment target is the developer laptop or a single host — there is no managed cloud target. [UNVERIFIED — if a hosted demo exists, document it here.]
+No staging/prod environments configured. Deployment target is the developer laptop or a single host — there is no managed cloud target and no hosted demo URL. `app_env="production"` exists in config (`app/core/config.py:21`) only to select JSON logging and strict CORS; it does not imply a deployed environment.
 
 ## Observability Stack
 
@@ -85,6 +85,6 @@ No staging/prod environments configured. Deployment target is the developer lapt
 | Logs | `structlog` (JSON in prod, console in dev) | stdout only — process-local | `app/core/logging.py` |
 | Request ID | `RequestIdMiddleware` (`app/core/middleware.py`) | per-request | echoed in problem-details `request_id` |
 | Errors | RFC 7807 problem+json | per-response | `app/core/problem_details.py` |
-| Metrics | none [UNVERIFIED — none observed in code or config] | — | — |
-| Traces | none [UNVERIFIED] | — | — |
+| Metrics | none (verified: no Prometheus / OpenTelemetry / Sentry imports in `app/` or `pyproject.toml`) | — | — |
+| Traces | none (same verification) | — | — |
 | Dashboards | The React app itself surfaces operational state via Jobs/Runs/Health pages | live | `frontend/src/pages/` |
