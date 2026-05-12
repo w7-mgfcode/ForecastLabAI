@@ -138,6 +138,26 @@ class FeatureEngineeringService:
             result, cols = self._compute_lifecycle_features(result)
             feature_columns.extend(cols)
 
+        # 7. Promotion features (PRP-3.1D — Phase 2)
+        if self.config.promotion_config:
+            promotion_rows_df = getattr(self, "_promotion_rows_df", None)
+            if promotion_rows_df is None:
+                # PRP-3.1E wires the DB JOIN that sets this attribute.
+                # In unit tests, the test sets it directly on the service.
+                # An empty DataFrame is the safe no-op fallback.
+                promotion_rows_df = pd.DataFrame(
+                    columns=[
+                        "product_id",
+                        "store_id",
+                        "kind",
+                        "discount_pct",
+                        "start_date",
+                        "end_date",
+                    ]
+                )
+            result, cols = self._compute_promotion_features(result, promotion_rows_df)
+            feature_columns.extend(cols)
+
         # Compute stats
         null_counts: dict[str, int] = {}
         if feature_columns:
@@ -488,6 +508,116 @@ class FeatureEngineeringService:
                 [result[c] for c in self.entity_cols], observed=True
             ).shift(lag)
             columns.append(col_name)
+
+        return result, columns
+
+    def _compute_promotion_features(
+        self,
+        df: pd.DataFrame,
+        promotion_rows_df: pd.DataFrame,
+    ) -> tuple[pd.DataFrame, list[str]]:
+        """Compute promotion-family features (active + intensity per kind).
+
+        CRITICAL: Time-safe via ``groupby(entity_cols).shift(lag_days)`` on
+        a daily-grain indicator. Per the time-safety contract, the active
+        indicator at row D reads activity from D - lag_days. A promotion
+        active on D itself must NOT appear in active_lag{N} at D.
+
+        Date-range semantics: ``start_date <= D <= end_date`` (both inclusive).
+
+        Chain-wide promotions: rows with ``store_id`` NaN/None apply to
+        EVERY store of that product. Handled via a two-pass match (store-
+        specific OR chain-wide), never via a NaN-key merge.
+
+        Overlapping promotions on the same kind/day reduce via ``max`` over
+        ``discount_pct`` for intensity (Decision §15-C); active stays 0/1.
+
+        Args:
+            df: Sales DataFrame, pre-sorted and cutoff-filtered (per
+                compute_features pipeline).
+            promotion_rows_df: Promotion rows. Columns:
+                ``[product_id, store_id, kind, discount_pct, start_date, end_date]``.
+                ``store_id`` may be NaN (chain-wide). ``discount_pct`` may
+                be NaN (bogo / bundle kinds).
+
+        Returns:
+            Tuple of (DataFrame with new columns, list of new column names).
+        """
+        config = self.config.promotion_config
+        if config is None:
+            raise RuntimeError("_compute_promotion_features called without promotion_config")
+
+        result = df.copy()
+        columns: list[str] = []
+        lag = config.lag_days
+
+        # Defensive re-sort to match the caller invariant.
+        result = result.sort_values([*self.entity_cols, self.date_col])
+        dates = pd.to_datetime(result[self.date_col]).dt.date
+
+        # Deterministic column ordering: sorted kinds, active before intensity.
+        sorted_kinds: tuple[str, ...] = tuple(sorted(config.kinds_to_track))
+
+        for kind in sorted_kinds:
+            kind_rows = promotion_rows_df[promotion_rows_df["kind"] == kind]
+
+            # Per-row daily indicators (D-day truth, BEFORE lag shift).
+            active_today: pd.Series[Any] = pd.Series(0, index=result.index, dtype="int64")
+            intensity_today: pd.Series[Any] = pd.Series(np.nan, index=result.index, dtype="float64")
+
+            # Two-pass match: store-specific then chain-wide. Never merge on NaN keys.
+            store_specific = kind_rows[kind_rows["store_id"].notna()]
+            chain_wide = kind_rows[kind_rows["store_id"].isna()]
+
+            for _, promo in store_specific.iterrows():
+                mask = (
+                    (result["store_id"] == promo["store_id"])
+                    & (result["product_id"] == promo["product_id"])
+                    & (dates >= promo["start_date"])
+                    & (dates <= promo["end_date"])
+                )
+                active_today = active_today.where(~mask, 1)
+                disc = promo["discount_pct"]
+                if pd.notna(disc):
+                    # Overlapping-on-same-kind reduction = max (Decision §15-C).
+                    masked_disc = intensity_today.where(~mask, float(disc))
+                    intensity_today = pd.concat([intensity_today, masked_disc], axis=1).max(axis=1)
+
+            for _, promo in chain_wide.iterrows():
+                mask = (
+                    (result["product_id"] == promo["product_id"])
+                    & (dates >= promo["start_date"])
+                    & (dates <= promo["end_date"])
+                )
+                active_today = active_today.where(~mask, 1)
+                disc = promo["discount_pct"]
+                if pd.notna(disc):
+                    masked_disc = intensity_today.where(~mask, float(disc))
+                    intensity_today = pd.concat([intensity_today, masked_disc], axis=1).max(axis=1)
+
+            # CRITICAL: groupby(entity_cols).shift(lag) — the leakage gate.
+            # Feature at row D reads daily indicator at D - lag.
+            if config.include_active:
+                col = f"promo_{kind}_active_lag{lag}"
+                shifted_active = (
+                    result.assign(_a=active_today)
+                    .groupby(self.entity_cols, observed=True)["_a"]
+                    .shift(lag)
+                )
+                # Nullable Int64 preserves NaN at the start of each series
+                # (mirrors the lag-feature idiom — Decision §15-D).
+                result[col] = shifted_active.astype("Int64")
+                columns.append(col)
+
+            if config.include_intensity:
+                col = f"promo_{kind}_intensity_lag{lag}"
+                shifted_intensity = (
+                    result.assign(_i=intensity_today)
+                    .groupby(self.entity_cols, observed=True)["_i"]
+                    .shift(lag)
+                )
+                result[col] = shifted_intensity.astype("float64")
+                columns.append(col)
 
         return result, columns
 
