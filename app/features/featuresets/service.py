@@ -133,6 +133,11 @@ class FeatureEngineeringService:
             result, cols = self._compute_exogenous_features(result)
             feature_columns.extend(cols)
 
+        # 6. Lifecycle features (PRP-3.1B — Phase 2)
+        if self.config.lifecycle_config:
+            result, cols = self._compute_lifecycle_features(result)
+            feature_columns.extend(cols)
+
         # Compute stats
         null_counts: dict[str, int] = {}
         if feature_columns:
@@ -400,6 +405,89 @@ class FeatureEngineeringService:
                 "is_stockout"
             ].shift(1)
             columns.append("stockout_lag_1")
+
+        return result, columns
+
+    def _compute_lifecycle_features(self, df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+        """Compute product-lifecycle features from launch/discontinue dates.
+
+        CRITICAL: This method assumes ``df`` has already been sorted by
+        [*entity_cols, date_col] and cutoff-filtered upstream in
+        :meth:`compute_features`. It does NOT re-sort or re-filter.
+
+        The compute is two-step:
+          1. Per-row date deltas: ``date - launch_date`` (int days, NaN-safe).
+          2. Lagged by ``config.lag_days`` per ``(store_id, product_id)`` to
+             ensure the value at row ``i`` reflects only data at row
+             ``i - lag_days``.
+
+        Source columns (must be joined upstream — typically by an extended
+        :class:`FeatureDataLoader`; see PRP-3.1E):
+          * ``launch_date`` — ``datetime.date | NaT`` per product
+          * ``discontinue_date`` — ``datetime.date | NaT`` per product
+
+        Defensive behavior: if BOTH source columns are absent (the legacy
+        ``/featuresets/compute`` endpoint does not join product attrs), emit
+        zero columns and a single info-level log line. This preserves the
+        additive-contract invariant: callers who set ``lifecycle_config`` but
+        don't join attrs see ``"lifecycle"`` in ``enabled_features`` but no
+        new columns in ``feature_columns``. The end-to-end wiring lands in
+        PRP-3.1E.
+
+        Note on signed deltas: ``days_since_discontinue`` is signed (negative
+        pre-retire, positive post-retire). LightGBM learns the sign — do NOT
+        clip to non-negative.
+
+        Args:
+            df: Input dataframe (already sorted + cutoff-filtered).
+
+        Returns:
+            Tuple of (dataframe with lifecycle features, list of new column
+            names).
+        """
+        config = self.config.lifecycle_config
+        if config is None:
+            raise RuntimeError("_compute_lifecycle_features called without lifecycle_config")
+
+        result = df.copy()
+        columns: list[str] = []
+        lag = config.lag_days
+
+        # Defensive: skip silently if product attrs were not joined upstream.
+        # PRP-3.1E will extend FeatureDataLoader to join product.launch_date /
+        # product.discontinue_date; until then, callers without an extended
+        # loader see the "lifecycle" family token but zero new columns.
+        if "launch_date" not in df.columns and "discontinue_date" not in df.columns:
+            logger.info(
+                "featureops.lifecycle_skipped_no_product_attrs",
+                reason="launch_date / discontinue_date columns absent from input df",
+                hint="loader must join product.launch_date / product.discontinue_date "
+                "before calling compute_features (see PRP-3.1E)",
+            )
+            return result, columns
+
+        date_series = pd.to_datetime(result[self.date_col])
+
+        if config.include_days_since_launch and "launch_date" in df.columns:
+            launch = pd.to_datetime(result["launch_date"])
+            # Pre-shift delta: int days where both dates set, NaN otherwise.
+            delta_launch: pd.Series[Any] = (date_series - launch).dt.days
+            # Lag per (store_id, product_id) so row i reflects row i-lag's delta.
+            col_name = f"days_since_launch_lag{lag}"
+            result[col_name] = delta_launch.groupby(
+                [result[c] for c in self.entity_cols], observed=True
+            ).shift(lag)
+            columns.append(col_name)
+
+        if config.include_days_since_discontinue and "discontinue_date" in df.columns:
+            discontinue = pd.to_datetime(result["discontinue_date"])
+            # Signed delta: negative pre-retire, positive post-retire, NaN if NULL.
+            delta_discontinue: pd.Series[Any] = (date_series - discontinue).dt.days
+            col_name = f"days_since_discontinue_lag{lag}"
+            result[col_name] = delta_discontinue.groupby(
+                [result[c] for c in self.entity_cols], observed=True
+            ).shift(lag)
+            columns.append(col_name)
 
         return result, columns
 
