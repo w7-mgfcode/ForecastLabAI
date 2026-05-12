@@ -60,6 +60,24 @@ rm -rf .venv && uv sync --extra dev
 rm -rf frontend/node_modules && corepack enable pnpm && cd frontend && pnpm install && pnpm rebuild esbuild
 ```
 
+### release-please skipped the bump after a dev → main merge
+**Symptoms:** `dev → main` PR is merged, `CD Release` workflow on `main` completes in ~10s, **no Release PR** is opened. release-please log shows `No user facing commits found since <sha> - skipping`.
+**Root cause:** `gh pr merge --merge` uses the **PR title** as the merge-commit subject. If that subject is a valid conventional commit of a non-bumping type (`chore`, `docs`, `refactor`, `test`, `ci`), release-please reads it at face value, classifies the whole merge as non-bumping, and stops. Prior dev→main merges done via the GitHub web UI used the default `Merge pull request #N from <branch>` subject — non-conventional — so release-please traversed to the underlying commits and bumped correctly.
+**Diagnosis:**
+```bash
+git log origin/main -1 --format='%s'         # if this matches type(scope): ..., that's the trap
+gh run view <cd-release-run-id> --log | grep -E "(Considering|No user facing)"
+```
+**Prevention (any one of):**
+- Merge dev → main via the **GitHub web UI** (uses default non-conventional subject).
+- Force a non-conventional subject from the CLI: `gh pr merge <N> --merge --subject "Merge pull request #<N> from w7-mgfcode/dev"`.
+- Title the dev → main PR with a `feat:` or `fix:` type so the subject bumps regardless.
+**Recovery (after the trap fires):**
+1. Open an issue tracking the release (`release: cut vX.Y.Z for ...`).
+2. Branch off `dev`: `git switch -c feat/release-trigger-X-Y-Z`.
+3. `git commit --allow-empty -m "feat(release): trigger vX.Y.Z release for <slice> (#<issue>)"`.
+4. PR to `main`, CI green, admin-merge — the empty `feat:` becomes the merge subject and release-please bumps PATCH (pre-1.0 config). Reference example: PRs #99 → #100 → #101 for v0.2.8.
+
 ## Break-Glass Procedures
 
 There is no "production" — break-glass is N/A. The closest equivalent is the seeder:
@@ -81,9 +99,12 @@ There are no managed secrets — keys live in the developer's `.env`. Rotation =
 ```bash
 # from dev, ensure CI green
 gh pr create --base main --head dev --title "release: ..."
-# merge PR → release-please opens "chore(main): release X.Y.Z" PR on main
+# merge PR via the GitHub web UI (or with an explicit non-conventional --subject)
+#   → release-please opens "chore(main): release X.Y.Z" PR on main
 # merge that PR → release-please tags vX.Y.Z and cd-release.yml uploads wheel
 ```
+
+> ⚠️ **Do NOT** merge with `gh pr merge --merge` if the PR title is a non-bumping conventional commit (`chore(...)`, `docs(...)`, etc.) — the merge-commit subject becomes the PR title verbatim and release-please will skip the bump. See the "release-please skipped the bump after a dev → main merge" incident above.
 
 ### Rollback a release
 ```bash
