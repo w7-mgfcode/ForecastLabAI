@@ -58,24 +58,24 @@ jobs:
       - name: Lint check
         id: lint
         run: |
-          uv run ruff check .
-          uv run ruff format --check .
+          uv run --frozen ruff check .
+          uv run --frozen ruff format --check .
 
       - name: Type check
         id: typecheck
         run: |
-          uv run mypy app/
-          uv run pyright app/
+          uv run --frozen mypy app/
+          uv run --frozen pyright app/
 
       - name: Run migrations
         id: migration
-        run: uv run alembic upgrade head
+        run: uv run --frozen alembic upgrade head
 
       - name: Run tests
         id: test
         env:
           APP_ENV: testing
-        run: uv run pytest -v --tb=short
+        run: uv run --frozen pytest -v --tb=short
 
   create-snapshot:
     name: Create Audit Snapshot
