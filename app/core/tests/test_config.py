@@ -11,7 +11,9 @@ def test_settings_has_defaults(monkeypatch):
     monkeypatch.delenv("LOG_LEVEL", raising=False)
     monkeypatch.delenv("LOG_FORMAT", raising=False)
 
-    settings = Settings()
+    # _env_file=None bypasses .env so test asserts true defaults
+    # (see docs/_base/RUNBOOKS.md: "Settings tests fail because they pick up the local .env")
+    settings = Settings(_env_file=None)
 
     assert settings.app_name == "ForecastLabAI"
     assert settings.app_env == "development"

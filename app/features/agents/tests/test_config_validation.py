@@ -42,21 +42,35 @@ class TestModelIdentifierValidation:
 class TestAPIKeyValidation:
     """Test API key validation for models."""
 
+    # Patches base.get_settings (not just env vars) because get_settings is @lru_cache'd
+    # in app/core/config.py; setting an env var doesn't invalidate the cached singleton.
+    # _env_file=None bypasses .env so a developer's real key doesn't leak in.
+    # See docs/_base/RUNBOOKS.md: "Settings tests fail because they pick up the local .env".
+
     def test_validate_anthropic_key_missing(self, monkeypatch):
         """Test validation fails when Anthropic key missing."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        monkeypatch.setattr(
+            "app.features.agents.agents.base.get_settings",
+            lambda: Settings(_env_file=None, anthropic_api_key=""),
+        )
         with pytest.raises(ValueError, match="Anthropic API key not configured"):
             validate_api_key_for_model("anthropic:claude-sonnet-4-5")
 
     def test_validate_google_key_missing(self, monkeypatch):
         """Test validation fails when Google key missing."""
-        monkeypatch.setenv("GOOGLE_API_KEY", "")
+        monkeypatch.setattr(
+            "app.features.agents.agents.base.get_settings",
+            lambda: Settings(_env_file=None, google_api_key=""),
+        )
         with pytest.raises(ValueError, match="Google API key not configured"):
             validate_api_key_for_model("google-gla:gemini-3-flash")
 
     def test_validate_openai_key_missing(self, monkeypatch):
         """Test validation fails when OpenAI key missing."""
-        monkeypatch.setenv("OPENAI_API_KEY", "")
+        monkeypatch.setattr(
+            "app.features.agents.agents.base.get_settings",
+            lambda: Settings(_env_file=None, openai_api_key=""),
+        )
         with pytest.raises(ValueError, match="OpenAI API key not configured"):
             validate_api_key_for_model("openai:gpt-4o")
 
