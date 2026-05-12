@@ -190,8 +190,9 @@ class TestGetStatus:
         mock_db = AsyncMock()
 
         # Mock the count queries - return different values for each table.
-        # Phase 1 adds exogenous_signals (2520) and sales_returns (3650).
-        mock_results = [10, 50, 365, 182500, 182500, 1500, 500, 2520, 3650]
+        # Phase 1 adds exogenous_signals (2520) and sales_returns (3650);
+        # Phase 2 adds replenishment_events (180).
+        mock_results = [10, 50, 365, 182500, 182500, 1500, 500, 2520, 3650, 180]
         mock_db.execute.side_effect = [
             *[MagicMock(scalar=MagicMock(return_value=count)) for count in mock_results],
             # Date range query
@@ -208,15 +209,16 @@ class TestGetStatus:
         assert status.sales == 182500
         assert status.exogenous_signals == 2520
         assert status.sales_returns == 3650
+        assert status.replenishment_events == 180
 
     @pytest.mark.asyncio
     async def test_empty_database(self):
         """Test status for empty database."""
         mock_db = AsyncMock()
 
-        # Mock empty counts (9 tables: 7 original + 2 Phase 1).
+        # Mock empty counts (10 tables: 7 original + 2 Phase 1 + 1 Phase 2).
         mock_db.execute.side_effect = [
-            *[MagicMock(scalar=MagicMock(return_value=0)) for _ in range(9)],
+            *[MagicMock(scalar=MagicMock(return_value=0)) for _ in range(10)],
         ]
 
         status = await service.get_status(mock_db)
@@ -226,6 +228,7 @@ class TestGetStatus:
         assert status.sales == 0
         assert status.exogenous_signals == 0
         assert status.sales_returns == 0
+        assert status.replenishment_events == 0
         assert status.date_range_start is None
         assert status.date_range_end is None
 

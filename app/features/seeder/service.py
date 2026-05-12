@@ -18,6 +18,7 @@ from app.features.data_platform.models import (
     PriceHistory,
     Product,
     Promotion,
+    ReplenishmentEvent,
     SalesDaily,
     SalesReturn,
     Store,
@@ -25,10 +26,15 @@ from app.features.data_platform.models import (
 from app.features.seeder import schemas
 from app.shared.seeder import DataSeeder, ScenarioPreset, SeederConfig
 from app.shared.seeder.config import (
+    BundleConfig,
     ChangepointConfig,
     ChangepointEvent,
+    ChannelConfig,
     DimensionConfig,
     ExogenousSignalConfig,
+    LeadTimeConfig,
+    LifecycleConfig,
+    MarkdownConfig,
     MultiSeasonalityConfig,
     ReturnsConfig,
     SparsityConfig,
@@ -118,6 +124,69 @@ def _apply_phase1_overrides(config: SeederConfig, params: schemas.GenerateParams
         )
 
 
+def _apply_phase2_overrides(config: SeederConfig, params: schemas.GenerateParams) -> None:
+    """Apply Phase 2 (retail-depth) overrides from API params onto ``config``.
+
+    Mutates ``config`` in place. Each override is no-op when the matching
+    enable flag is False, so existing scenarios stay byte-identical when
+    Phase 2 params are omitted.
+    """
+    if params.enable_multichannel:
+        mix: dict[str, float] = (
+            dict(params.channel_mix)
+            if params.channel_mix is not None
+            else {"in_store": 0.7, "online": 0.2, "click_collect": 0.1}
+        )
+        config.channels = ChannelConfig(
+            enable_multichannel=True,
+            channel_mix=mix,
+            online_promo_uplift=(
+                params.online_promo_uplift if params.online_promo_uplift is not None else 1.0
+            ),
+            online_substitution_to_instore=(
+                params.online_substitution_to_instore
+                if params.online_substitution_to_instore is not None
+                else 0.0
+            ),
+        )
+
+    if params.enable_lifecycle:
+        config.lifecycle = LifecycleConfig(
+            enable=True,
+            discontinue_probability=(
+                params.lifecycle_discontinue_probability
+                if params.lifecycle_discontinue_probability is not None
+                else 0.0
+            ),
+        )
+
+    if params.enable_bundles:
+        config.bundles = BundleConfig(
+            enable=True,
+            bundle_probability=(
+                params.bundle_probability if params.bundle_probability is not None else 0.2
+            ),
+        )
+
+    if params.enable_markdowns:
+        config.markdowns = MarkdownConfig(
+            enable=True,
+            trigger=(
+                params.markdown_trigger
+                if params.markdown_trigger is not None
+                else "lifecycle_decline"
+            ),
+        )
+
+    if params.enable_lead_time:
+        config.lead_time = LeadTimeConfig(
+            enable=True,
+            mean_lead_time_days=(
+                params.mean_lead_time_days if params.mean_lead_time_days is not None else 7
+            ),
+        )
+
+
 def _build_config_from_params(params: schemas.GenerateParams) -> SeederConfig:
     """Build SeederConfig from API parameters.
 
@@ -157,6 +226,7 @@ def _build_config_from_params(params: schemas.GenerateParams) -> SeederConfig:
         )
 
     _apply_phase1_overrides(config, params)
+    _apply_phase2_overrides(config, params)
 
     settings = get_settings()
     config.batch_size = settings.seeder_batch_size
@@ -187,6 +257,7 @@ async def get_status(db: AsyncSession) -> schemas.SeederStatus:
         ("promotions", Promotion),
         ("exogenous_signals", ExogenousSignal),
         ("sales_returns", SalesReturn),
+        ("replenishment_events", ReplenishmentEvent),
     ]
 
     counts: dict[str, int] = {}
@@ -223,6 +294,7 @@ async def get_status(db: AsyncSession) -> schemas.SeederStatus:
         promotions=counts["promotions"],
         exogenous_signals=counts["exogenous_signals"],
         sales_returns=counts["sales_returns"],
+        replenishment_events=counts["replenishment_events"],
         date_range_start=date_range_start,
         date_range_end=date_range_end,
         last_updated=last_updated,
@@ -341,6 +413,7 @@ async def generate_data(
                 "inventory": 0,
                 "exogenous_signals": 0,
                 "sales_returns": 0,
+                "replenishment_events": 0,
             },
             duration_seconds=0.0,
             message=f"Dry run: would generate data with scenario '{params.scenario}'",
@@ -385,6 +458,7 @@ async def generate_data(
             "inventory": result.inventory_count,
             "exogenous_signals": result.exogenous_count,
             "sales_returns": result.returns_count,
+            "replenishment_events": result.replenishment_count,
         },
         duration_seconds=round(duration, 2),
         message=f"Successfully generated {result.sales_count:,} sales records with seed {params.seed}",
@@ -455,6 +529,7 @@ async def append_data(
             "inventory": result.inventory_count,
             "exogenous_signals": result.exogenous_count,
             "sales_returns": result.returns_count,
+            "replenishment_events": result.replenishment_count,
         },
         duration_seconds=round(duration, 2),
         message=f"Appended {result.sales_count:,} sales records for date range {params.start_date} to {params.end_date}",

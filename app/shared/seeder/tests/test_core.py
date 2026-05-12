@@ -233,13 +233,16 @@ class TestVerifyDataIntegrity:
     async def test_returns_empty_list_when_valid(self, seeder):
         """Test empty list returned when data is valid."""
         mock_db = AsyncMock()
-        # verify_data_integrity now makes 6 execute calls:
+        # verify_data_integrity now makes 9 execute calls:
         # 1. orphan check
         # 2. negative qty check
         # 3. min/max date check
         # 4. calendar count
         # 5. (Phase 1) sales_returns non-positive check
         # 6. (Phase 1) exogenous_signal is_global/store_id consistency
+        # 7. (Phase 2) bundle/BOGO bundle_member_product_ids non-NULL
+        # 8. (Phase 2) discontinue_date >= launch_date
+        # 9. (Phase 2) replenishment received_qty <= ordered_qty
         mock_result1 = MagicMock()
         mock_result1.scalar.return_value = 0  # no orphans
         mock_result2 = MagicMock()
@@ -252,6 +255,12 @@ class TestVerifyDataIntegrity:
         mock_result5.scalar.return_value = 0  # no bad returns
         mock_result6 = MagicMock()
         mock_result6.scalar.return_value = 0  # no inconsistent exogenous rows
+        mock_result7 = MagicMock()
+        mock_result7.scalar.return_value = 0  # no bad bundles
+        mock_result8 = MagicMock()
+        mock_result8.scalar.return_value = 0  # no bad lifecycle dates
+        mock_result9 = MagicMock()
+        mock_result9.scalar.return_value = 0  # no bad replenishment fills
 
         mock_db.execute.side_effect = [
             mock_result1,
@@ -260,6 +269,9 @@ class TestVerifyDataIntegrity:
             mock_result4,
             mock_result5,
             mock_result6,
+            mock_result7,
+            mock_result8,
+            mock_result9,
         ]
 
         errors = await seeder.verify_data_integrity(mock_db)
@@ -282,6 +294,12 @@ class TestVerifyDataIntegrity:
         mock_result5.scalar.return_value = 0  # bad returns
         mock_result6 = MagicMock()
         mock_result6.scalar.return_value = 0  # inconsistent exogenous
+        mock_result7 = MagicMock()
+        mock_result7.scalar.return_value = 0  # bad bundles
+        mock_result8 = MagicMock()
+        mock_result8.scalar.return_value = 0  # bad lifecycle dates
+        mock_result9 = MagicMock()
+        mock_result9.scalar.return_value = 0  # bad replenishment fills
 
         mock_db.execute.side_effect = [
             mock_result1,
@@ -290,6 +308,9 @@ class TestVerifyDataIntegrity:
             mock_result4,
             mock_result5,
             mock_result6,
+            mock_result7,
+            mock_result8,
+            mock_result9,
         ]
 
         errors = await seeder.verify_data_integrity(mock_db)
@@ -312,6 +333,12 @@ class TestVerifyDataIntegrity:
         mock_result5.scalar.return_value = 0  # bad returns
         mock_result6 = MagicMock()
         mock_result6.scalar.return_value = 0  # inconsistent exogenous
+        mock_result7 = MagicMock()
+        mock_result7.scalar.return_value = 0  # bad bundles
+        mock_result8 = MagicMock()
+        mock_result8.scalar.return_value = 0  # bad lifecycle dates
+        mock_result9 = MagicMock()
+        mock_result9.scalar.return_value = 0  # bad replenishment fills
 
         mock_db.execute.side_effect = [
             mock_result1,
@@ -320,6 +347,9 @@ class TestVerifyDataIntegrity:
             mock_result4,
             mock_result5,
             mock_result6,
+            mock_result7,
+            mock_result8,
+            mock_result9,
         ]
 
         errors = await seeder.verify_data_integrity(mock_db)
