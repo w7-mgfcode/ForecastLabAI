@@ -48,10 +48,10 @@ jobs:
         run: uv sync --frozen --all-extras --dev
 
       - name: Run Ruff linter
-        run: uv run ruff check .
+        run: uv run --frozen ruff check .
 
       - name: Run Ruff formatter check
-        run: uv run ruff format --check .
+        run: uv run --frozen ruff format --check .
 
   typecheck:
     name: Type Check
@@ -74,10 +74,10 @@ jobs:
         run: uv sync --frozen --all-extras --dev
 
       - name: Run MyPy
-        run: uv run mypy app/
+        run: uv run --frozen mypy app/
 
       - name: Run Pyright
-        run: uv run pyright app/
+        run: uv run --frozen pyright app/
 
   test:
     name: Test
@@ -118,13 +118,13 @@ jobs:
       - name: Run migrations
         env:
           DATABASE_URL: postgresql+asyncpg://forecastlab:forecastlab@localhost:5432/forecastlab_test
-        run: uv run alembic upgrade head
+        run: uv run --frozen alembic upgrade head
 
       - name: Run tests
         env:
           DATABASE_URL: postgresql+asyncpg://forecastlab:forecastlab@localhost:5432/forecastlab_test
           APP_ENV: testing
-        run: uv run pytest -v --tb=short
+        run: uv run --frozen pytest -v --tb=short
 
   migration-check:
     name: Migration Check
@@ -165,12 +165,12 @@ jobs:
       - name: Apply migrations to fresh DB
         env:
           DATABASE_URL: postgresql+asyncpg://forecastlab:forecastlab@localhost:5432/forecastlab_migration_test
-        run: uv run alembic upgrade head
+        run: uv run --frozen alembic upgrade head
 
       - name: Verify no pending migrations
         env:
           DATABASE_URL: postgresql+asyncpg://forecastlab:forecastlab@localhost:5432/forecastlab_migration_test
         run: |
           # Check that current head matches database
-          uv run alembic current
+          uv run --frozen alembic current
           # This would fail if there are unapplied migrations
