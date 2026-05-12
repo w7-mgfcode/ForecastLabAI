@@ -283,6 +283,119 @@ group-mates.
 - `GET /seeder/exogenous?signal_name=&start_date=&end_date=&store_id=` returns signal rows.
 - `GET /seeder/status` adds `exogenous_signals` and `sales_returns` counts.
 
+## Phase 2 Retail Depth Extensions
+
+Phase 2 adds five orthogonal toggles for richer retail realism: multi-channel
+sales, product lifecycles, bundle/BOGO promotions, clearance markdowns, and
+replenishment lead times. Like Phase 1, every toggle defaults off — the
+disabled path is byte-identical with pre-Phase-2 output for every existing
+scenario.
+
+### Multi-Channel Sales
+
+Splits each emitted `sales_daily` row across channels drawn from a configurable
+mix.
+
+```json
+{
+  "enable_multichannel": true,
+  "channel_mix": {"in_store": 0.6, "online": 0.3, "click_collect": 0.1},
+  "online_promo_uplift": 1.2,
+  "online_substitution_to_instore": 0.1
+}
+```
+
+- Allow-list for channel keys: `in_store`, `online`, `click_collect`, `wholesale`.
+- Weights must be non-negative; at least one must be positive.
+- `online_promo_uplift` multiplies quantity for online rows on promo dates.
+- `online_substitution_to_instore` shifts the effective mix toward `online`
+  during promos (0.0 = independent; 1.0 = pure substitution).
+
+### Product Lifecycles
+
+Assigns each product a `launch_date` (and optionally a `discontinue_date`) and
+shapes demand over intro → growth → maturity → decline → discontinued.
+
+```json
+{
+  "enable_lifecycle": true,
+  "lifecycle_discontinue_probability": 0.05
+}
+```
+
+When enabled:
+- `Product.launch_date` / `Product.discontinue_date` are populated.
+- `SalesDailyGenerator` applies the lifecycle multiplier per `(product, date)`.
+- The legacy `new_product_ramp_days` linear ramp is suppressed to avoid
+  double-attenuation.
+
+### Bundle / BOGO Promotions
+
+Converts a fraction of `PromotionGenerator`'s output into `kind='bundle'` or
+`kind='bogo'` rows with explicit member product IDs.
+
+```json
+{
+  "enable_bundles": true,
+  "bundle_probability": 0.2
+}
+```
+
+- `bundle_probability` is the per-promotion conversion rate.
+- Each converted row carries a `bundle_member_product_ids` list (enforced by
+  the `ck_promotion_bundle_members_consistency` CHECK).
+
+### Markdowns (Clearance)
+
+Emits `Promotion(kind='markdown')` rows + companion `PriceHistory` drops on
+two triggers:
+
+```json
+{
+  "enable_markdowns": true,
+  "markdown_trigger": "lifecycle_decline"
+}
+```
+
+- `lifecycle_decline` (default): fires chain-wide on the first date a product
+  enters the decline stage. Requires `enable_lifecycle=true` to produce rows.
+- `stockout_risk`: fires per-`(store, product)` ending the day before each
+  observed stockout, with the configured `markdown_duration_days` window.
+- `age_days` is **deferred** — see issue [#94](https://github.com/w7-mgfcode/ForecastLabAI/issues/94).
+  The generator raises `NotImplementedError` for that mode.
+
+### Replenishment Lead Time
+
+Emits `replenishment_event` rows that mark receipts of inbound stock per
+`(store, product)` PO chain.
+
+```json
+{
+  "enable_lead_time": true,
+  "mean_lead_time_days": 7
+}
+```
+
+- One PO every `order_frequency_days` (default 14) per `(store, product)`.
+- Lead time sampled Gaussian; fill rate sampled Gaussian and clamped to [0, 1].
+- Receipts past the seeded `end_date` are dropped to keep the FK to
+  `calendar` valid.
+
+### Phase 2 API surface
+
+- `POST /seeder/generate` accepts all five Phase 2 enable flags plus
+  `channel_mix`, `online_promo_uplift`, `online_substitution_to_instore`,
+  `lifecycle_discontinue_probability`, `bundle_probability`, `markdown_trigger`,
+  and `mean_lead_time_days`. Defaults keep Phase 2 off.
+- `GET /seeder/channels` returns the sorted allow-list for
+  `sales_daily.channel` and `ChannelConfig.channel_mix` keys —
+  `["click_collect", "in_store", "online", "wholesale"]`.
+- `GET /dimensions/products/{id}/lifecycle-curve` returns the reference
+  demand-multiplier curve for a product using the default `LifecycleConfig`
+  ramp parameters (respects the product's own `launch_date` /
+  `discontinue_date`). Useful for UI charts.
+- `GET /seeder/status` adds a `replenishment_events` count.
+
 ## Data Integrity
 
 The seeder enforces data integrity:
@@ -295,6 +408,11 @@ The seeder enforces data integrity:
 6. **Phase 1 — Exogenous consistency**: every `exogenous_signal` row satisfies
    `is_global = true ⇔ store_id IS NULL` (enforced by a CHECK constraint and verified
    by `verify_data_integrity`)
+7. **Phase 2 — Bundle members non-NULL**: every `promotion` row with
+   `kind in (bundle, bogo)` carries a non-NULL `bundle_member_product_ids`
+8. **Phase 2 — Lifecycle ordering**: `discontinue_date >= launch_date` when both are set
+9. **Phase 2 — Replenishment fill**: `received_qty <= ordered_qty` on every
+   `replenishment_event` row
 
 Verify with:
 ```bash
