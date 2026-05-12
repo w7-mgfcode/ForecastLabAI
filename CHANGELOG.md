@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.8](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.7...v0.2.8) (2026-05-12)
+
+
+### Features
+
+* **release:** trigger v0.2.8 release for seeder phases 1+2 ([#98](https://github.com/w7-mgfcode/ForecastLabAI/issues/98)) ([#99](https://github.com/w7-mgfcode/ForecastLabAI/issues/99)) ([d4e7201](https://github.com/w7-mgfcode/ForecastLabAI/commit/d4e720183fa3e52ecedbedce132e8a728bf16fe5))
+
 ## [0.2.7](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.6...v0.2.7) (2026-05-11)
 
 
