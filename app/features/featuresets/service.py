@@ -164,9 +164,7 @@ class FeatureEngineeringService:
             # PRP-3.1E wires the DB JOIN that sets this attribute via the
             # loader; tests set it via private-attr access. Mirrors the
             # PRP-3.1D promotion sidecar pattern (no public setter).
-            result, cols = self._compute_replenishment_features(
-                result, events_df=events_df
-            )
+            result, cols = self._compute_replenishment_features(result, events_df=events_df)
             feature_columns.extend(cols)
 
         # Compute stats
