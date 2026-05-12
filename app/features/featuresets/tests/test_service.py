@@ -11,6 +11,7 @@ from app.features.featuresets.schemas import (
     ImputationConfig,
     LagConfig,
     LifecycleConfig,
+    PromotionConfig,
     RollingConfig,
 )
 from app.features.featuresets.service import FeatureEngineeringService
@@ -441,3 +442,263 @@ class TestLifecycleFeatures:
         # -> row 1 (date=2024-01-02, lag1 reflects row 0) = 214
         expected = (date(2024, 1, 1) - date(2023, 6, 1)).days
         assert result.df.iloc[1]["days_since_launch_lag1"] == expected
+
+
+class TestPromotionFeatures:
+    """Tests for promotion feature computation (PRP-3.1D)."""
+
+    def test_single_kind_happy_path(
+        self,
+        sample_time_series: pd.DataFrame,
+        phase2_promotion_rows_df: pd.DataFrame,
+    ) -> None:
+        """Single-kind config produces exactly active+intensity columns for that kind."""
+        config = FeatureSetConfig(
+            name="test",
+            promotion_config=PromotionConfig(kinds_to_track=("markdown",)),
+        )
+        service = FeatureEngineeringService(config)
+        service._promotion_rows_df = phase2_promotion_rows_df  # type: ignore[attr-defined]
+        result = service.compute_features(sample_time_series)
+
+        assert "promo_markdown_active_lag1" in result.feature_columns
+        assert "promo_markdown_intensity_lag1" in result.feature_columns
+        # Determinism: exactly 2 columns, active before intensity.
+        promo_cols = [c for c in result.feature_columns if c.startswith("promo_")]
+        assert promo_cols == [
+            "promo_markdown_active_lag1",
+            "promo_markdown_intensity_lag1",
+        ]
+
+    def test_multi_kind_produces_all_columns_sorted(
+        self,
+        sample_time_series: pd.DataFrame,
+        phase2_promotion_rows_df: pd.DataFrame,
+    ) -> None:
+        """Multi-kind config produces columns in deterministic (sorted-kind) order."""
+        config = FeatureSetConfig(
+            name="test",
+            promotion_config=PromotionConfig(
+                # Intentionally NOT alphabetical — assert the method sorts.
+                kinds_to_track=("pct_off", "markdown"),
+            ),
+        )
+        service = FeatureEngineeringService(config)
+        service._promotion_rows_df = phase2_promotion_rows_df  # type: ignore[attr-defined]
+        result = service.compute_features(sample_time_series)
+
+        promo_cols = [c for c in result.feature_columns if c.startswith("promo_")]
+        # Decision §15-A: sorted by kind, then active before intensity.
+        assert promo_cols == [
+            "promo_markdown_active_lag1",
+            "promo_markdown_intensity_lag1",
+            "promo_pct_off_active_lag1",
+            "promo_pct_off_intensity_lag1",
+        ]
+
+    def test_chain_wide_promo_applies_to_all_stores(
+        self,
+        multi_series_time_series: pd.DataFrame,
+    ) -> None:
+        """A chain-wide promo (store_id IS NULL) applies to every store of the product."""
+        promo_rows = pd.DataFrame(
+            {
+                "product_id": [1],
+                "store_id": [None],
+                "kind": ["pct_off"],
+                "discount_pct": [0.10],
+                "start_date": [date(2024, 1, 3)],
+                "end_date": [date(2024, 1, 5)],
+            }
+        )
+        config = FeatureSetConfig(
+            name="test",
+            promotion_config=PromotionConfig(kinds_to_track=("pct_off",)),
+        )
+        service = FeatureEngineeringService(config)
+        service._promotion_rows_df = promo_rows  # type: ignore[attr-defined]
+        result = service.compute_features(multi_series_time_series)
+
+        # All product=1 rows in 2024-01-04..2024-01-06 (lag1) should be active.
+        df = result.df
+        prod1_active = df[(df["product_id"] == 1) & (df["promo_pct_off_active_lag1"] == 1)]
+        # 2 stores x 3 active-lagged days = 6
+        assert len(prod1_active) == 6
+
+    def test_null_discount_pct_yields_nan_intensity_but_active_one(self) -> None:
+        """A bogo promo with NULL discount_pct: active=1, intensity=NaN."""
+        sample = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=10, freq="D"),
+                "store_id": [1] * 10,
+                "product_id": [1] * 10,
+                "quantity": list(range(1, 11)),
+                "unit_price": [10.0] * 10,
+                "total_amount": [q * 10.0 for q in range(1, 11)],
+            }
+        )
+        promo_rows = pd.DataFrame(
+            {
+                "product_id": [1],
+                "store_id": [1],
+                "kind": ["bogo"],
+                "discount_pct": [None],
+                "start_date": [date(2024, 1, 3)],
+                "end_date": [date(2024, 1, 5)],
+            }
+        )
+        config = FeatureSetConfig(
+            name="test",
+            promotion_config=PromotionConfig(kinds_to_track=("bogo",)),
+        )
+        service = FeatureEngineeringService(config)
+        service._promotion_rows_df = promo_rows  # type: ignore[attr-defined]
+        result = service.compute_features(sample)
+
+        df = result.df.reset_index(drop=True)
+        dates = pd.to_datetime(df["date"]).dt.date
+        # D=Jan 4 reads Jan 3 (start). active=1.
+        row = df.loc[dates == date(2024, 1, 4)].iloc[0]
+        assert row["promo_bogo_active_lag1"] == 1
+        assert pd.isna(row["promo_bogo_intensity_lag1"])
+
+    def test_overlapping_promos_intensity_uses_max(self) -> None:
+        """Two markdowns active on the same (store, product, day) → intensity = max."""
+        sample = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=10, freq="D"),
+                "store_id": [1] * 10,
+                "product_id": [1] * 10,
+                "quantity": list(range(1, 11)),
+                "unit_price": [10.0] * 10,
+                "total_amount": [q * 10.0 for q in range(1, 11)],
+            }
+        )
+        promo_rows = pd.DataFrame(
+            {
+                "product_id": [1, 1],
+                "store_id": [1, 1],
+                "kind": ["markdown", "markdown"],
+                "discount_pct": [0.15, 0.25],  # overlap → max = 0.25
+                "start_date": [date(2024, 1, 3), date(2024, 1, 4)],
+                "end_date": [date(2024, 1, 6), date(2024, 1, 5)],
+            }
+        )
+        config = FeatureSetConfig(
+            name="test",
+            promotion_config=PromotionConfig(kinds_to_track=("markdown",)),
+        )
+        service = FeatureEngineeringService(config)
+        service._promotion_rows_df = promo_rows  # type: ignore[attr-defined]
+        result = service.compute_features(sample)
+
+        df = result.df.reset_index(drop=True)
+        dates = pd.to_datetime(df["date"]).dt.date
+        # D=Jan 5 reads Jan 4 — BOTH active. intensity = max(0.15, 0.25) = 0.25.
+        row = df.loc[dates == date(2024, 1, 5)].iloc[0]
+        assert row["promo_markdown_active_lag1"] == 1
+        assert row["promo_markdown_intensity_lag1"] == pytest.approx(0.25)
+
+    def test_no_active_promo_yields_zero_active_and_nan_intensity(
+        self,
+        sample_time_series: pd.DataFrame,
+    ) -> None:
+        """No promo rows at all → active is NaN at first row then 0, intensity all NaN."""
+        config = FeatureSetConfig(
+            name="test",
+            promotion_config=PromotionConfig(kinds_to_track=("markdown",)),
+        )
+        service = FeatureEngineeringService(config)
+        service._promotion_rows_df = pd.DataFrame(  # type: ignore[attr-defined]
+            columns=[
+                "product_id",
+                "store_id",
+                "kind",
+                "discount_pct",
+                "start_date",
+                "end_date",
+            ]
+        )
+        result = service.compute_features(sample_time_series)
+
+        active = result.df["promo_markdown_active_lag1"]
+        intensity = result.df["promo_markdown_intensity_lag1"]
+        # First row of each series has NaN from the lag shift; remaining rows are 0.
+        assert pd.isna(active.iloc[0])
+        assert (active.iloc[1:] == 0).all()
+        assert intensity.isna().all()
+
+    def test_defensive_skip_when_rows_absent_via_orchestrator(
+        self,
+        sample_time_series: pd.DataFrame,
+    ) -> None:
+        """When ``_promotion_rows_df`` attribute is unset, orchestrator falls back
+        to an empty DataFrame and emits all-NaN-then-zero columns — never crashes.
+        """
+        config = FeatureSetConfig(
+            name="test",
+            promotion_config=PromotionConfig(kinds_to_track=("markdown",)),
+        )
+        service = FeatureEngineeringService(config)
+        # Deliberately DO NOT set _promotion_rows_df — exercises the getattr fallback.
+        result = service.compute_features(sample_time_series)
+
+        # Columns are still emitted (additive contract preserved).
+        assert "promo_markdown_active_lag1" in result.feature_columns
+        assert "promo_markdown_intensity_lag1" in result.feature_columns
+        # No exception. No active days because the rows-DataFrame is empty.
+        active = result.df["promo_markdown_active_lag1"]
+        intensity = result.df["promo_markdown_intensity_lag1"]
+        assert pd.isna(active.iloc[0])
+        assert (active.iloc[1:] == 0).all()
+        assert intensity.isna().all()
+
+    def test_cutoff_alignment_drops_post_cutoff_rows(
+        self,
+        sample_time_series: pd.DataFrame,
+    ) -> None:
+        """cutoff_date filtering applies BEFORE promotion compute; result is bounded."""
+        cutoff = date(2024, 1, 10)
+        promo_rows = pd.DataFrame(
+            {
+                "product_id": [1],
+                "store_id": [1],
+                "kind": ["markdown"],
+                "discount_pct": [0.20],
+                "start_date": [date(2024, 1, 5)],
+                "end_date": [date(2024, 1, 9)],
+            }
+        )
+        config = FeatureSetConfig(
+            name="test",
+            promotion_config=PromotionConfig(kinds_to_track=("markdown",)),
+        )
+        service = FeatureEngineeringService(config)
+        service._promotion_rows_df = promo_rows  # type: ignore[attr-defined]
+        result = service.compute_features(sample_time_series, cutoff_date=cutoff)
+
+        # No rows past cutoff.
+        result_dates = pd.to_datetime(result.df["date"]).dt.date
+        assert (result_dates <= cutoff).all()
+        # At cutoff Jan 10, lag1 reads Jan 9 — last active day. active=1.
+        row = result.df.loc[result_dates == cutoff].iloc[0]
+        assert row["promo_markdown_active_lag1"] == 1
+
+    def test_active_column_dtype_is_nullable_int(
+        self,
+        sample_time_series: pd.DataFrame,
+        phase2_promotion_rows_df: pd.DataFrame,
+    ) -> None:
+        """Active column is Int64 (nullable int) to preserve NaN at series start."""
+        config = FeatureSetConfig(
+            name="test",
+            promotion_config=PromotionConfig(kinds_to_track=("markdown",)),
+        )
+        service = FeatureEngineeringService(config)
+        service._promotion_rows_df = phase2_promotion_rows_df  # type: ignore[attr-defined]
+        result = service.compute_features(sample_time_series)
+
+        # Decision §15-D — Int64 nullable extension dtype.
+        assert str(result.df["promo_markdown_active_lag1"].dtype) == "Int64"
+        # Intensity stays plain float64.
+        assert str(result.df["promo_markdown_intensity_lag1"].dtype) == "float64"

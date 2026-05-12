@@ -13,6 +13,7 @@ from app.features.featuresets.schemas import (
     FeatureSetConfig,
     LagConfig,
     LifecycleConfig,
+    PromotionConfig,
     RollingConfig,
 )
 from app.features.featuresets.service import FeatureEngineeringService
@@ -418,3 +419,155 @@ class TestLifecycleLeakage:
                     f"days_since_launch_lag1={actual}, expected={base_lag}. "
                     "Lifecycle lag is mixing across products."
                 )
+
+
+class TestPromotionLeakage:
+    """Tests verifying promotion features never use future data.
+
+    PRP-3.1D — these leakage cases are LOAD-BEARING. They assert that a
+    promotion active on day D MUST NOT appear in day D's
+    ``promo_<kind>_active_lag1`` column; it appears at day D+1 only. The
+    date-range semantics (start_date <= D <= end_date, both inclusive)
+    plus ``groupby(...).shift(lag_days)`` are the mathematical leakage gate.
+    """
+
+    def test_promotion_active_no_leakage_at_same_day(
+        self,
+        sample_time_series: pd.DataFrame,
+        phase2_promotion_rows_df: pd.DataFrame,
+    ) -> None:
+        """CRITICAL: A promotion active on day D MUST NOT appear in lag1 at D."""
+        config = FeatureSetConfig(
+            name="test",
+            entity_columns=("store_id", "product_id"),
+            promotion_config=PromotionConfig(
+                kinds_to_track=("markdown",),
+                include_active=True,
+                include_intensity=False,
+                lag_days=1,
+            ),
+        )
+        service = FeatureEngineeringService(config)
+        service._promotion_rows_df = phase2_promotion_rows_df  # type: ignore[attr-defined]
+        result = service.compute_features(sample_time_series)
+
+        # The fixture's markdown is active 2024-01-07 .. 2024-01-14 (8 days).
+        # promo_markdown_active_lag1 should be 1 on 2024-01-08 .. 2024-01-15.
+        df = result.df.reset_index(drop=True)
+        dates = pd.to_datetime(df["date"]).dt.date
+
+        # Day BEFORE start (D=Jan 6): lag1 reads Jan 5 — inactive. EXPECT 0.
+        assert df.loc[dates == date(2024, 1, 6), "promo_markdown_active_lag1"].iloc[0] == 0
+
+        # Day OF start (D=Jan 7): lag1 reads Jan 6 — inactive. EXPECT 0.
+        #   This is the load-bearing leakage check: same-day MUST NOT leak.
+        assert df.loc[dates == date(2024, 1, 7), "promo_markdown_active_lag1"].iloc[0] == 0, (
+            "LEAKAGE DETECTED: promo active on day D appeared in active_lag1 at day D"
+        )
+
+        # Day AFTER start (D=Jan 8): lag1 reads Jan 7 — active. EXPECT 1.
+        assert df.loc[dates == date(2024, 1, 8), "promo_markdown_active_lag1"].iloc[0] == 1
+
+        # Day AFTER end (D=Jan 15): lag1 reads Jan 14 — last active day. EXPECT 1.
+        assert df.loc[dates == date(2024, 1, 15), "promo_markdown_active_lag1"].iloc[0] == 1
+
+        # Two days AFTER end (D=Jan 16): lag1 reads Jan 15 — inactive. EXPECT 0.
+        assert df.loc[dates == date(2024, 1, 16), "promo_markdown_active_lag1"].iloc[0] == 0
+
+    def test_promotion_boundary_end_date_at_cutoff(
+        self,
+        sample_time_series: pd.DataFrame,
+    ) -> None:
+        """A promo ending exactly on cutoff_date - 1 yields active_lag1=1 at cutoff."""
+        cutoff = date(2024, 1, 15)
+        promo_rows = pd.DataFrame(
+            {
+                "product_id": [1],
+                "store_id": [1],
+                "kind": ["markdown"],
+                "discount_pct": [0.20],
+                "start_date": [date(2024, 1, 10)],
+                "end_date": [date(2024, 1, 14)],  # cutoff - 1
+            }
+        )
+        config = FeatureSetConfig(
+            name="test",
+            entity_columns=("store_id", "product_id"),
+            promotion_config=PromotionConfig(kinds_to_track=("markdown",), lag_days=1),
+        )
+        service = FeatureEngineeringService(config)
+        service._promotion_rows_df = promo_rows  # type: ignore[attr-defined]
+        result = service.compute_features(sample_time_series, cutoff_date=cutoff)
+
+        df = result.df.reset_index(drop=True)
+        dates = pd.to_datetime(df["date"]).dt.date
+        # At cutoff (Jan 15), lag1 reads Jan 14 — end_date, INCLUSIVE → active.
+        last = df.loc[dates == cutoff].iloc[0]
+        assert last["promo_markdown_active_lag1"] == 1, (
+            "Boundary leakage: end_date INCLUSIVE on the previous day failed"
+        )
+
+    def test_promotion_starts_on_cutoff_not_in_lag1(
+        self,
+        sample_time_series: pd.DataFrame,
+    ) -> None:
+        """A promo starting exactly on cutoff is NOT in active_lag1 at cutoff."""
+        cutoff = date(2024, 1, 15)
+        promo_rows = pd.DataFrame(
+            {
+                "product_id": [1],
+                "store_id": [1],
+                "kind": ["markdown"],
+                "discount_pct": [0.20],
+                "start_date": [cutoff],  # starts today
+                "end_date": [date(2024, 1, 25)],
+            }
+        )
+        config = FeatureSetConfig(
+            name="test",
+            entity_columns=("store_id", "product_id"),
+            promotion_config=PromotionConfig(kinds_to_track=("markdown",), lag_days=1),
+        )
+        service = FeatureEngineeringService(config)
+        service._promotion_rows_df = promo_rows  # type: ignore[attr-defined]
+        result = service.compute_features(sample_time_series, cutoff_date=cutoff)
+
+        df = result.df.reset_index(drop=True)
+        dates = pd.to_datetime(df["date"]).dt.date
+        last = df.loc[dates == cutoff].iloc[0]
+        # lag1 reads cutoff - 1 = Jan 14, BEFORE start_date.
+        assert last["promo_markdown_active_lag1"] == 0, (
+            "Same-day leakage: promo starting on D appeared in active_lag1 at D"
+        )
+
+    def test_chain_wide_promo_does_not_bleed_across_products(
+        self,
+        multi_series_time_series: pd.DataFrame,
+    ) -> None:
+        """A chain-wide promo on product=1 must NOT activate features for product=2."""
+        promo_rows = pd.DataFrame(
+            {
+                "product_id": [1],
+                "store_id": [None],  # chain-wide
+                "kind": ["markdown"],
+                "discount_pct": [0.30],
+                "start_date": [date(2024, 1, 3)],
+                "end_date": [date(2024, 1, 7)],
+            }
+        )
+        config = FeatureSetConfig(
+            name="test",
+            entity_columns=("store_id", "product_id"),
+            promotion_config=PromotionConfig(kinds_to_track=("markdown",), lag_days=1),
+        )
+        service = FeatureEngineeringService(config)
+        service._promotion_rows_df = promo_rows  # type: ignore[attr-defined]
+        result = service.compute_features(multi_series_time_series)
+
+        df = result.df
+        # Product 1 should see activity 2024-01-04 .. 2024-01-08 (lag1) -- 5 days x 2 stores.
+        prod1 = df[df["product_id"] == 1]
+        assert int(prod1["promo_markdown_active_lag1"].sum()) == 5 * 2
+        # Product 2 should see ZERO activity (chain-wide is product-scoped).
+        prod2 = df[df["product_id"] == 2]
+        assert int(prod2["promo_markdown_active_lag1"].sum()) == 0
