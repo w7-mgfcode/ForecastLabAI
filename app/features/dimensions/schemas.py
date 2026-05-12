@@ -4,6 +4,7 @@ These schemas are optimized for LLM tool-calling with rich descriptions
 that help agents understand how to use each field.
 """
 
+from datetime import date as _date
 from datetime import datetime
 from decimal import Decimal
 
@@ -179,3 +180,55 @@ class ProductListResponse(BaseModel):
         ge=1,
         description="Number of products per page. Maximum is 100.",
     )
+
+
+# =============================================================================
+# Lifecycle Curve (Phase 2)
+# =============================================================================
+
+
+class LifecyclePoint(BaseModel):
+    """One day of the lifecycle demand curve."""
+
+    date: _date = Field(..., description="Calendar date for this curve point")
+    stage: str = Field(
+        ...,
+        description=("Lifecycle stage label: intro | growth | maturity | decline | discontinued."),
+    )
+    multiplier: float = Field(
+        ...,
+        ge=0.0,
+        description=(
+            "Demand multiplier the SalesDailyGenerator would apply on this "
+            "date for this product (1.0 = neutral)."
+        ),
+    )
+
+
+class LifecycleCurveResponse(BaseModel):
+    """Response payload for GET /dimensions/products/{id}/lifecycle-curve.
+
+    Returns the reference curve a Phase 2 LifecycleGenerator would
+    produce for the product's launch_date and discontinue_date using
+    the default LifecycleConfig ramp parameters. Useful for visualizing
+    a product's expected demand shape even when the seeded run used
+    different ramp parameters.
+    """
+
+    product_id: int = Field(..., description="Product internal ID")
+    sku: str = Field(..., description="Product SKU")
+    launch_date: _date | None = Field(
+        None,
+        description="Product launch_date. NULL when lifecycle data is unset.",
+    )
+    discontinue_date: _date | None = Field(
+        None,
+        description="Product discontinue_date. NULL when not retired.",
+    )
+    start_date: _date = Field(..., description="First date in the returned curve")
+    end_date: _date = Field(..., description="Last date in the returned curve")
+    points: list[LifecyclePoint] = Field(
+        ...,
+        description="Curve points in ascending date order",
+    )
+    total: int = Field(..., ge=0, description="Number of points returned")

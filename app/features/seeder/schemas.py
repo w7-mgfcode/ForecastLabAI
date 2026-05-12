@@ -1,9 +1,13 @@
 """Pydantic schemas for the seeder feature."""
 
+import datetime as _datetime_module
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+VALID_CHANNELS: frozenset[str] = frozenset({"in_store", "online", "click_collect", "wholesale"})
+"""Allow-list for ``sales_daily.channel`` — mirrors the SQL CHECK."""
 
 
 class SeederStatus(BaseModel):
@@ -16,6 +20,18 @@ class SeederStatus(BaseModel):
     inventory: int = Field(description="Number of inventory_snapshot_daily records")
     price_history: int = Field(description="Number of price_history records")
     promotions: int = Field(description="Number of promotion records")
+    exogenous_signals: int = Field(
+        default=0,
+        description="Number of exogenous_signal records (Phase 1)",
+    )
+    sales_returns: int = Field(
+        default=0,
+        description="Number of sales_returns records (Phase 1)",
+    )
+    replenishment_events: int = Field(
+        default=0,
+        description="Number of replenishment_event records (Phase 2)",
+    )
     date_range_start: date | None = Field(
         default=None,
         description="Earliest date in sales_daily",
@@ -27,6 +43,22 @@ class SeederStatus(BaseModel):
     last_updated: datetime | None = Field(
         default=None,
         description="Timestamp of last data modification",
+    )
+
+
+class ChangepointEventParam(BaseModel):
+    """API-facing representation of a demand changepoint (Phase 1)."""
+
+    date: _datetime_module.date = Field(description="Changepoint impulse date")
+    demand_multiplier: float = Field(
+        ge=0.0,
+        description="Peak multiplier on the changepoint date",
+    )
+    decay_days: int = Field(
+        default=30,
+        ge=0,
+        le=3650,
+        description="Exponential decay e-folding time (days). 0 = pure impulse.",
     )
 
 
@@ -83,6 +115,185 @@ class GenerateParams(BaseModel):
         default=False,
         description="Preview only, do not execute",
     )
+
+    # Phase 1 — realism extension. All flags default off so existing
+    # scenarios remain byte-identical when this endpoint is called without
+    # the new fields.
+    enable_exogenous: bool = Field(
+        default=False,
+        description="Seed weather/macro/event exogenous signals (Phase 1)",
+    )
+    enable_returns: bool = Field(
+        default=False,
+        description="Seed sales_returns rows derived from sales (Phase 1)",
+    )
+    enable_substitution: bool = Field(
+        default=False,
+        description="Apply cross-product substitution lift on stockouts (Phase 1)",
+    )
+    yearly_seasonality_amplitude: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Yearly sin-wave demand amplitude (fraction). None or 0 = disabled. (Phase 1)"
+        ),
+    )
+    weather_temperature_sensitivity: float | None = Field(
+        default=None,
+        ge=-1.0,
+        le=1.0,
+        description=(
+            "Demand delta per °C above the climatology mean. "
+            "Only applied when enable_exogenous=true. (Phase 1)"
+        ),
+    )
+    changepoints: list[ChangepointEventParam] | None = Field(
+        default=None,
+        description="Optional list of demand changepoints (Phase 1)",
+    )
+    substitute_groups: list[list[int]] | None = Field(
+        default=None,
+        description=(
+            "Optional list of product-ID groups whose members substitute for "
+            "each other on stockout. Only applied when enable_substitution=true. "
+            "(Phase 1)"
+        ),
+    )
+    substitution_lift_on_stockout: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=10.0,
+        description=(
+            "Demand lift distributed across in-stock group-mates when a member "
+            "is stocked out. Only applied when enable_substitution=true. (Phase 1)"
+        ),
+    )
+
+    # Phase 2 — retail-depth extension. All flags default off so existing
+    # scenarios stay byte-identical when the endpoint is called without
+    # the new fields.
+    enable_multichannel: bool = Field(
+        default=False,
+        description="Split sales across channels (in_store/online/...) (Phase 2)",
+    )
+    channel_mix: dict[str, float] | None = Field(
+        default=None,
+        description=(
+            "Probability weights per channel. Keys must be a subset of "
+            "{in_store, online, click_collect, wholesale}. Weights "
+            "normalize at use time; at least one weight must be > 0. "
+            "Only applied when enable_multichannel=true. (Phase 2)"
+        ),
+    )
+    online_promo_uplift: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=10.0,
+        description=(
+            "Multiplier on online-channel quantity during promotions "
+            "(e.g. 1.2 = +20%). Only applied when enable_multichannel=true. (Phase 2)"
+        ),
+    )
+    online_substitution_to_instore: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Fraction of in-store demand that shifts to online during "
+            "promotions (0.0 = independent; 1.0 = pure substitution). "
+            "Only applied when enable_multichannel=true. (Phase 2)"
+        ),
+    )
+    enable_lifecycle: bool = Field(
+        default=False,
+        description="Assign product lifecycle stage + launch/discontinue dates (Phase 2)",
+    )
+    lifecycle_discontinue_probability: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Probability a product gets a discontinue_date within the "
+            "seeded range. Only applied when enable_lifecycle=true. (Phase 2)"
+        ),
+    )
+    enable_bundles: bool = Field(
+        default=False,
+        description="Convert a fraction of promotions to bundle/BOGO (Phase 2)",
+    )
+    bundle_probability: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Per-promotion conversion probability. Only applied when enable_bundles=true. (Phase 2)"
+        ),
+    )
+    enable_markdowns: bool = Field(
+        default=False,
+        description="Emit clearance markdown promos + price drops (Phase 2)",
+    )
+    markdown_trigger: Literal["lifecycle_decline", "stockout_risk"] | None = Field(
+        default=None,
+        description=(
+            "Markdown firing rule. 'age_days' is deferred — see issue #94. "
+            "Only applied when enable_markdowns=true. (Phase 2)"
+        ),
+    )
+    enable_lead_time: bool = Field(
+        default=False,
+        description="Emit replenishment_event rows with stochastic lead times (Phase 2)",
+    )
+    mean_lead_time_days: int | None = Field(
+        default=None,
+        ge=0,
+        le=365,
+        description=(
+            "Mean Normal-distributed lead time (days). Only applied when "
+            "enable_lead_time=true. (Phase 2)"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_date_range(self) -> "GenerateParams":
+        """Reject inverted date ranges with a clear message."""
+        if self.end_date < self.start_date:
+            raise ValueError(
+                f"end_date ({self.end_date}) must be on or after start_date ({self.start_date})"
+            )
+        return self
+
+    @field_validator("channel_mix")
+    @classmethod
+    def _validate_channel_mix(
+        cls,
+        value: dict[str, float] | None,
+    ) -> dict[str, float] | None:
+        """Validate channel_mix keys, non-negativity, and positive total.
+
+        Empty dict is rejected so callers must either pass None or a
+        meaningful split. The full set of channels need not appear —
+        unspecified channels get zero weight.
+        """
+        if value is None:
+            return None
+        if not value:
+            raise ValueError(
+                "channel_mix must not be empty when supplied; pass null to use defaults"
+            )
+        invalid = set(value.keys()) - VALID_CHANNELS
+        if invalid:
+            raise ValueError(
+                f"channel_mix contains invalid channels {sorted(invalid)}; "
+                f"allow-list is {sorted(VALID_CHANNELS)}"
+            )
+        for name, weight in value.items():
+            if weight < 0:
+                raise ValueError(f"channel_mix['{name}']={weight} must be non-negative")
+        if sum(value.values()) <= 0:
+            raise ValueError("channel_mix must have at least one positive weight")
+        return value
 
 
 class AppendParams(BaseModel):
@@ -156,3 +367,59 @@ class VerifyResult(BaseModel):
     passed_count: int = Field(description="Number of passed checks")
     warning_count: int = Field(description="Number of warnings")
     failed_count: int = Field(description="Number of failures")
+
+
+# ============================================================================
+# PHASE 1 — Exogenous signal read API
+# ============================================================================
+
+
+class ExogenousSignalRecord(BaseModel):
+    """One row of the exogenous_signal table."""
+
+    date: _datetime_module.date = Field(description="Signal date")
+    signal_name: str = Field(description="Signal identifier")
+    store_id: int | None = Field(
+        default=None,
+        description="Store ID. None for chain-wide (global) signals.",
+    )
+    is_global: bool = Field(description="True for chain-wide signals")
+    value: float = Field(description="Numeric signal value")
+
+
+class ExogenousSignalResponse(BaseModel):
+    """Response payload for GET /seeder/exogenous."""
+
+    signal_name: str = Field(description="Signal identifier queried")
+    start_date: date = Field(description="Start of the query window")
+    end_date: date = Field(description="End of the query window")
+    store_id: int | None = Field(
+        default=None,
+        description="Specific store filter, if applied",
+    )
+    records: list[ExogenousSignalRecord] = Field(
+        description="Signal rows in ascending date order",
+    )
+    total: int = Field(description="Row count in the response")
+
+
+# ============================================================================
+# PHASE 2 — Channels enumeration
+# ============================================================================
+
+
+class ChannelsResponse(BaseModel):
+    """Response payload for GET /seeder/channels.
+
+    Returns the SQL allow-list for ``sales_daily.channel`` so callers
+    (admin UI, agent tools, integration tests) can populate selectors
+    without duplicating the constant. Mirrors the SQL CHECK constraint.
+    """
+
+    channels: list[str] = Field(
+        description=(
+            "Sorted list of valid channel identifiers for sales_daily.channel "
+            "and for ChannelConfig.channel_mix keys."
+        ),
+    )
+    total: int = Field(description="Number of valid channels")

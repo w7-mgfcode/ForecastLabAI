@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from datetime import date, datetime
 
 from sqlalchemy import func, select
@@ -12,16 +13,33 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.features.data_platform.models import (
     Calendar,
+    ExogenousSignal,
     InventorySnapshotDaily,
     PriceHistory,
     Product,
     Promotion,
+    ReplenishmentEvent,
     SalesDaily,
+    SalesReturn,
     Store,
 )
 from app.features.seeder import schemas
 from app.shared.seeder import DataSeeder, ScenarioPreset, SeederConfig
-from app.shared.seeder.config import DimensionConfig, SparsityConfig
+from app.shared.seeder.config import (
+    BundleConfig,
+    ChangepointConfig,
+    ChangepointEvent,
+    ChannelConfig,
+    DimensionConfig,
+    ExogenousSignalConfig,
+    LeadTimeConfig,
+    LifecycleConfig,
+    MarkdownConfig,
+    MultiSeasonalityConfig,
+    ReturnsConfig,
+    SparsityConfig,
+    SubstitutionConfig,
+)
 
 logger = get_logger(__name__)
 
@@ -41,6 +59,134 @@ def _get_scenario_preset(name: str) -> ScenarioPreset | None:
         return None
 
 
+def _apply_phase1_overrides(config: SeederConfig, params: schemas.GenerateParams) -> None:
+    """Apply Phase 1 (realism) overrides from API params onto ``config``.
+
+    Mutates ``config`` in place. Each override is no-op when the matching
+    flag/field is absent, so existing scenarios stay byte-identical when
+    Phase 1 params are omitted.
+    """
+    if params.enable_exogenous:
+        config.exogenous = ExogenousSignalConfig(
+            enable_weather=True,
+            enable_macro=True,
+            enable_events=False,
+            weather_temperature_sensitivity=(
+                params.weather_temperature_sensitivity
+                if params.weather_temperature_sensitivity is not None
+                else 0.0
+            ),
+        )
+    elif params.weather_temperature_sensitivity is not None:
+        # Sensitivity passed without enable_exogenous → ignore quietly; the
+        # weather lookup won't exist so the multiplier short-circuits.
+        config.exogenous = replace(
+            config.exogenous,
+            weather_temperature_sensitivity=params.weather_temperature_sensitivity,
+        )
+
+    if (
+        params.yearly_seasonality_amplitude is not None
+        and params.yearly_seasonality_amplitude > 0.0
+    ):
+        config.multi_seasonality = MultiSeasonalityConfig(
+            yearly_seasonality_amplitude=params.yearly_seasonality_amplitude,
+        )
+
+    if params.changepoints:
+        config.changepoints = ChangepointConfig(
+            changepoints=[
+                ChangepointEvent(
+                    date=cp.date,
+                    demand_multiplier=cp.demand_multiplier,
+                    decay_days=cp.decay_days,
+                )
+                for cp in params.changepoints
+            ]
+        )
+
+    if params.enable_returns:
+        config.returns = ReturnsConfig(enable=True)
+
+    if params.enable_substitution:
+        config.substitution = SubstitutionConfig(
+            enable=True,
+            substitute_groups=(
+                [list(group) for group in params.substitute_groups]
+                if params.substitute_groups is not None
+                else []
+            ),
+            substitution_lift_on_stockout=(
+                params.substitution_lift_on_stockout
+                if params.substitution_lift_on_stockout is not None
+                else 0.5
+            ),
+        )
+
+
+def _apply_phase2_overrides(config: SeederConfig, params: schemas.GenerateParams) -> None:
+    """Apply Phase 2 (retail-depth) overrides from API params onto ``config``.
+
+    Mutates ``config`` in place. Each override is no-op when the matching
+    enable flag is False, so existing scenarios stay byte-identical when
+    Phase 2 params are omitted.
+    """
+    if params.enable_multichannel:
+        mix: dict[str, float] = (
+            dict(params.channel_mix)
+            if params.channel_mix is not None
+            else {"in_store": 0.7, "online": 0.2, "click_collect": 0.1}
+        )
+        config.channels = ChannelConfig(
+            enable_multichannel=True,
+            channel_mix=mix,
+            online_promo_uplift=(
+                params.online_promo_uplift if params.online_promo_uplift is not None else 1.0
+            ),
+            online_substitution_to_instore=(
+                params.online_substitution_to_instore
+                if params.online_substitution_to_instore is not None
+                else 0.0
+            ),
+        )
+
+    if params.enable_lifecycle:
+        config.lifecycle = LifecycleConfig(
+            enable=True,
+            discontinue_probability=(
+                params.lifecycle_discontinue_probability
+                if params.lifecycle_discontinue_probability is not None
+                else 0.0
+            ),
+        )
+
+    if params.enable_bundles:
+        config.bundles = BundleConfig(
+            enable=True,
+            bundle_probability=(
+                params.bundle_probability if params.bundle_probability is not None else 0.2
+            ),
+        )
+
+    if params.enable_markdowns:
+        config.markdowns = MarkdownConfig(
+            enable=True,
+            trigger=(
+                params.markdown_trigger
+                if params.markdown_trigger is not None
+                else "lifecycle_decline"
+            ),
+        )
+
+    if params.enable_lead_time:
+        config.lead_time = LeadTimeConfig(
+            enable=True,
+            mean_lead_time_days=(
+                params.mean_lead_time_days if params.mean_lead_time_days is not None else 7
+            ),
+        )
+
+
 def _build_config_from_params(params: schemas.GenerateParams) -> SeederConfig:
     """Build SeederConfig from API parameters.
 
@@ -55,8 +201,10 @@ def _build_config_from_params(params: schemas.GenerateParams) -> SeederConfig:
     if preset:
         # Start from scenario preset and override with explicit params
         config = SeederConfig.from_scenario(preset, seed=params.seed)
-        # Override dimensions if explicitly set (different from defaults)
-        config.dimensions = DimensionConfig(
+        # Override store/product counts while preserving scenario-customized
+        # region/category/brand lists (dataclasses.replace is field-precise).
+        config.dimensions = replace(
+            config.dimensions,
             stores=params.stores,
             products=params.products,
         )
@@ -76,6 +224,9 @@ def _build_config_from_params(params: schemas.GenerateParams) -> SeederConfig:
             ),
             sparsity=SparsityConfig(missing_combinations_pct=params.sparsity),
         )
+
+    _apply_phase1_overrides(config, params)
+    _apply_phase2_overrides(config, params)
 
     settings = get_settings()
     config.batch_size = settings.seeder_batch_size
@@ -104,6 +255,9 @@ async def get_status(db: AsyncSession) -> schemas.SeederStatus:
         ("inventory", InventorySnapshotDaily),
         ("price_history", PriceHistory),
         ("promotions", Promotion),
+        ("exogenous_signals", ExogenousSignal),
+        ("sales_returns", SalesReturn),
+        ("replenishment_events", ReplenishmentEvent),
     ]
 
     counts: dict[str, int] = {}
@@ -138,6 +292,9 @@ async def get_status(db: AsyncSession) -> schemas.SeederStatus:
         inventory=counts["inventory"],
         price_history=counts["price_history"],
         promotions=counts["promotions"],
+        exogenous_signals=counts["exogenous_signals"],
+        sales_returns=counts["sales_returns"],
+        replenishment_events=counts["replenishment_events"],
         date_range_start=date_range_start,
         date_range_end=date_range_end,
         last_updated=last_updated,
@@ -254,6 +411,9 @@ async def generate_data(
                 "price_history": 0,
                 "promotions": 0,
                 "inventory": 0,
+                "exogenous_signals": 0,
+                "sales_returns": 0,
+                "replenishment_events": 0,
             },
             duration_seconds=0.0,
             message=f"Dry run: would generate data with scenario '{params.scenario}'",
@@ -296,6 +456,9 @@ async def generate_data(
             "price_history": result.price_history_count,
             "promotions": result.promotions_count,
             "inventory": result.inventory_count,
+            "exogenous_signals": result.exogenous_count,
+            "sales_returns": result.returns_count,
+            "replenishment_events": result.replenishment_count,
         },
         duration_seconds=round(duration, 2),
         message=f"Successfully generated {result.sales_count:,} sales records with seed {params.seed}",
@@ -364,6 +527,9 @@ async def append_data(
             "price_history": result.price_history_count,
             "promotions": result.promotions_count,
             "inventory": result.inventory_count,
+            "exogenous_signals": result.exogenous_count,
+            "sales_returns": result.returns_count,
+            "replenishment_events": result.replenishment_count,
         },
         duration_seconds=round(duration, 2),
         message=f"Appended {result.sales_count:,} sales records for date range {params.start_date} to {params.end_date}",
@@ -536,4 +702,96 @@ async def verify_data(db: AsyncSession) -> schemas.VerifyResult:
         passed_count=passed_count,
         warning_count=warning_count,
         failed_count=failed_count,
+    )
+
+
+# ============================================================================
+# PHASE 1 — Exogenous signal read API
+# ============================================================================
+
+
+EXOGENOUS_MAX_DATE_RANGE_DAYS = 365 * 3  # 3 years — matches feature_max_lookback_days
+EXOGENOUS_MAX_RECORDS = 50_000
+
+
+async def query_exogenous(
+    db: AsyncSession,
+    signal_name: str,
+    start_date: date,
+    end_date: date,
+    store_id: int | None,
+) -> schemas.ExogenousSignalResponse:
+    """Return exogenous signal rows for ``signal_name`` within a window.
+
+    Args:
+        db: Async database session.
+        signal_name: Exact signal identifier (e.g. ``"weather_temp_c"``).
+        start_date: Window start (inclusive).
+        end_date: Window end (inclusive).
+        store_id: Optional store filter. When None, returns global signals
+            plus any store-scoped rows for the period (callers typically
+            filter on a single store to keep payload sizes reasonable).
+
+    Returns:
+        ExogenousSignalResponse with rows ordered by date ascending.
+
+    Raises:
+        ValueError: On inverted or oversized date windows.
+    """
+    if end_date < start_date:
+        raise ValueError(f"end_date ({end_date}) must be on or after start_date ({start_date})")
+    span_days = (end_date - start_date).days
+    if span_days > EXOGENOUS_MAX_DATE_RANGE_DAYS:
+        raise ValueError(
+            f"Date range too large ({span_days} days); max is {EXOGENOUS_MAX_DATE_RANGE_DAYS} days"
+        )
+
+    stmt = (
+        select(ExogenousSignal)
+        .where(ExogenousSignal.signal_name == signal_name)
+        .where(ExogenousSignal.date >= start_date)
+        .where(ExogenousSignal.date <= end_date)
+        .order_by(ExogenousSignal.date.asc(), ExogenousSignal.store_id.asc().nullsfirst())
+        .limit(EXOGENOUS_MAX_RECORDS + 1)
+    )
+    if store_id is not None:
+        stmt = stmt.where(
+            (ExogenousSignal.store_id == store_id) | (ExogenousSignal.is_global.is_(True))
+        )
+
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    if len(rows) > EXOGENOUS_MAX_RECORDS:
+        raise ValueError(
+            f"Query exceeded maximum row cap ({EXOGENOUS_MAX_RECORDS}); "
+            "narrow the date range or filter by store_id"
+        )
+
+    records = [
+        schemas.ExogenousSignalRecord(
+            date=row.date,
+            signal_name=row.signal_name,
+            store_id=row.store_id,
+            is_global=row.is_global,
+            value=row.value,
+        )
+        for row in rows
+    ]
+
+    logger.info(
+        "seeder.exogenous.queried",
+        signal_name=signal_name,
+        start_date=str(start_date),
+        end_date=str(end_date),
+        store_id=store_id,
+        rows=len(records),
+    )
+
+    return schemas.ExogenousSignalResponse(
+        signal_name=signal_name,
+        start_date=start_date,
+        end_date=end_date,
+        store_id=store_id,
+        records=records,
+        total=len(records),
     )

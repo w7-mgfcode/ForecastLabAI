@@ -141,6 +141,45 @@ class TestBuildConfigFromParams:
         assert config.start_date == date(2025, 1, 1)
         assert config.end_date == date(2025, 6, 30)
 
+    def test_custom_scenario_preserves_dimension_customization(self):
+        """Overriding stores/products on a preset must keep scenario-defined
+        region/category/brand lists (regression against the older code path that
+        replaced the whole DimensionConfig and silently dropped them)."""
+        params = schemas.GenerateParams(
+            scenario="holiday_rush",
+            stores=25,
+            products=200,
+        )
+        config = service._build_config_from_params(params)
+
+        # Counts come from params
+        assert config.dimensions.stores == 25
+        assert config.dimensions.products == 200
+
+        # Lists come from the SeederConfig defaults (holiday_rush doesn't customize
+        # them today, but the test asserts the path that preserves them).
+        assert config.dimensions.store_regions == ["North", "South", "East", "West"]
+        assert config.dimensions.product_categories == [
+            "Beverage",
+            "Snack",
+            "Dairy",
+            "Frozen",
+            "Produce",
+            "Bakery",
+        ]
+
+    def test_custom_scenario_preserves_holiday_list(self):
+        """Holiday_rush scenario ships 4 holiday entries; overriding store/product
+        counts must not wipe them."""
+        params = schemas.GenerateParams(scenario="holiday_rush", stores=20, products=80)
+        config = service._build_config_from_params(params)
+
+        assert len(config.holidays) == 4
+        holiday_names = {h.name for h in config.holidays}
+        assert "Thanksgiving" in holiday_names
+        assert "Black Friday" in holiday_names
+        assert config.time_series.monthly_seasonality == {10: 1.0, 11: 1.3, 12: 1.8}
+
 
 class TestGetStatus:
     """Tests for get_status function."""
@@ -150,10 +189,11 @@ class TestGetStatus:
         """Test status is returned with counts."""
         mock_db = AsyncMock()
 
-        # Mock the count queries - return different values for each table
-        mock_results = [10, 50, 365, 182500, 182500, 1500, 500]
+        # Mock the count queries - return different values for each table.
+        # Phase 1 adds exogenous_signals (2520) and sales_returns (3650);
+        # Phase 2 adds replenishment_events (180).
+        mock_results = [10, 50, 365, 182500, 182500, 1500, 500, 2520, 3650, 180]
         mock_db.execute.side_effect = [
-            # Counts for each table
             *[MagicMock(scalar=MagicMock(return_value=count)) for count in mock_results],
             # Date range query
             MagicMock(fetchone=MagicMock(return_value=(date(2024, 1, 1), date(2024, 12, 31)))),
@@ -167,15 +207,18 @@ class TestGetStatus:
         assert status.products == 50
         assert status.calendar == 365
         assert status.sales == 182500
+        assert status.exogenous_signals == 2520
+        assert status.sales_returns == 3650
+        assert status.replenishment_events == 180
 
     @pytest.mark.asyncio
     async def test_empty_database(self):
         """Test status for empty database."""
         mock_db = AsyncMock()
 
-        # Mock empty counts
+        # Mock empty counts (10 tables: 7 original + 2 Phase 1 + 1 Phase 2).
         mock_db.execute.side_effect = [
-            *[MagicMock(scalar=MagicMock(return_value=0)) for _ in range(7)],
+            *[MagicMock(scalar=MagicMock(return_value=0)) for _ in range(10)],
         ]
 
         status = await service.get_status(mock_db)
@@ -183,6 +226,9 @@ class TestGetStatus:
         assert status.stores == 0
         assert status.products == 0
         assert status.sales == 0
+        assert status.exogenous_signals == 0
+        assert status.sales_returns == 0
+        assert status.replenishment_events == 0
         assert status.date_range_start is None
         assert status.date_range_end is None
 

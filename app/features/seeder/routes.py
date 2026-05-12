@@ -4,7 +4,9 @@ Provides REST endpoints for managing synthetic data generation
 through the dashboard admin panel.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import date
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -61,6 +63,23 @@ async def list_scenarios() -> list[schemas.ScenarioInfo]:
     with their default configurations.
     """
     return service.list_scenarios()
+
+
+@router.get(
+    "/channels",
+    response_model=schemas.ChannelsResponse,
+    summary="List sales channels",
+    description=(
+        "Return the SQL allow-list for `sales_daily.channel` and "
+        "`ChannelConfig.channel_mix` keys (Phase 2). Use these values "
+        "to populate UI selectors or validate channel_mix payloads "
+        "before POST /seeder/generate."
+    ),
+)
+async def list_channels() -> schemas.ChannelsResponse:
+    """List valid sales channel identifiers (Phase 2)."""
+    channels = sorted(schemas.VALID_CHANNELS)
+    return schemas.ChannelsResponse(channels=channels, total=len(channels))
 
 
 @router.post(
@@ -223,6 +242,70 @@ async def delete_data(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Delete failed: {e}",
+        ) from e
+
+
+@router.get(
+    "/exogenous",
+    response_model=schemas.ExogenousSignalResponse,
+    summary="Query exogenous signals",
+    description=(
+        "Return exogenous signal rows (Phase 1) for a given signal name and date "
+        "window. Available signals: `weather_temp_c`, `macro_index`, `event_flag`."
+    ),
+)
+async def query_exogenous(
+    signal_name: str = Query(
+        ...,
+        min_length=1,
+        max_length=50,
+        description="Signal identifier (e.g. weather_temp_c, macro_index, event_flag)",
+    ),
+    start_date: date = Query(..., description="Window start (inclusive)"),
+    end_date: date = Query(..., description="Window end (inclusive)"),
+    store_id: int | None = Query(
+        default=None,
+        ge=1,
+        description="Optional store filter. Omit to include global + per-store rows.",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> schemas.ExogenousSignalResponse:
+    """Query exogenous_signal rows for a signal name and date window.
+
+    Returns rows ordered by date. Subject to row and date-range caps to
+    keep the response bounded.
+
+    Raises:
+        HTTPException: 400 if the date window is invalid or oversized.
+    """
+    try:
+        return await service.query_exogenous(
+            db,
+            signal_name=signal_name,
+            start_date=start_date,
+            end_date=end_date,
+            store_id=store_id,
+        )
+    except ValueError as e:
+        logger.error(
+            "seeder.exogenous.query_failed",
+            error=str(e),
+            error_type=type(e).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+    except Exception as e:
+        logger.error(
+            "seeder.exogenous.query_failed",
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Exogenous query failed: {e}",
         ) from e
 
 
