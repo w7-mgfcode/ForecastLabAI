@@ -12,6 +12,7 @@ import pytest
 from app.features.featuresets.schemas import (
     FeatureSetConfig,
     LagConfig,
+    LifecycleConfig,
     RollingConfig,
 )
 from app.features.featuresets.service import FeatureEngineeringService
@@ -326,3 +327,94 @@ class TestEdgeCaseLeakage:
         assert not pd.isna(result.df.iloc[14]["rolling_mean_14"]), (
             "Row 14 should have valid rolling_mean_14"
         )
+
+
+class TestLifecycleLeakage:
+    """CRITICAL: Lifecycle features must never use future data (PRP-3.1B)."""
+
+    def test_days_since_launch_lag1_no_future_leakage(
+        self, sample_time_series: pd.DataFrame
+    ) -> None:
+        """CRITICAL: With a known launch_date and sequential dates, the lagged
+        column at row i must equal (date[i-1] - launch_date).days exactly.
+
+        sample_time_series has 30 sequential days starting 2024-01-01 for
+        (store=1, product=1). With launch_date=2023-12-25, the per-row
+        days-since-launch is 7, 8, 9, ..., 36; after shift(1), the lagged
+        column at row i is the value at row i-1: NaN at row 0, 7 at row 1,
+        8 at row 2, ... Any other integer is leakage.
+        """
+        df = sample_time_series.copy()
+        df["launch_date"] = date(2023, 12, 25)
+        df["discontinue_date"] = pd.NaT
+
+        config = FeatureSetConfig(
+            name="test_lifecycle_leakage",
+            lifecycle_config=LifecycleConfig(
+                include_days_since_launch=True,
+                include_days_since_discontinue=False,
+                lag_days=1,
+            ),
+        )
+        service = FeatureEngineeringService(config)
+        result = service.compute_features(df)
+
+        col = "days_since_launch_lag1"
+        assert col in result.feature_columns, f"missing column {col} -- wiring regression"
+
+        # Row 0: NaN (no prior row to lag from)
+        assert pd.isna(result.df.iloc[0][col]), (
+            f"row 0 must be NaN (no history), got {result.df.iloc[0][col]}"
+        )
+
+        # Rows 1..29: exactly (i - 1) + 7 days since launch
+        # (date[0] is 2024-01-01 -> 7 days since 2023-12-25)
+        for i in range(1, len(result.df)):
+            expected = (i - 1) + 7
+            actual = result.df.iloc[i][col]
+            assert actual == expected, (
+                f"LEAKAGE DETECTED at row {i}: {col}={actual} != expected={expected}. "
+                "Lifecycle feature must reflect data at row i - lag_days only."
+            )
+
+    def test_lifecycle_group_isolation_no_cross_product_leakage(
+        self, multi_series_time_series: pd.DataFrame
+    ) -> None:
+        """CRITICAL: Two products with different launch_dates must produce
+        independently correct columns -- no cross-series contamination via
+        groupby boundary."""
+        df = multi_series_time_series.copy()
+        # Product 1 launched 2023-12-01 (31 days before 2024-01-01)
+        # Product 2 launched 2023-12-25 (7 days before 2024-01-01)
+        launch_map = {1: date(2023, 12, 1), 2: date(2023, 12, 25)}
+        df["launch_date"] = df["product_id"].map(launch_map)
+        df["discontinue_date"] = pd.NaT
+
+        config = FeatureSetConfig(
+            name="test_lifecycle_isolation",
+            entity_columns=("store_id", "product_id"),
+            lifecycle_config=LifecycleConfig(
+                include_days_since_launch=True,
+                include_days_since_discontinue=False,
+                lag_days=1,
+            ),
+        )
+        service = FeatureEngineeringService(config)
+        result = service.compute_features(df)
+
+        for store_id in (1, 2):
+            for product_id, base_lag in ((1, 31), (2, 7)):
+                series = result.df[
+                    (result.df["store_id"] == store_id) & (result.df["product_id"] == product_id)
+                ].reset_index(drop=True)
+                # Row 0: NaN
+                assert pd.isna(series.iloc[0]["days_since_launch_lag1"]), (
+                    f"({store_id},{product_id}) row 0 must be NaN"
+                )
+                # Row 1: base_lag = (date[0] - launch_date).days
+                actual = series.iloc[1]["days_since_launch_lag1"]
+                assert actual == base_lag, (
+                    f"CROSS-PRODUCT LEAKAGE: ({store_id},{product_id}) row 1: "
+                    f"days_since_launch_lag1={actual}, expected={base_lag}. "
+                    "Lifecycle lag is mixing across products."
+                )

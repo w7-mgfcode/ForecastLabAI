@@ -10,6 +10,7 @@ from app.features.featuresets.schemas import (
     FeatureSetConfig,
     ImputationConfig,
     LagConfig,
+    LifecycleConfig,
     RollingConfig,
 )
 from app.features.featuresets.service import FeatureEngineeringService
@@ -317,3 +318,126 @@ class TestComputeFeatures:
 
         assert len(result.df) == 0
         assert result.feature_columns == ["lag_1"]
+
+
+class TestLifecycleFeatures:
+    """Tests for _compute_lifecycle_features (PRP-3.1B)."""
+
+    def test_compute_lifecycle_happy_path(self, sample_time_series: pd.DataFrame) -> None:
+        """Happy path: launch_date and discontinue_date both set; produces
+        both lagged columns with expected integer values."""
+        df = sample_time_series.copy()
+        df["launch_date"] = date(2024, 1, 1)  # delta starts at 0
+        df["discontinue_date"] = date(2024, 1, 15)  # signed crossover
+
+        config = FeatureSetConfig(
+            name="lc_happy",
+            lifecycle_config=LifecycleConfig(
+                include_days_since_launch=True,
+                include_days_since_discontinue=True,
+                lag_days=1,
+            ),
+        )
+        service = FeatureEngineeringService(config)
+        result = service.compute_features(df)
+
+        assert "days_since_launch_lag1" in result.feature_columns
+        assert "days_since_discontinue_lag1" in result.feature_columns
+
+        # Row 1 (date=2024-01-02): lag1 reflects row 0 (date=2024-01-01)
+        # days_since_launch at row 0 = 0; days_since_discontinue at row 0 = -14
+        assert result.df.iloc[1]["days_since_launch_lag1"] == 0
+        assert result.df.iloc[1]["days_since_discontinue_lag1"] == -14
+
+        # Row 16 (date=2024-01-17): lag1 reflects row 15 (date=2024-01-16)
+        # days_since_launch at row 15 = 15; days_since_discontinue at row 15 = +1
+        assert result.df.iloc[16]["days_since_launch_lag1"] == 15
+        assert result.df.iloc[16]["days_since_discontinue_lag1"] == 1
+
+    def test_compute_lifecycle_null_launch_date(self, sample_time_series: pd.DataFrame) -> None:
+        """NULL launch_date -> all-NaN lifecycle column, no exception."""
+        df = sample_time_series.copy()
+        df["launch_date"] = pd.NaT
+        df["discontinue_date"] = pd.NaT
+
+        config = FeatureSetConfig(
+            name="lc_null",
+            lifecycle_config=LifecycleConfig(
+                include_days_since_launch=True,
+                include_days_since_discontinue=False,
+                lag_days=1,
+            ),
+        )
+        service = FeatureEngineeringService(config)
+        result = service.compute_features(df)
+
+        col = "days_since_launch_lag1"
+        assert col in result.feature_columns
+        assert result.df[col].isna().all(), "NULL launch_date must produce all-NaN column"
+
+    def test_compute_lifecycle_discontinue_before_cutoff(
+        self, sample_time_series: pd.DataFrame
+    ) -> None:
+        """discontinue_date before all rows -> positive integer for every row."""
+        df = sample_time_series.copy()
+        df["launch_date"] = date(2023, 1, 1)
+        df["discontinue_date"] = date(2023, 12, 25)  # 7 days before row 0
+
+        config = FeatureSetConfig(
+            name="lc_post_discontinue",
+            lifecycle_config=LifecycleConfig(
+                include_days_since_launch=False,
+                include_days_since_discontinue=True,
+                lag_days=1,
+            ),
+        )
+        service = FeatureEngineeringService(config)
+        result = service.compute_features(df)
+
+        # Row 1: lag1 reflects row 0 -> date=2024-01-01 - discontinue=2023-12-25 = +7
+        assert result.df.iloc[1]["days_since_discontinue_lag1"] == 7
+        # Row 8: lag1 reflects row 7 -> 2024-01-08 - 2023-12-25 = +14
+        assert result.df.iloc[8]["days_since_discontinue_lag1"] == 14
+        # All non-NaN values must be >= 0 (discontinue is in the past)
+        non_na = result.df["days_since_discontinue_lag1"].dropna()
+        assert (non_na >= 0).all(), "with discontinue in the past, all lagged values must be >= 0"
+
+    def test_compute_lifecycle_skipped_when_attrs_absent(
+        self, sample_time_series: pd.DataFrame
+    ) -> None:
+        """Defensive: missing product-attrs columns -> zero new columns, no crash.
+
+        This is the contract for the legacy /featuresets/compute path; PRP-3.1E
+        adds the loader extension that joins product attrs.
+        """
+        # sample_time_series has NO launch_date / discontinue_date columns.
+        config = FeatureSetConfig(
+            name="lc_no_attrs",
+            lifecycle_config=LifecycleConfig(),
+        )
+        service = FeatureEngineeringService(config)
+        result = service.compute_features(sample_time_series)
+
+        assert "days_since_launch_lag1" not in result.feature_columns
+        assert "days_since_discontinue_lag1" not in result.feature_columns
+        # The family token still appears via get_enabled_features (set in PRP-3.1A).
+        assert "lifecycle" in config.get_enabled_features()
+
+    def test_compute_lifecycle_uses_phase2_fixture(
+        self,
+        sample_time_series: pd.DataFrame,
+        phase2_product_attrs_df: pd.DataFrame,
+    ) -> None:
+        """End-to-end merge with the PRP-3.1A fixture: P1 launched 2023-06-01."""
+        df = sample_time_series.merge(phase2_product_attrs_df, on="product_id", how="left")
+        config = FeatureSetConfig(
+            name="lc_phase2_fixture",
+            lifecycle_config=LifecycleConfig(lag_days=1),
+        )
+        service = FeatureEngineeringService(config)
+        result = service.compute_features(df)
+
+        # P1 launched 2023-06-01; 2024-01-01 is 214 days after
+        # -> row 1 (date=2024-01-02, lag1 reflects row 0) = 214
+        expected = (date(2024, 1, 1) - date(2023, 6, 1)).days
+        assert result.df.iloc[1]["days_since_launch_lag1"] == expected
