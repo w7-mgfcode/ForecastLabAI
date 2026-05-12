@@ -65,6 +65,23 @@ async def list_scenarios() -> list[schemas.ScenarioInfo]:
     return service.list_scenarios()
 
 
+@router.get(
+    "/channels",
+    response_model=schemas.ChannelsResponse,
+    summary="List sales channels",
+    description=(
+        "Return the SQL allow-list for `sales_daily.channel` and "
+        "`ChannelConfig.channel_mix` keys (Phase 2). Use these values "
+        "to populate UI selectors or validate channel_mix payloads "
+        "before POST /seeder/generate."
+    ),
+)
+async def list_channels() -> schemas.ChannelsResponse:
+    """List valid sales channel identifiers (Phase 2)."""
+    channels = sorted(schemas.VALID_CHANNELS)
+    return schemas.ChannelsResponse(channels=channels, total=len(channels))
+
+
 @router.post(
     "/generate",
     response_model=schemas.GenerateResult,

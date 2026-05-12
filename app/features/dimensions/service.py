@@ -4,17 +4,23 @@ Provides paginated access to Store and Product dimension tables
 with filtering and search capabilities.
 """
 
+from datetime import UTC, date, datetime, timedelta
+
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.features.data_platform.models import Product, Store
 from app.features.dimensions.schemas import (
+    LifecycleCurveResponse,
+    LifecyclePoint,
     ProductListResponse,
     ProductResponse,
     StoreListResponse,
     StoreResponse,
 )
+from app.shared.seeder.config import LifecycleConfig
+from app.shared.seeder.generators.lifecycle import LifecycleGenerator
 
 logger = get_logger(__name__)
 
@@ -251,3 +257,86 @@ class DimensionService:
             return None
 
         return ProductResponse.model_validate(product)
+
+    async def get_product_lifecycle_curve(
+        self,
+        db: AsyncSession,
+        product_id: int,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> LifecycleCurveResponse | None:
+        """Return the reference lifecycle demand curve for a product (Phase 2).
+
+        Uses the default :class:`LifecycleConfig` ramp parameters. The
+        curve respects the product's own ``launch_date`` and
+        ``discontinue_date`` but is independent of the ``LifecycleConfig``
+        used at seeding time (that config is not persisted). Returns
+        ``None`` when the product is not found.
+
+        Args:
+            db: Database session.
+            product_id: Product primary key.
+            start_date: Optional curve start. Defaults to the product's
+                ``launch_date`` (or today minus 30 days if launch is
+                unset).
+            end_date: Optional curve end. Defaults to ``start_date + 365``
+                days, clamped to ``discontinue_date`` when set.
+
+        Returns:
+            ``LifecycleCurveResponse`` or ``None`` if no product.
+        """
+        stmt = select(Product).where(Product.id == product_id)
+        result = await db.execute(stmt)
+        product = result.scalar_one_or_none()
+        if product is None:
+            return None
+
+        launch = product.launch_date
+        discontinue = product.discontinue_date
+        # Default the curve window around the product's lifecycle dates.
+        # When launch_date is unset, fall back to a recent 1-year window
+        # so callers get a usable response (the multiplier short-circuits
+        # to 1.0 and the stage is ``maturity``).
+        if start_date is None:
+            start_date = launch or (datetime.now(UTC).date() - timedelta(days=30))
+        if end_date is None:
+            end_date = start_date + timedelta(days=365)
+            if discontinue is not None and discontinue < end_date:
+                end_date = discontinue
+
+        if end_date < start_date:
+            end_date = start_date
+
+        config = LifecycleConfig(enable=True)
+        generator = LifecycleGenerator(config)
+
+        points: list[LifecyclePoint] = []
+        current = start_date
+        while current <= end_date:
+            points.append(
+                LifecyclePoint(
+                    date=current,
+                    stage=generator.stage_for(current, launch, discontinue),
+                    multiplier=generator.multiplier_for(current, launch, discontinue),
+                )
+            )
+            current += timedelta(days=1)
+
+        logger.info(
+            "dimensions.lifecycle_curve_computed",
+            product_id=product_id,
+            launch_date=str(launch) if launch else None,
+            discontinue_date=str(discontinue) if discontinue else None,
+            points=len(points),
+        )
+
+        return LifecycleCurveResponse(
+            product_id=product.id,
+            sku=product.sku,
+            launch_date=launch,
+            discontinue_date=discontinue,
+            start_date=start_date,
+            end_date=end_date,
+            points=points,
+            total=len(points),
+        )

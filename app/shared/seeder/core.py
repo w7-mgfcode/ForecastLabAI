@@ -20,17 +20,22 @@ from app.features.data_platform.models import (
     PriceHistory,
     Product,
     Promotion,
+    ReplenishmentEvent,
     SalesDaily,
     SalesReturn,
     Store,
 )
 from app.shared.seeder.generators import (
+    BundleGenerator,
     CalendarGenerator,
     ExogenousSignalGenerator,
     InventorySnapshotGenerator,
+    LifecycleGenerator,
+    MarkdownGenerator,
     PriceHistoryGenerator,
     ProductGenerator,
     PromotionGenerator,
+    ReplenishmentGenerator,
     ReturnsGenerator,
     SalesDailyGenerator,
     StoreGenerator,
@@ -41,6 +46,38 @@ if TYPE_CHECKING:
     from app.shared.seeder.config import SeederConfig
 
 logger = get_logger(__name__)
+
+
+# Canonical promotion-row shape — every record inserted into the
+# ``promotion`` table must carry exactly these keys so the bulk
+# ``pg_insert(...).values([...])`` builds a uniform VALUES clause.
+# Defaults match the SQL server defaults / CHECK constraint:
+# ``kind`` defaults to ``"pct_off"`` (server default) and
+# ``bundle_member_product_ids`` is NULL unless ``kind in (bundle, bogo)``.
+_PROMOTION_DEFAULTS: dict[str, Any] = {
+    "kind": "pct_off",
+    "discount_pct": None,
+    "discount_amount": None,
+    "bundle_member_product_ids": None,
+}
+
+
+def _normalize_promotion_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ensure every promotion record carries the canonical key set.
+
+    ``PromotionGenerator`` emits records without ``kind`` /
+    ``bundle_member_product_ids``; ``BundleGenerator`` mutates a subset
+    of those into ``bogo`` / ``bundle`` rows; ``MarkdownGenerator``
+    appends ``kind='markdown'`` rows. PostgreSQL multi-row INSERT
+    requires uniform keys across the batch, so we patch missing keys
+    with their schema defaults in place.
+
+    Existing values are preserved — ``setdefault`` only fills gaps.
+    """
+    for record in records:
+        for key, default in _PROMOTION_DEFAULTS.items():
+            record.setdefault(key, default)
+    return records
 
 
 @dataclass
@@ -57,6 +94,7 @@ class SeederResult:
         inventory_count: Number of inventory snapshots.
         exogenous_count: Number of exogenous signal records (Phase 1).
         returns_count: Number of sales return records (Phase 1).
+        replenishment_count: Number of replenishment_event records (Phase 2).
         seed: Random seed used.
     """
 
@@ -69,6 +107,7 @@ class SeederResult:
     inventory_count: int = 0
     exogenous_count: int = 0
     returns_count: int = 0
+    replenishment_count: int = 0
     seed: int = 42
 
 
@@ -128,14 +167,24 @@ class DataSeeder:
     async def _generate_dimensions(
         self,
         db: AsyncSession,
-    ) -> tuple[list[int], list[tuple[int, Decimal]], list[date]]:
+    ) -> tuple[
+        list[int],
+        list[tuple[int, Decimal]],
+        list[date],
+        dict[int, tuple[date | None, date | None]],
+    ]:
         """Generate and insert dimension tables.
 
         Args:
             db: Async database session.
 
         Returns:
-            Tuple of (store_ids, product_data, dates).
+            Tuple of ``(store_ids, product_data, dates,
+            product_lifecycle_data)``. ``product_lifecycle_data`` maps
+            ``product_id -> (launch_date, discontinue_date)``. When
+            lifecycle is disabled the dict is still returned but every
+            value is ``(None, None)`` so the downstream multiplier
+            short-circuits to 1.0.
         """
         # Generate stores
         store_gen = StoreGenerator(self.rng, self.config.dimensions)
@@ -152,8 +201,15 @@ class DataSeeder:
         result = await db.execute(select(Store.id))
         store_ids = [row[0] for row in result.fetchall()]
 
-        # Generate products
-        product_gen = ProductGenerator(self.rng, self.config.dimensions)
+        # Generate products. Phase 2: pass lifecycle config + date_range
+        # when lifecycle is enabled so product rows pick up launch /
+        # discontinue / stage attributes. Disabled path is byte-identical.
+        product_gen = ProductGenerator(
+            self.rng,
+            self.config.dimensions,
+            lifecycle_config=self.config.lifecycle,
+            date_range=(self.config.start_date, self.config.end_date),
+        )
         product_records = product_gen.generate()
 
         logger.info(
@@ -163,9 +219,23 @@ class DataSeeder:
 
         await self._batch_insert(db, Product, product_records)
 
-        # Fetch product IDs with base prices
-        result = await db.execute(select(Product.id, Product.base_price))
-        product_data = [(row[0], row[1] or Decimal("9.99")) for row in result.fetchall()]
+        # Fetch product IDs with base prices + lifecycle dates. Single
+        # query keeps the row-set consistent (re-querying could race
+        # with concurrent writers, though seeder is single-tenant).
+        rows = (
+            await db.execute(
+                select(
+                    Product.id,
+                    Product.base_price,
+                    Product.launch_date,
+                    Product.discontinue_date,
+                )
+            )
+        ).fetchall()
+        product_data = [(row[0], row[1] or Decimal("9.99")) for row in rows]
+        product_lifecycle_data: dict[int, tuple[date | None, date | None]] = {
+            row[0]: (row[2], row[3]) for row in rows
+        }
 
         # Generate calendar
         calendar_gen = CalendarGenerator(
@@ -189,7 +259,7 @@ class DataSeeder:
             dates.append(current)
             current += timedelta(days=1)
 
-        return store_ids, product_data, dates
+        return store_ids, product_data, dates, product_lifecycle_data
 
     async def _generate_exogenous(
         self,
@@ -237,7 +307,8 @@ class DataSeeder:
         product_data: list[tuple[int, Decimal]],
         dates: list[date],
         weather_lookup: dict[tuple[int, date], float] | None = None,
-    ) -> tuple[int, int, int, int, int]:
+        product_lifecycle_data: dict[int, tuple[date | None, date | None]] | None = None,
+    ) -> tuple[int, int, int, int, int, int]:
         """Generate and insert fact tables.
 
         Args:
@@ -249,10 +320,14 @@ class DataSeeder:
                 exogenous generator. Demand picks up weather sensitivity only
                 when this dict is non-empty AND
                 ``config.exogenous.weather_temperature_sensitivity`` is non-zero.
+            product_lifecycle_data: Optional Phase 2 mapping
+                ``product_id -> (launch_date, discontinue_date)``. Consumed
+                by ``SalesDailyGenerator``'s lifecycle multiplier and by
+                ``MarkdownGenerator`` for the ``lifecycle_decline`` trigger.
 
         Returns:
             Tuple of (sales_count, price_history_count, promotions_count,
-            inventory_count, returns_count).
+            inventory_count, returns_count, replenishment_count).
         """
         product_ids = [pid for pid, _ in product_data]
 
@@ -264,13 +339,6 @@ class DataSeeder:
             self.config.start_date,
             self.config.end_date,
         )
-
-        logger.info(
-            "seeder.price_history.generating",
-            count=len(price_records),
-        )
-
-        await self._batch_insert(db, PriceHistory, price_records)
 
         # Generate promotions
         promo_gen = PromotionGenerator(
@@ -284,12 +352,10 @@ class DataSeeder:
             self.config.end_date,
         )
 
-        logger.info(
-            "seeder.promotions.generating",
-            count=len(promo_records),
-        )
-
-        await self._batch_insert(db, Promotion, promo_records)
+        # Phase 2: convert a slice of promotions to bundle/BOGO in place.
+        # Disabled path is a no-op (zero rng draws, no mutation).
+        bundle_gen = BundleGenerator(self.rng, self.config.bundles)
+        bundle_gen.apply(promo_records, product_ids)
 
         # Generate inventory snapshots
         inventory_gen = InventorySnapshotGenerator(
@@ -302,16 +368,63 @@ class DataSeeder:
             dates,
         )
 
+        # Phase 2: emit markdown promo rows + price drops. Disabled path
+        # returns empty containers and consumes zero rng. Built BEFORE
+        # promotion insert so markdown rows ship in the same batch.
+        lifecycle_gen = LifecycleGenerator(self.config.lifecycle)
+        product_specs: list[dict[str, Any]] = [
+            {
+                "product_id": pid,
+                "base_price": price,
+                "launch_date": (product_lifecycle_data or {}).get(pid, (None, None))[0],
+                "discontinue_date": (product_lifecycle_data or {}).get(pid, (None, None))[1],
+            }
+            for pid, price in product_data
+        ]
+        markdown_gen = MarkdownGenerator(self.rng, self.config.markdowns)
+        (
+            markdown_promo_records,
+            markdown_price_records,
+            _markdown_dates,
+        ) = markdown_gen.generate(
+            product_specs=product_specs,
+            store_ids=store_ids,
+            stockout_dates=stockout_dates,
+            dates=dates,
+            lifecycle=lifecycle_gen,
+        )
+
+        # Merge markdown outputs into the main lists, then normalize so
+        # every promotion row carries the same key set (required for
+        # pg_insert multi-row INSERT). The disabled-path lists are empty
+        # so the merge is a no-op.
+        promo_records.extend(markdown_promo_records)
+        price_records.extend(markdown_price_records)
+        _normalize_promotion_records(promo_records)
+
+        logger.info(
+            "seeder.price_history.generating",
+            count=len(price_records),
+        )
+        await self._batch_insert(db, PriceHistory, price_records)
+
+        logger.info(
+            "seeder.promotions.generating",
+            count=len(promo_records),
+        )
+        await self._batch_insert(db, Promotion, promo_records)
+
         logger.info(
             "seeder.inventory.generating",
             count=len(inventory_records),
         )
-
         await self._batch_insert(db, InventorySnapshotDaily, inventory_records)
 
         # Generate sales (depends on promotions and stockouts). Phase 1
         # extensions stay as None / 0 when their config flags are off so the
-        # disabled-path is byte-identical with pre-Phase-1.
+        # disabled-path is byte-identical with pre-Phase-1. Phase 2
+        # lifecycle / channels are gated by their own enable flags inside
+        # the generator.
         weather_lookup_for_sales = (
             weather_lookup
             if weather_lookup and self.config.exogenous.weather_temperature_sensitivity != 0.0
@@ -329,6 +442,8 @@ class DataSeeder:
             exogenous_weather=weather_lookup_for_sales,
             weather_temperature_sensitivity=(self.config.exogenous.weather_temperature_sensitivity),
             weather_climatology_mean_c=self.config.exogenous.weather_climatology_mean_c,
+            lifecycle=lifecycle_gen,
+            channels=self.config.channels,
         )
         sales_records = sales_gen.generate(
             store_ids,
@@ -336,6 +451,7 @@ class DataSeeder:
             dates,
             promo_dates,
             stockout_dates,
+            product_lifecycle_data=product_lifecycle_data,
         )
 
         logger.info(
@@ -353,12 +469,26 @@ class DataSeeder:
             logger.info("seeder.returns.generating", count=len(returns_records))
             await self._batch_insert(db, SalesReturn, returns_records)
 
+        # Phase 2: emit replenishment_event rows. Disabled path returns
+        # an empty list and consumes zero rng.
+        replenishment_gen = ReplenishmentGenerator(self.rng, self.config.lead_time)
+        replenishment_records = replenishment_gen.generate(
+            store_ids,
+            product_ids,
+            dates,
+            base_demand=self.config.time_series.base_demand,
+        )
+        if replenishment_records:
+            logger.info("seeder.replenishment.generating", count=len(replenishment_records))
+            await self._batch_insert(db, ReplenishmentEvent, replenishment_records)
+
         return (
             len(sales_records),
             len(price_records),
             len(promo_records),
             len(inventory_records),
             len(returns_records),
+            len(replenishment_records),
         )
 
     async def generate_full(self, db: AsyncSession) -> SeederResult:
@@ -383,7 +513,12 @@ class DataSeeder:
         )
 
         # Generate dimensions first
-        store_ids, product_data, dates = await self._generate_dimensions(db)
+        (
+            store_ids,
+            product_data,
+            dates,
+            product_lifecycle_data,
+        ) = await self._generate_dimensions(db)
 
         # Phase 1: generate exogenous signals (no-op when no signal is enabled).
         exogenous_count, weather_lookup = await self._generate_exogenous(db, store_ids, dates)
@@ -395,7 +530,15 @@ class DataSeeder:
             promo_count,
             inventory_count,
             returns_count,
-        ) = await self._generate_facts(db, store_ids, product_data, dates, weather_lookup)
+            replenishment_count,
+        ) = await self._generate_facts(
+            db,
+            store_ids,
+            product_data,
+            dates,
+            weather_lookup,
+            product_lifecycle_data=product_lifecycle_data,
+        )
 
         # Commit all changes
         await db.commit()
@@ -410,6 +553,7 @@ class DataSeeder:
             inventory_count=inventory_count,
             exogenous_count=exogenous_count,
             returns_count=returns_count,
+            replenishment_count=replenishment_count,
             seed=self.config.seed,
         )
 
@@ -421,6 +565,7 @@ class DataSeeder:
             sales=result.sales_count,
             exogenous=result.exogenous_count,
             returns=result.returns_count,
+            replenishment=result.replenishment_count,
             seed=self.config.seed,
         )
 
@@ -459,9 +604,23 @@ class DataSeeder:
         if not store_ids:
             raise ValueError("No stores found. Run --full-new first to create dimensions.")
 
-        # Fetch existing product data
-        result = await db.execute(select(Product.id, Product.base_price))
-        product_data = [(row[0], row[1] or Decimal("9.99")) for row in result.fetchall()]
+        # Fetch existing product data (with lifecycle dates for Phase 2).
+        # Lifecycle multiplier short-circuits to 1.0 for products with
+        # NULL launch_date so the disabled path is byte-identical.
+        rows = (
+            await db.execute(
+                select(
+                    Product.id,
+                    Product.base_price,
+                    Product.launch_date,
+                    Product.discontinue_date,
+                )
+            )
+        ).fetchall()
+        product_data = [(row[0], row[1] or Decimal("9.99")) for row in rows]
+        product_lifecycle_data: dict[int, tuple[date | None, date | None]] = {
+            row[0]: (row[2], row[3]) for row in rows
+        }
 
         if not product_data:
             raise ValueError("No products found. Run --full-new first to create dimensions.")
@@ -494,7 +653,15 @@ class DataSeeder:
             promo_count,
             inventory_count,
             returns_count,
-        ) = await self._generate_facts(db, store_ids, product_data, dates, weather_lookup)
+            replenishment_count,
+        ) = await self._generate_facts(
+            db,
+            store_ids,
+            product_data,
+            dates,
+            weather_lookup,
+            product_lifecycle_data=product_lifecycle_data,
+        )
 
         await db.commit()
 
@@ -508,6 +675,7 @@ class DataSeeder:
             inventory_count=inventory_count,
             exogenous_count=exogenous_count,
             returns_count=returns_count,
+            replenishment_count=replenishment_count,
             seed=self.config.seed,
         )
 
@@ -517,6 +685,7 @@ class DataSeeder:
             sales=result_data.sales_count,
             exogenous=result_data.exogenous_count,
             returns=result_data.returns_count,
+            replenishment=result_data.replenishment_count,
         )
 
         return result_data
@@ -539,11 +708,14 @@ class DataSeeder:
         """
         counts: dict[str, int] = {}
 
-        # Get current counts. Phase 1 tables are listed BEFORE the older fact
-        # tables so they're deleted first — sales_returns FKs to product/store
-        # and exogenous_signal FKs to store/calendar, so cleaning them up
-        # ahead of the dimension/calendar wipe avoids FK violations.
+        # Get current counts. Phase 2 ``replenishment_event`` leads — it
+        # FKs to store/product/calendar but no other table FKs into it,
+        # so dropping first removes the leaf safely. Phase 1 tables come
+        # next (sales_returns FKs to product/store, exogenous_signal FKs
+        # to store/calendar), then the older fact tables. The order keeps
+        # the dimension/calendar wipe free of FK violations.
         fact_tables = [
+            ("replenishment_event", ReplenishmentEvent),
             ("sales_returns", SalesReturn),
             ("exogenous_signal", ExogenousSignal),
             ("sales_daily", SalesDaily),
@@ -632,6 +804,7 @@ class DataSeeder:
             ("inventory_snapshot_daily", InventorySnapshotDaily),
             ("exogenous_signal", ExogenousSignal),
             ("sales_returns", SalesReturn),
+            ("replenishment_event", ReplenishmentEvent),
         ]
 
         counts: dict[str, int] = {}
@@ -711,6 +884,46 @@ class DataSeeder:
             errors.append(
                 f"Found {bad_global} exogenous_signal rows violating "
                 "is_global / store_id consistency"
+            )
+
+        # Phase 2: bundle / BOGO promotions must declare their member
+        # product IDs. The CHECK constraint enforces this at the DB
+        # layer; the count below catches generator drift early.
+        bundle_consistency_check = text(
+            "SELECT COUNT(*) FROM promotion "
+            "WHERE kind IN ('bundle', 'bogo') AND bundle_member_product_ids IS NULL"
+        )
+        result = await db.execute(bundle_consistency_check)
+        bad_bundles = result.scalar() or 0
+        if bad_bundles > 0:
+            errors.append(
+                f"Found {bad_bundles} bundle/BOGO promotions with NULL bundle_member_product_ids"
+            )
+
+        # Phase 2: lifecycle date ordering — discontinue_date must be
+        # on or after launch_date when both are set. Also caught by the
+        # ``ck_product_lifecycle_date_order`` CHECK; defensive count for
+        # generator drift.
+        bad_lifecycle_check = text(
+            "SELECT COUNT(*) FROM product "
+            "WHERE discontinue_date IS NOT NULL AND launch_date IS NOT NULL "
+            "  AND discontinue_date < launch_date"
+        )
+        result = await db.execute(bad_lifecycle_check)
+        bad_lifecycle = result.scalar() or 0
+        if bad_lifecycle > 0:
+            errors.append(f"Found {bad_lifecycle} products with discontinue_date < launch_date")
+
+        # Phase 2: replenishment fill rate — received_qty must never
+        # exceed ordered_qty. DB-enforced; defensive count.
+        bad_fill_check = text(
+            "SELECT COUNT(*) FROM replenishment_event WHERE received_qty > ordered_qty"
+        )
+        result = await db.execute(bad_fill_check)
+        bad_fill = result.scalar() or 0
+        if bad_fill > 0:
+            errors.append(
+                f"Found {bad_fill} replenishment_event rows with received_qty > ordered_qty"
             )
 
         return errors

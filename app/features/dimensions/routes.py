@@ -4,12 +4,15 @@ These endpoints enable LLM agents and users to discover available stores
 and products before calling ingest, training, or forecasting endpoints.
 """
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.features.dimensions.schemas import (
+    LifecycleCurveResponse,
     ProductListResponse,
     ProductResponse,
     StoreListResponse,
@@ -233,6 +236,60 @@ async def get_product(
     """
     service = DimensionService()
     result = await service.get_product(db=db, product_id=product_id)
+
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Product not found: {product_id}. "
+            "Use GET /dimensions/products to list available products.",
+        )
+
+    return result
+
+
+@router.get(
+    "/products/{product_id}/lifecycle-curve",
+    response_model=LifecycleCurveResponse,
+    summary="Get product lifecycle demand curve (Phase 2)",
+    description="""
+Return the reference lifecycle demand-multiplier curve for a product.
+
+**Behavior**:
+- Respects the product's own `launch_date` / `discontinue_date`.
+- Uses the default `LifecycleConfig` ramp parameters (not the config that
+  was active at seeding time — that config is not persisted).
+- Returns one point per calendar day in the requested window.
+
+**Defaults**:
+- `start_date` defaults to the product's `launch_date` (or today minus 30 days
+  when `launch_date` is unset).
+- `end_date` defaults to `start_date + 365 days`, clamped to
+  `discontinue_date` when set.
+
+**Error Handling**:
+- Returns 404 if `product_id` doesn't exist.
+""",
+)
+async def get_product_lifecycle_curve(
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+    start_date: date | None = Query(
+        None,
+        description="Curve start (inclusive). Defaults to launch_date.",
+    ),
+    end_date: date | None = Query(
+        None,
+        description="Curve end (inclusive). Defaults to start_date + 365 days.",
+    ),
+) -> LifecycleCurveResponse:
+    """Return the reference lifecycle demand curve for a product."""
+    service = DimensionService()
+    result = await service.get_product_lifecycle_curve(
+        db=db,
+        product_id=product_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
 
     if result is None:
         raise HTTPException(
