@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
-from app.features.data_platform.models import Calendar, SalesDaily
+from app.features.data_platform.models import Calendar, Product, SalesDaily
 from app.features.featuresets.schemas import FeatureSetConfig
 
 if TYPE_CHECKING:
@@ -983,6 +983,56 @@ class FeatureDataLoader:
             ]
         )
 
+    async def load_product_attrs(
+        self,
+        db: AsyncSession,
+        product_ids: list[int],
+    ) -> pd.DataFrame:
+        """Load product lifecycle attributes for the given product IDs.
+
+        Returns a per-product slice of dimension columns relevant to the
+        lifecycle feature family. ``launch_date`` and ``discontinue_date``
+        are timeless attributes of the product (NOT facts), so there's no
+        cutoff filter -- the values are constant across time and the
+        ``_compute_lifecycle_features`` method derives the per-row delta
+        downstream.
+
+        Args:
+            db: Async database session.
+            product_ids: Product IDs to include.
+
+        Returns:
+            DataFrame with columns ``[product_id, launch_date,
+            discontinue_date]``. Empty DataFrame (with correct columns)
+            when no matching products are found.
+        """
+        stmt = (
+            select(
+                Product.id,
+                Product.launch_date,
+                Product.discontinue_date,
+            )
+            .where(Product.id.in_(product_ids))
+            .order_by(Product.id)
+        )
+
+        result = await db.execute(stmt)
+        rows = result.all()
+
+        if not rows:
+            return pd.DataFrame(columns=["product_id", "launch_date", "discontinue_date"])
+
+        return pd.DataFrame(
+            [
+                {
+                    "product_id": row.id,
+                    "launch_date": row.launch_date,
+                    "discontinue_date": row.discontinue_date,
+                }
+                for row in rows
+            ]
+        )
+
 
 async def compute_features_for_series(
     db: AsyncSession,
@@ -1032,6 +1082,23 @@ async def compute_features_for_series(
             df = df.merge(
                 calendar_df[["date", "is_holiday"]],
                 on="date",
+                how="left",
+            )
+
+    # Optionally load product attrs and merge for lifecycle features
+    # (#116). ``launch_date`` / ``discontinue_date`` are timeless product
+    # attributes, so no cutoff filter is needed -- the merge attaches
+    # the same per-product values to every sales row, and
+    # ``_compute_lifecycle_features`` derives per-row deltas downstream.
+    if config.lifecycle_config and not df.empty:
+        product_attrs_df = await loader.load_product_attrs(
+            db=db,
+            product_ids=[product_id],
+        )
+        if not product_attrs_df.empty:
+            df = df.merge(
+                product_attrs_df[["product_id", "launch_date", "discontinue_date"]],
+                on="product_id",
                 how="left",
             )
 

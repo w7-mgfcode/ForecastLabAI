@@ -245,12 +245,12 @@ LifecycleConfig(
 | `days_since_launch_lag{N}` | int (NaN if `launch_date` is NULL) | `shift(N)` per `(store_id, product_id)` |
 | `days_since_discontinue_lag{N}` | int (NaN if `discontinue_date` is NULL; signed pre-/post-retire) | `shift(N)` per `(store_id, product_id)` |
 
-> Note: at the HTTP boundary, the current `FeatureDataLoader` does not yet
-> join `product.launch_date` / `product.discontinue_date` onto the sales
-> frame, so `_compute_lifecycle_features` silently emits zero lifecycle
-> columns end-to-end (see `service.py`). The compute method itself is fully
-> wired and unit-tested; extending the loader to plumb product attrs is
-> tracked as follow-up work.
+End-to-end at the HTTP boundary, `FeatureDataLoader.load_product_attrs`
+joins `product.launch_date` / `product.discontinue_date` onto the sales
+frame when `lifecycle_config` is set (#116). The attributes are timeless
+(no cutoff filter), so the merge is constant per product and
+`_compute_lifecycle_features` derives the per-row delta + `shift(N)`
+downstream.
 
 ### Replenishment features
 

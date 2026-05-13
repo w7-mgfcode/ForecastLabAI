@@ -45,22 +45,25 @@ ADDITIVE_CONTRACT_BASELINE_HASH: str = "6c12b1a783eccdd4"
 
 # --- Phase 2 columns expected end-to-end through ``POST /featuresets/compute``.
 #
-# Replenishment + promotion columns appear because:
-#   * ``compute_features_for_series`` (service.py) eagerly loads
-#     replenishment events via ``FeatureDataLoader.load_replenishment_events``.
-#   * ``_compute_promotion_features`` falls back to an empty DataFrame when
-#     no rows are wired through, and still EMITS its columns (with 0 /
-#     NaN values) -- so the column membership assertion holds.
+# All four families are wired through ``compute_features_for_series``:
+#   * Lifecycle (#116): ``FeatureDataLoader.load_product_attrs`` joins
+#     ``product.launch_date`` / ``product.discontinue_date`` onto the
+#     sales frame when ``lifecycle_config`` is set. The seeded product
+#     has ``launch_date=date(2023, 6, 1)`` so ``days_since_launch_lag1``
+#     resolves to a real integer. ``discontinue_date`` is NULL, so
+#     ``days_since_discontinue_lag1`` is emitted with all-NaN values.
+#   * Replenishment: ``FeatureDataLoader.load_replenishment_events``
+#     loads the seeded events.
+#   * Promotion: ``_compute_promotion_features`` falls back to an empty
+#     DataFrame when rows aren't wired through; columns still appear
+#     (with 0/NaN values).
 #
-# Lifecycle columns (``days_since_launch_lag1`` / ``_discontinue_lag1``) are
-# OMITTED from the expected set because the ``FeatureDataLoader`` does not
-# join ``product.launch_date`` / ``product.discontinue_date`` onto the
-# sales frame; per ``service.py::_compute_lifecycle_features`` (silent
-# skip when both source columns are absent), no lifecycle columns reach
-# ``feature_columns`` at the HTTP boundary. Extending the loader to plumb
-# product attrs is OUT OF SCOPE for this slice (PRP-3.1E ships docs +
-# tests only; see PRP-3.1E §16 Open Question 2).
+# ``days_since_discontinue_lag1`` is in the expected set even though
+# the seeded product has ``discontinue_date=None`` -- the compute method
+# emits the column header regardless; the values are all-NaN downstream.
 PHASE2_EXPECTED_COLUMNS: set[str] = {
+    "days_since_launch_lag1",
+    "days_since_discontinue_lag1",
     "days_since_last_replenishment_lag1",
     "replenishment_count_w14_lag1",
     "promo_markdown_active_lag1",
