@@ -397,8 +397,15 @@ class ComputeFeaturesRequest(BaseModel):
 
     store_id: int = Field(..., ge=1, description="Store ID")
     product_id: int = Field(..., ge=1, description="Product ID")
+    # NOTE: ``strict=False`` overrides the model-level ``strict=True`` for this
+    # field so FastAPI's ``validate_python`` (called on the JSON-parsed dict
+    # by ``fastapi._compat.v2:175``) accepts ISO date strings from JSON
+    # request bodies. Without this override, ``strict=True`` requires an
+    # actual ``datetime.date`` instance -- which JSON cannot carry --
+    # and every HTTP caller would 422.
     cutoff_date: date_type = Field(
         ...,
+        strict=False,
         description="Compute features up to this date (inclusive)",
     )
     lookback_days: int = Field(
@@ -463,6 +470,8 @@ class PreviewFeaturesRequest(BaseModel):
 
     store_id: int = Field(..., ge=1)
     product_id: int = Field(..., ge=1)
-    cutoff_date: date_type
+    # See ``ComputeFeaturesRequest.cutoff_date`` for the rationale on
+    # ``strict=False`` (FastAPI ``validate_python`` + JSON dates).
+    cutoff_date: date_type = Field(..., strict=False)
     sample_rows: int = Field(default=10, ge=1, le=100)
     config: FeatureSetConfig

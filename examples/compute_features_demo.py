@@ -14,7 +14,9 @@ Requirements:
     - Database seeded with sales data
 """
 
+import argparse
 import json
+import sys
 from datetime import date
 
 import httpx
@@ -64,6 +66,38 @@ def create_sample_config() -> dict:
             }
         },
     }
+
+
+def create_phase2_config() -> dict:
+    """Create a Phase 2-enabled feature configuration.
+
+    Extends create_sample_config() with the three Phase 2 sub-configs
+    (lifecycle, replenishment, promotion). Use this with the same
+    /featuresets/compute and /featuresets/preview endpoints.
+
+    Returns:
+        FeatureSetConfig as a dictionary with Phase 2 sub-configs set.
+    """
+    cfg = create_sample_config()
+    cfg["name"] = "retail_forecast_phase2_v1"
+    cfg["lifecycle_config"] = {
+        "include_days_since_launch": True,
+        "include_days_since_discontinue": True,
+        "lag_days": 1,
+    }
+    cfg["replenishment_config"] = {
+        "include_days_since_last": True,
+        "include_count_window": True,
+        "lag_days": 1,
+        "count_window_days": 14,
+    }
+    cfg["promotion_config"] = {
+        "kinds_to_track": ["markdown"],
+        "include_active": True,
+        "include_intensity": True,
+        "lag_days": 1,
+    }
+    return cfg
 
 
 def compute_features(
@@ -134,8 +168,67 @@ def preview_features(
         return response.json()
 
 
+def print_phase2_columns(
+    store_id: int = 1,
+    product_id: int = 1,
+    cutoff_date: date = date(2024, 1, 31),
+) -> None:
+    """Run a /featuresets/preview call with Phase 2 sub-configs and print
+    the Phase 2 columns from the response.
+    """
+    cfg = create_phase2_config()
+    print("Phase 2 feature configuration constructed:")
+    print(f"  Lifecycle:     {cfg['lifecycle_config']}")
+    print(f"  Replenishment: {cfg['replenishment_config']}")
+    print(f"  Promotion:     {cfg['promotion_config']}")
+    print()
+
+    body = {
+        "store_id": store_id,
+        "product_id": product_id,
+        "cutoff_date": cutoff_date.isoformat(),
+        "sample_rows": 3,
+        "config": cfg,
+    }
+    with httpx.Client(timeout=30.0) as client:
+        try:
+            response = client.post(f"{FEATURES_ENDPOINT}/preview", json=body)
+            response.raise_for_status()
+        except httpx.ConnectError:
+            print("ERROR: Cannot connect to API server.", file=sys.stderr)
+            print(
+                "Please start the server with: uv run uvicorn app.main:app --port 8123",
+                file=sys.stderr,
+            )
+            return
+        except httpx.HTTPStatusError as e:
+            print(
+                f"  Phase 2 preview returned HTTP {e.response.status_code}: {e.response.text}",
+                file=sys.stderr,
+            )
+            return
+
+    result = response.json()
+    phase2_cols = [
+        c
+        for c in result["feature_columns"]
+        if c.startswith(("days_since_", "replenishment_", "promo_"))
+    ]
+    print(f"  Phase 2 columns returned ({len(phase2_cols)}):")
+    for col in phase2_cols:
+        print(f"    - {col}")
+
+
 def main() -> None:
     """Run the feature engineering demo."""
+    parser = argparse.ArgumentParser(description="Feature engineering demo")
+    parser.add_argument(
+        "--phase2",
+        action="store_true",
+        help="Run the Phase 2 (lifecycle/replenishment/promotion) preview after the Phase 1 demo",
+    )
+    args, _ = parser.parse_known_args()
+
     print("ForecastLabAI - Feature Engineering Demo")
     print("=" * 50)
     print()
@@ -212,6 +305,17 @@ def main() -> None:
                 if count > 0:
                     print(f"    {col}: {count}")
         print()
+
+        if args.phase2:
+            print()
+            print("=" * 50)
+            print("Phase 2 feature demo")
+            print("=" * 50)
+            print_phase2_columns(
+                store_id=store_id,
+                product_id=product_id,
+                cutoff_date=cutoff_date,
+            )
 
         print("Demo completed successfully!")
 
