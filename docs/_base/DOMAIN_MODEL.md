@@ -66,6 +66,9 @@
 | `lag` | Past value at offset `k` (`shift(k)`) | window |
 | `rolling` | Statistic over a trailing window with `shift(1)` to avoid leakage | moving average (only for the MA model name) |
 | `chunk` (RAG) | A windowed segment of a source document with its own embedding | section, paragraph |
+| `days_since_launch` | Continuous integer offset from `product.launch_date` to a sales-daily row, used as a lifecycle feature (`days_since_launch_lag{N}`) | lifecycle_stage (Phase 2 dropped the categorical) |
+| `replenishment event` | One row in `replenishment_event` representing inbound stock at `(store, product, date)`; feature cadence is derived from event spacing | inbound order, restock (those would be different grains) |
+| `promotion (kind)` | One row in `promotion` with `kind ∈ {pct_off, bogo, bundle, markdown}`; features are one-hot per kind via `PromotionConfig.kinds_to_track` | discount, sale (kind is the discriminator, not "promotion" in the colloquial sense) |
 | `scenario` (seeder) | A YAML or in-code preset (`retail_standard`, `holiday_rush`, …) that wires `DimensionConfig` + `FactsConfig` | template, profile |
 
 ## Event Taxonomy
