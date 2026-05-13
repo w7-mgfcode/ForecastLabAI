@@ -170,12 +170,19 @@ class TrainRequest(BaseModel):
 
     store_id: int = Field(..., ge=1, description="Store ID")
     product_id: int = Field(..., ge=1, description="Product ID")
+    # ``strict=False`` overrides the model-level ``strict=True`` so FastAPI's
+    # ``validate_python`` (called on the JSON-parsed dict at
+    # ``fastapi._compat.v2:175``) accepts ISO date strings from JSON request
+    # bodies. See ``docs/_base/SECURITY.md`` -> "Pydantic v2 strict mode on
+    # FastAPI request bodies" for the repo-wide policy (issue #117).
     train_start_date: date_type = Field(
         ...,
+        strict=False,
         description="Start date of training period",
     )
     train_end_date: date_type = Field(
         ...,
+        strict=False,
         description="End date of training period (inclusive)",
     )
     config: ModelConfig

@@ -13,6 +13,7 @@ from app.features.featuresets.schemas import (
     ImputationConfig,
     LagConfig,
     LifecycleConfig,
+    PreviewFeaturesRequest,
     PromotionConfig,
     ReplenishmentConfig,
     RollingConfig,
@@ -428,3 +429,43 @@ class TestComputeFeaturesRequest:
             config=FeatureSetConfig(name="test"),
         )
         assert request.lookback_days == 365
+
+
+class TestRequestJSONDateGotcha:
+    """Regression for #117 / #115: strict-mode request bodies must accept ISO
+    date strings.
+
+    FastAPI's ``_compat/v2.py:175`` calls ``TypeAdapter.validate_python`` on the
+    parsed JSON dict. With ``ConfigDict(strict=True)`` and no field-level
+    ``strict=False``, Pydantic refuses to coerce ISO date strings into
+    ``datetime.date`` -- every HTTP caller would 422. These tests exercise the
+    same ``model_validate`` path FastAPI takes, so a regression is caught at
+    unit-test time rather than at HTTP-boundary discovery time.
+
+    See ``docs/_base/SECURITY.md`` -> "Pydantic v2 strict mode on FastAPI
+    request bodies".
+    """
+
+    def test_compute_features_request_accepts_iso_string_date(self):
+        request = ComputeFeaturesRequest.model_validate(
+            {
+                "store_id": 1,
+                "product_id": 1,
+                "cutoff_date": "2024-01-31",
+                "lookback_days": 365,
+                "config": {"name": "test"},
+            }
+        )
+        assert request.cutoff_date == date(2024, 1, 31)
+
+    def test_preview_features_request_accepts_iso_string_date(self):
+        request = PreviewFeaturesRequest.model_validate(
+            {
+                "store_id": 1,
+                "product_id": 1,
+                "cutoff_date": "2024-01-31",
+                "sample_rows": 5,
+                "config": {"name": "test"},
+            }
+        )
+        assert request.cutoff_date == date(2024, 1, 31)

@@ -276,3 +276,46 @@ class TestTrainResponse:
         )
         assert response.n_observations == 31
         assert response.model_path.endswith(".joblib")
+
+
+class TestRequestJSONDateGotcha:
+    """Regression for #117 / #115: strict-mode request bodies must accept ISO
+    date strings.
+
+    FastAPI's ``_compat/v2.py:175`` calls ``TypeAdapter.validate_python`` on the
+    parsed JSON dict. With ``ConfigDict(strict=True)`` and no field-level
+    ``strict=False``, Pydantic refuses to coerce ISO date strings into
+    ``datetime.date`` -- every HTTP caller would 422. These tests exercise the
+    same ``model_validate`` path FastAPI takes, so a regression is caught at
+    unit-test time rather than at HTTP-boundary discovery time.
+
+    See ``docs/_base/SECURITY.md`` -> "Pydantic v2 strict mode on FastAPI
+    request bodies".
+    """
+
+    def test_train_request_accepts_iso_string_dates(self):
+        request = TrainRequest.model_validate(
+            {
+                "store_id": 1,
+                "product_id": 2,
+                "train_start_date": "2024-01-01",
+                "train_end_date": "2024-01-31",
+                "config": {"model_type": "naive"},
+            }
+        )
+        assert request.train_start_date == date(2024, 1, 1)
+        assert request.train_end_date == date(2024, 1, 31)
+
+    def test_predict_request_has_no_date_fields(self):
+        # PredictRequest has no date/datetime/UUID fields, so the strict-mode
+        # gotcha does not apply. Pin this expectation so a future contributor
+        # who adds a date field is forced to update the strict-mode override.
+        request = PredictRequest.model_validate(
+            {
+                "store_id": 1,
+                "product_id": 2,
+                "horizon": 14,
+                "model_path": "/artifacts/models/model_abc123.joblib",
+            }
+        )
+        assert request.horizon == 14
