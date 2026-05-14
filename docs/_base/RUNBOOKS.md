@@ -76,7 +76,7 @@ gh run view <cd-release-run-id> --log | grep -E "(Considering|No user facing)"
 1. Open an issue tracking the release (`release: cut vX.Y.Z for ...`).
 2. Branch off `dev`: `git switch -c feat/release-trigger-X-Y-Z`.
 3. `git commit --allow-empty -m "feat(release): trigger vX.Y.Z release for <slice> (#<issue>)"`.
-4. PR to `main`, CI green, admin-merge — the empty `feat:` becomes the merge subject and release-please bumps PATCH (pre-1.0 config). Reference example: PRs #99 → #100 → #101 for v0.2.8.
+4. PR to `main`, **wait for all four `main` status checks to go green** (Lint & Format, Type Check, Test, Migration Check — enforced at the branch-protection layer since #108), then admin-merge — the empty `feat:` becomes the merge subject and release-please bumps PATCH (pre-1.0 config). Reference example: PRs #99 → #100 → #101 for v0.2.8. Plan ~3-5 min between push and the merge button becoming available.
 
 ## Break-Glass Procedures
 
