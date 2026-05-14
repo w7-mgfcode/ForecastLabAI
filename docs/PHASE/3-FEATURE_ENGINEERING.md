@@ -211,6 +211,119 @@ ImputationConfig(
 
 ---
 
+## Phase 2 Features (Retail-Depth)
+
+Phase 2 (PRP-3.1, landed in PRs covering INITIALs 1–5) extends the feature
+matrix with three retail-depth families derived from the seeder's Phase 2
+emission. All three families are **opt-in** (default `None`) and **additive** —
+a `/featuresets/compute` call without any Phase 2 sub-config returns a response
+byte-identical in `config_hash` to the pre-Phase-2 baseline (regression-guarded
+by both `test_schemas.py::test_config_hash_unchanged_when_phase2_omitted` at
+the model layer and `test_phase2_integration.py::TestPhase2EndToEnd::test_additive_contract_snapshot`
+at the HTTP boundary).
+
+### Lifecycle features
+
+Continuous date-deltas derived from `product.launch_date` and
+`product.discontinue_date` (both nullable on Phase 2 products). See
+PRP-3.1B for the compute method; the categorical `lifecycle_stage` was
+explicitly **dropped** in favor of continuous deltas (decision log §1) —
+LightGBM splits discover stage boundaries from the integer delta naturally.
+
+```python
+from app.features.featuresets.schemas import LifecycleConfig
+
+LifecycleConfig(
+    include_days_since_launch=True,        # default True
+    include_days_since_discontinue=True,   # default True
+    lag_days=1,                             # 1..30
+)
+```
+
+| Column | Type | Time-safety |
+|--------|------|-------------|
+| `days_since_launch_lag{N}` | int (NaN if `launch_date` is NULL) | `shift(N)` per `(store_id, product_id)` |
+| `days_since_discontinue_lag{N}` | int (NaN if `discontinue_date` is NULL; signed pre-/post-retire) | `shift(N)` per `(store_id, product_id)` |
+
+End-to-end at the HTTP boundary, `FeatureDataLoader.load_product_attrs`
+joins `product.launch_date` / `product.discontinue_date` onto the sales
+frame when `lifecycle_config` is set (#116). The attributes are timeless
+(no cutoff filter), so the merge is constant per product and
+`_compute_lifecycle_features` derives the per-row delta + `shift(N)`
+downstream.
+
+### Replenishment features
+
+Inbound-stock cadence from the `replenishment_event` table (separate from
+`sales_daily`). See PRP-3.1C for the compute method + SQL helper. The
+loader (`FeatureDataLoader.load_replenishment_events`) applies an SQL-side
+`date <= cutoff_date` predicate to enforce time-safety before pandas sees
+the rows.
+
+```python
+from app.features.featuresets.schemas import ReplenishmentConfig
+
+ReplenishmentConfig(
+    include_days_since_last=True,   # default True
+    include_count_window=True,      # default True
+    lag_days=1,                      # 1..30
+    count_window_days=14,            # 3..60
+)
+```
+
+| Column | Type | Time-safety |
+|--------|------|-------------|
+| `days_since_last_replenishment_lag{N}` | float64 (NaN before first event) | `merge_asof` backward + `shift(N)` per series |
+| `replenishment_count_w{W}_lag{N}` | int64 | `shift(1).rolling(W).sum()` per series |
+
+### Promotion features (generic — any `promotion.kind`)
+
+Generalized from the original markdown-only design (decision log §3) — one
+JOIN to the `promotion` table, with one-hot per kind on the configured
+subset. Default `kinds_to_track=("markdown",)` preserves the original PRD
+intent; callers can opt into `pct_off | bogo | bundle` by passing additional
+kinds. See PRP-3.1D for the compute method.
+
+```python
+from app.features.featuresets.schemas import PromotionConfig
+
+PromotionConfig(
+    kinds_to_track=("markdown",),   # subset of pct_off|bogo|bundle|markdown
+    include_active=True,             # default True
+    include_intensity=True,          # default True
+    lag_days=1,                       # 1..30
+)
+```
+
+| Column | Type | Time-safety |
+|--------|------|-------------|
+| `promo_<kind>_active_lag{N}` | Int64 (nullable 0/1) | `shift(N)` per `(store_id, product_id)` of daily active indicator |
+| `promo_<kind>_intensity_lag{N}` | float64 (NaN if `discount_pct` NULL) | `shift(N)` of `promotion.discount_pct` (Numeric(5,4)) |
+
+### Time-safety guarantee (cross-cutting)
+
+All Phase 2 features obey the same invariants as Phase 1
+(`app/features/featuresets/tests/test_leakage.py`):
+
+- Every numeric column is `shift(N)` (positive `N`) per `(store_id, product_id)` group.
+- Every rolling/count column is `shift(1).rolling(W)`, never `rolling(W).shift(1)`.
+- Auxiliary tables (`replenishment_event`, `promotion`) are SQL-filtered to
+  `event_date <= cutoff_date` / `start_date <= cutoff_date` BEFORE pandas
+  sees them.
+- A dedicated `TestPhase2CrossConfigLeakage` class composes all three
+  families with `lag_config` and asserts no future-data references at the
+  union of feature rows.
+
+### End-to-end integration
+
+`app/features/featuresets/tests/test_phase2_integration.py` (marked
+`@pytest.mark.integration`) exercises `POST /featuresets/compute` against
+a real Postgres with all three Phase 2 sub-configs set, and pins the
+additive-contract snapshot at the HTTP boundary. Run after
+`docker compose up -d && uv run alembic upgrade head`.
+
+---
+
 ## Dependencies
 
 Added to `pyproject.toml`:

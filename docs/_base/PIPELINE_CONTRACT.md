@@ -37,14 +37,15 @@ A "release commit" only occurs when a maintainer merges the open Release PR — 
 
 ## Merge Conditions (ALL must be true)
 
-- [ ] `lint` job: GREEN
-- [ ] `typecheck` job: GREEN (both mypy and pyright steps)
-- [ ] `test` job: GREEN (unit + integration against Postgres service)
-- [ ] `migration-check` job: GREEN (Alembic upgrade clean on empty DB)
-- [ ] Conventional Commit message validated by `.claude/hooks/check-commit-format.sh` locally
-- [ ] At least 1 review on PRs into `main` ([UNVERIFIED — branch protection rules not visible from repo content; confirm in repo settings])
-- [ ] No unresolved review comments
-- [ ] Branch up-to-date with `dev` (for `dev` merges) or `main` (for `dev → main` PRs)
+Branch protection (verified via `gh api repos/w7-mgfcode/ForecastLabAI/branches/{dev,main}/protection` on 2026-05-14):
+
+- [ ] **`dev`** — required status checks (strict, must be up-to-date): `Lint & Format`, `Type Check`, `Test`, `Migration Check`; `required_approving_review_count: 1`; `dismiss_stale_reviews: true`; `allow_force_pushes: false`; `allow_deletions: false`.
+- [ ] **`main`** — required status checks (strict, must be up-to-date): `Lint & Format`, `Type Check`, `Test`, `Migration Check`; `required_approving_review_count: 1`; `dismiss_stale_reviews: false`; `allow_force_pushes: false`; `allow_deletions: false`. Mirrors the four `dev` gates so the release boundary (`dev` → `main`) cannot land with broken CI (issue #108).
+- [ ] Conventional Commit message validated by `.claude/hooks/check-commit-format.sh` locally.
+- [ ] No unresolved review comments.
+- [ ] Branch up-to-date with `dev` (for `dev` merges) or `main` (for `dev → main` PRs).
+
+> Note: `enforce_admins: false` on both branches — admin merge is possible (see "release-please skipped the bump after a dev → main merge" runbook), but should be reserved for the empty-`feat:`-trigger workaround. **With the `main` status-checks added (#108), an admin-merge of the empty-`feat:` trigger still has to wait for the same four CI jobs to complete on the trigger PR before merging — plan for ~3-5 min wall-clock between push and merge.**
 
 ## Failure Gates
 

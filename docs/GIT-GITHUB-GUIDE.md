@@ -25,8 +25,8 @@ flowchart LR
 | Branch Type | Purpose | Protection | Lifecycle |
 | --- | --- | --- | --- |
 | `feat/*` | Feature work | No strict protection | Deleted after merge |
-| `dev` | Integration | CI checks required | Long-lived |
-| `main` | Release | Strict CI + release flow | Long-lived |
+| `dev` | Integration | CI checks required (4 gates: Lint & Format, Type Check, Test, Migration Check) | Long-lived |
+| `main` | Release | Same 4 CI gates + release flow | Long-lived |
 | `phase-*` | Audit snapshot | Protected, immutable | Permanent |
 
 ---
@@ -118,7 +118,7 @@ sequenceDiagram
 ### 4.2 Release Flow
 
 1. Create PR from `dev` → `main` when integration is stable.
-2. CI must pass on the PR.
+2. CI must pass on the PR — the four `main` gates (Lint & Format, Type Check, Test, Migration Check) are enforced at the branch-protection layer, so the merge button stays disabled until they go green.
 3. Merge to `main` triggers release-please.
 4. If a release is created, artifacts are built and attached to the GitHub Release.
 

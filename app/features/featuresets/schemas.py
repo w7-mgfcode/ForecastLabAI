@@ -38,10 +38,14 @@ class FeatureConfigBase(BaseModel):
     def config_hash(self) -> str:
         """Generate deterministic hash of configuration.
 
+        Excludes ``None``-valued fields so that adding new optional sub-config
+        slots is hash-invariant for callers that don't set them (additive
+        contract — see PRP-3.1A §15 Decision E).
+
         Returns:
             16-character hex string hash of config JSON.
         """
-        config_json = self.model_dump_json()
+        config_json = self.model_dump_json(exclude_none=True)
         return hashlib.sha256(config_json.encode()).hexdigest()[:16]
 
 
@@ -183,6 +187,99 @@ class ExogenousConfig(FeatureConfigBase):
         return v
 
 
+class LifecycleConfig(FeatureConfigBase):
+    """Configuration for product-lifecycle features.
+
+    Lifecycle features capture time-since-launch and time-since-discontinue
+    as continuous integer date-deltas (NOT categorical stage). LightGBM splits
+    discover stage boundaries from the continuous variable naturally — see
+    PRP-3.1 decisions log §1.
+
+    All features are derived from product.launch_date and
+    product.discontinue_date (both nullable on Phase 2 products).
+
+    Attributes:
+        include_days_since_launch: Emit days_since_launch_lag{N} columns.
+        include_days_since_discontinue: Emit days_since_discontinue_lag{N}.
+        lag_days: Lag offset in days (>= 1 to prevent leakage).
+    """
+
+    include_days_since_launch: bool = True
+    include_days_since_discontinue: bool = True
+    lag_days: int = Field(default=1, ge=1, le=30, description="Lag offset in days")
+
+
+class ReplenishmentConfig(FeatureConfigBase):
+    """Configuration for replenishment-event features.
+
+    Replenishment features capture inbound-stock cadence via:
+      * ``days_since_last_replenishment_lag{N}`` -- gap to previous event
+      * ``replenishment_count_w{W}_lag{N}`` -- rolling count over window W
+
+    Source: ``replenishment_event`` table (separate from sales_daily).
+    The JOIN happens in service.py (PRP-3.1C) -- this slice only declares
+    the contract.
+
+    Attributes:
+        include_days_since_last: Emit days_since_last_replenishment_lag{N}.
+        include_count_window: Emit replenishment_count_w{W}_lag{N}.
+        lag_days: Lag offset (>= 1).
+        count_window_days: Rolling-window size for count features (3-60).
+    """
+
+    include_days_since_last: bool = True
+    include_count_window: bool = True
+    lag_days: int = Field(default=1, ge=1, le=30, description="Lag offset in days")
+    count_window_days: int = Field(
+        default=14,
+        ge=3,
+        le=60,
+        description="Rolling-window size for replenishment count features",
+    )
+
+
+class PromotionConfig(FeatureConfigBase):
+    """Configuration for generic promotion-family features.
+
+    GENERALIZED from the original MarkdownConfig design (PRP-3.1 decisions
+    log §3) to cover all four ``promotion.kind`` values via one JOIN:
+    pct_off | bogo | bundle | markdown. Default ``kinds_to_track=("markdown",)``
+    preserves the original PRD intent; caller opts in to others.
+
+    Produced columns (per kind in kinds_to_track):
+      * ``promo_<kind>_active_lag{N}`` -- int 0/1
+      * ``promo_<kind>_intensity_lag{N}`` -- float (when include_intensity)
+
+    Intensity source: ``promotion.discount_pct`` (Numeric(5,4), 0..1 range)
+    per data_platform/models.py. NULL discounts produce NaN columns.
+
+    Attributes:
+        kinds_to_track: Allow-listed promotion kinds (tuple required for
+            frozen-model hashability).
+        include_active: Emit promo_<kind>_active_lag{N}.
+        include_intensity: Emit promo_<kind>_intensity_lag{N}.
+        lag_days: Lag offset (>= 1).
+    """
+
+    kinds_to_track: tuple[Literal["pct_off", "bogo", "bundle", "markdown"], ...] = Field(
+        default=("markdown",),
+        description="Promotion kinds to track (subset of promotion.kind allow-list)",
+    )
+    include_active: bool = True
+    include_intensity: bool = True
+    lag_days: int = Field(default=1, ge=1, le=30, description="Lag offset in days")
+
+    @field_validator("kinds_to_track")
+    @classmethod
+    def validate_kinds_non_empty_unique(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        """Reject empty tuple and duplicates."""
+        if not v:
+            raise ValueError("At least one promotion kind must be specified")
+        if len(set(v)) != len(v):
+            raise ValueError("Duplicate promotion kinds are not allowed")
+        return v
+
+
 class ImputationConfig(FeatureConfigBase):
     """Configuration for missing value imputation.
 
@@ -225,6 +322,9 @@ class FeatureSetConfig(FeatureConfigBase):
         rolling_config: Configuration for rolling features (None = disabled).
         calendar_config: Configuration for calendar features (None = disabled).
         exogenous_config: Configuration for exogenous features (None = disabled).
+        lifecycle_config: Configuration for lifecycle features (None = disabled).
+        replenishment_config: Configuration for replenishment features (None = disabled).
+        promotion_config: Configuration for promotion features (None = disabled).
         imputation_config: Configuration for imputation (None = disabled).
     """
 
@@ -244,6 +344,11 @@ class FeatureSetConfig(FeatureConfigBase):
     rolling_config: RollingConfig | None = None
     calendar_config: CalendarConfig | None = None
     exogenous_config: ExogenousConfig | None = None
+    # --- Phase 2 additions (PRP-3.1A) ---
+    lifecycle_config: LifecycleConfig | None = None
+    replenishment_config: ReplenishmentConfig | None = None
+    promotion_config: PromotionConfig | None = None
+    # --- end Phase 2 additions ---
     imputation_config: ImputationConfig | None = None
 
     def get_enabled_features(self) -> list[str]:
@@ -261,6 +366,14 @@ class FeatureSetConfig(FeatureConfigBase):
             enabled.append("calendar")
         if self.exogenous_config:
             enabled.append("exogenous")
+        # --- Phase 2 additions (PRP-3.1A) ---
+        if self.lifecycle_config:
+            enabled.append("lifecycle")
+        if self.replenishment_config:
+            enabled.append("replenishment")
+        if self.promotion_config:
+            enabled.append("promotion")
+        # --- end Phase 2 additions ---
         return enabled
 
 
@@ -284,8 +397,15 @@ class ComputeFeaturesRequest(BaseModel):
 
     store_id: int = Field(..., ge=1, description="Store ID")
     product_id: int = Field(..., ge=1, description="Product ID")
+    # NOTE: ``strict=False`` overrides the model-level ``strict=True`` for this
+    # field so FastAPI's ``validate_python`` (called on the JSON-parsed dict
+    # by ``fastapi._compat.v2:175``) accepts ISO date strings from JSON
+    # request bodies. Without this override, ``strict=True`` requires an
+    # actual ``datetime.date`` instance -- which JSON cannot carry --
+    # and every HTTP caller would 422.
     cutoff_date: date_type = Field(
         ...,
+        strict=False,
         description="Compute features up to this date (inclusive)",
     )
     lookback_days: int = Field(
@@ -350,6 +470,8 @@ class PreviewFeaturesRequest(BaseModel):
 
     store_id: int = Field(..., ge=1)
     product_id: int = Field(..., ge=1)
-    cutoff_date: date_type
+    # See ``ComputeFeaturesRequest.cutoff_date`` for the rationale on
+    # ``strict=False`` (FastAPI ``validate_python`` + JSON dates).
+    cutoff_date: date_type = Field(..., strict=False)
     sample_rows: int = Field(default=10, ge=1, le=100)
     config: FeatureSetConfig

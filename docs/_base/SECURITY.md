@@ -40,9 +40,25 @@ Never log decrypted values, even at DEBUG. Log key NAMES only (`openai_api_key_s
 - LLM **responses** are not trusted: structured outputs parsed via Pydantic; freeform text never executed.
 - Allow-lists over deny-lists (e.g., `model_type ∈ {naive, seasonal_naive, moving_average, lightgbm}`; embedding provider ∈ `{openai, ollama}`; model identifier provider ∈ `{anthropic, openai, google-gla, google-vertex}`).
 
+### Pydantic v2 strict mode on FastAPI request bodies
+
+FastAPI's `_compat/v2.py:175` calls `TypeAdapter.validate_python` (not `validate_json`) on the parsed JSON dict. With `ConfigDict(strict=True)`, Pydantic refuses to coerce ISO-string values into Python types that JSON has no native representation for, so every HTTP caller would 422 (e.g., `{"type":"date_type","loc":["body","cutoff_date"],"msg":"Input should be a valid date"}`).
+
+**Policy:**
+- KEEP `model_config = ConfigDict(strict=True)` on request bodies — it catches subtle coercion bugs on JSON-native types (e.g., `"5"` → 5 on an ID field, `1.0` → 1 on an int).
+- ADD field-level `Field(strict=False, ...)` on every field whose type has no native JSON representation:
+  - `datetime.date`, `datetime.datetime`, `datetime.time`
+  - `uuid.UUID`
+  - `decimal.Decimal`
+- Every request-body test suite MUST include at least one case that exercises the JSON path — call `Model.model_validate({"field": "iso-string", ...})` (matches FastAPI's `validate_python` path) — so this regression class is caught at unit-test time, not at HTTP-boundary discovery time.
+
+Reference: PR #115 (issue #109) introduced this pattern on `ComputeFeaturesRequest.cutoff_date` and `PreviewFeaturesRequest.cutoff_date`. Issue #117 extended it repo-wide to `TrainRequest`.
+
+**Enforced by:** `app/core/tests/test_strict_mode_policy.py` — AST-walker invariant test that fails CI when any field on a `ConfigDict(strict=True)` request model under `app/features/**/schemas.py` is typed `date | datetime | time | UUID | Decimal` without the matching `Field(strict=False, ...)` override. Mirrors the load-bearing `app/features/featuresets/tests/test_leakage.py` precedent (see `PRPs/PRP-14-strict-mode-policy-linter.md`, issue #120).
+
 ## Network Security
 
-- Backend binds `0.0.0.0:8123` by default (`api_host` / `api_port` in `Settings`). [UNVERIFIED — fine on a personal LAN; would need a reverse proxy + TLS for any public exposure.]
+- Backend binds `0.0.0.0:8123` by default (`api_host` / `api_port` in `Settings`, `app/core/config.py:32-33`; the `# noqa: S104` is intentional for single-host LAN demo). Fine on a personal LAN; would need a reverse proxy + TLS for any public exposure.
 - CORS allow-list in `app/main.py`: dev permits `localhost`/`127.0.0.1`/private LAN ranges via regex; **production sets explicit origins via empty list + no regex** — review before any non-dev deploy.
 - No TLS at the app layer; rely on `docker-compose` private network for DB. Postgres password is the dev default `forecastlab/forecastlab` — change if exposing the host.
 
@@ -82,7 +98,7 @@ Dependabot watches `.github/workflows/` weekly (`.github/dependabot.yml`) — ke
 | Integration tests | pytest -m integration against Postgres service | every PR | Yes |
 | Migration apply check | alembic upgrade head on fresh DB | every PR | Yes |
 | Dependency audit | `.github/workflows/dependency-check.yml` | Weekly cron (Sun 00:00 UTC) + manual dispatch | No (out-of-band; not a per-PR gate) — but `fail_on_vulnerabilities` input defaults `true` |
-| Secrets detection | none configured [UNVERIFIED — consider adding gitleaks pre-commit hook] | — | — |
+| Secrets detection | partial — `detect-private-key` hook in `.pre-commit-config.yaml` catches private SSH/TLS keys; no broader gitleaks/trufflehog scanner is wired in | every commit (pre-commit) | No — local hook only, not a CI gate |
 
 ## Compliance Constraints
 
