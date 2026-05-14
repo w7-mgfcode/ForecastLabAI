@@ -71,11 +71,12 @@ class TestListScenarios:
 
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
-        assert len(data) == 6
+        assert len(data) == 7
 
         names = [s["name"] for s in data]
         assert "retail_standard" in names
         assert "holiday_rush" in names
+        assert "demo_minimal" in names
 
     def test_scenario_structure(self, client):
         """Test scenario response structure."""
