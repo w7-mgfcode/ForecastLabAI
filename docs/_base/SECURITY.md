@@ -54,6 +54,8 @@ FastAPI's `_compat/v2.py:175` calls `TypeAdapter.validate_python` (not `validate
 
 Reference: PR #115 (issue #109) introduced this pattern on `ComputeFeaturesRequest.cutoff_date` and `PreviewFeaturesRequest.cutoff_date`. Issue #117 extended it repo-wide to `TrainRequest`.
 
+**Enforced by:** `app/core/tests/test_strict_mode_policy.py` — AST-walker invariant test that fails CI when any field on a `ConfigDict(strict=True)` request model under `app/features/**/schemas.py` is typed `date | datetime | time | UUID | Decimal` without the matching `Field(strict=False, ...)` override. Mirrors the load-bearing `app/features/featuresets/tests/test_leakage.py` precedent (see `PRPs/PRP-14-strict-mode-policy-linter.md`, issue #120).
+
 ## Network Security
 
 - Backend binds `0.0.0.0:8123` by default (`api_host` / `api_port` in `Settings`, `app/core/config.py:32-33`; the `# noqa: S104` is intentional for single-host LAN demo). Fine on a personal LAN; would need a reverse proxy + TLS for any public exposure.
