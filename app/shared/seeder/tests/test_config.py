@@ -90,6 +90,28 @@ class TestSeederConfig:
         assert config.sparsity.missing_combinations_pct == 0.5
         assert config.sparsity.random_gaps_per_series == 3
 
+    def test_from_scenario_demo_minimal(self):
+        """Test demo_minimal scenario preset.
+
+        This preset powers the `make demo` target; the date range MUST cover at
+        least 72 days so an expanding backtest with n_splits=3 + horizon=14 +
+        min_train_size=30 produces non-NaN WAPE.
+        """
+        config = SeederConfig.from_scenario(ScenarioPreset.DEMO_MINIMAL, seed=42)
+
+        assert config.seed == 42
+        assert config.start_date == date(2024, 10, 1)
+        assert config.end_date == date(2024, 12, 31)
+        assert config.dimensions.stores == 3
+        assert config.dimensions.products == 10
+        assert config.time_series.trend == "linear"
+        assert config.time_series.noise_sigma == 0.10
+        assert config.retail.promotion_probability == 0.1
+        assert config.retail.stockout_probability == 0.02
+        # Sanity-check the date span is wide enough for the backtest budget.
+        days = (config.end_date - config.start_date).days + 1
+        assert days >= 72
+
 
 class TestScenarioPreset:
     """Tests for ScenarioPreset enum."""
@@ -103,6 +125,7 @@ class TestScenarioPreset:
             "stockout_heavy",
             "new_launches",
             "sparse",
+            "demo_minimal",
         }
         actual = {s.value for s in ScenarioPreset}
         assert actual == expected
