@@ -9,9 +9,11 @@ drop rows for two trigger modes:
 - ``stockout_risk`` — fires per-``(store, product)`` ending the day
   before each observed stockout, with a window of
   ``markdown_duration_days``.
-
-The ``age_days`` trigger is deferred to a follow-up; see issue #94.
-``MarkdownGenerator`` raises ``NotImplementedError`` for that mode.
+- ``age_days`` — fires per-``(store, product)`` once inventory has
+  been unrefreshed for at least ``cfg.age_days_threshold`` days.
+  "Refresh" is a heuristic: a day where ``on_hand_qty`` rose by at
+  least ``_AGE_DAYS_SPIKE_THRESHOLD`` vs the previous day (issue #94,
+  resolved via the heuristic path so no schema column is required).
 
 Disabled path (``MarkdownConfig`` is ``None`` or ``enable=False``)
 returns empty containers and consumes zero rng state, preserving the
@@ -37,6 +39,9 @@ if TYPE_CHECKING:
 # is ``Numeric(10, 2)``.
 _PCT_QUANTIZE = Decimal("0.0001")
 _PRICE_QUANTIZE = Decimal("0.01")
+# Fractional increase in ``on_hand_qty`` vs prior day that counts as an
+# implicit replenishment under the ``age_days`` trigger heuristic.
+_AGE_DAYS_SPIKE_THRESHOLD = 0.3
 
 
 class MarkdownGenerator:
@@ -72,6 +77,7 @@ class MarkdownGenerator:
         stockout_dates: dict[tuple[int, int], set[date]],
         dates: list[date],
         lifecycle: LifecycleGenerator | None = None,
+        inventory_records: list[dict[str, Any]] | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         list[dict[str, Any]],
@@ -97,6 +103,11 @@ class MarkdownGenerator:
             lifecycle: Optional pre-built ``LifecycleGenerator``. Used
                 only for ``trigger='lifecycle_decline'``. When absent
                 or disabled, the lifecycle trigger emits no rows.
+            inventory_records: Optional ``InventorySnapshotGenerator``
+                output. Used only for ``trigger='age_days'`` to derive
+                per-``(store, product)`` on-hand history for the
+                refresh-spike heuristic. When absent and the trigger is
+                ``age_days``, no markdowns fire.
 
         Returns:
             Three-tuple:
@@ -108,8 +119,6 @@ class MarkdownGenerator:
                   ``SalesDailyGenerator`` lift integration.
 
         Raises:
-            NotImplementedError: If ``config.trigger == 'age_days'``.
-                Tracked at issue #94.
             ValueError: If ``markdown_depth_pct`` is outside ``[0, 1]``
                 or ``markdown_duration_days < 1``.
         """
@@ -117,11 +126,6 @@ class MarkdownGenerator:
             return ([], [], {})
 
         cfg = self.config
-        if cfg.trigger == "age_days":
-            raise NotImplementedError(
-                "MarkdownConfig.trigger='age_days' is deferred. See follow-up "
-                "issue #94 for the implementation plan."
-            )
         if not 0.0 <= cfg.markdown_depth_pct <= 1.0:
             raise ValueError(f"markdown_depth_pct must be in [0, 1], got {cfg.markdown_depth_pct}")
         if cfg.markdown_duration_days < 1:
@@ -144,11 +148,21 @@ class MarkdownGenerator:
                 price_history_records=price_history_records,
                 markdown_dates=markdown_dates,
             )
-        else:  # cfg.trigger == "stockout_risk"
+        elif cfg.trigger == "stockout_risk":
             self._emit_stockout_risk(
                 cfg=cfg,
                 product_specs=product_specs,
                 stockout_dates=stockout_dates,
+                dates=dates,
+                promo_records=promo_records,
+                price_history_records=price_history_records,
+                markdown_dates=markdown_dates,
+            )
+        else:  # cfg.trigger == "age_days"
+            self._emit_age_days(
+                cfg=cfg,
+                product_specs=product_specs,
+                inventory_records=inventory_records,
                 dates=dates,
                 promo_records=promo_records,
                 price_history_records=price_history_records,
@@ -302,6 +316,118 @@ class MarkdownGenerator:
                     md_end,
                 )
                 last_md_end = md_end
+
+    def _emit_age_days(
+        self,
+        *,
+        cfg: MarkdownConfig,
+        product_specs: list[dict[str, Any]],
+        inventory_records: list[dict[str, Any]] | None,
+        dates: list[date],
+        promo_records: list[dict[str, Any]],
+        price_history_records: list[dict[str, Any]],
+        markdown_dates: dict[tuple[int, int], set[date]],
+    ) -> None:
+        """Fire markdowns when inventory ages past ``cfg.age_days_threshold``.
+
+        Age heuristic (issue #94): walk the per-``(store, product)``
+        on-hand series; a day where ``on_hand_qty`` rose by at least
+        ``_AGE_DAYS_SPIKE_THRESHOLD`` over the prior day counts as an
+        implicit refresh. Age at day ``t`` = days since the most recent
+        refresh (or ``dates[0]`` when none has been observed). When age
+        crosses ``cfg.age_days_threshold`` and ``on_hand_qty`` is at
+        least ``cfg.markdown_min_units_remaining``, fire a markdown
+        window of ``cfg.markdown_duration_days`` and reset the refresh
+        anchor to the day AFTER the window ends — the markdown's job
+        is to clear the shelf, so by the day after ``md_end`` the
+        product is treated as fresh stock. Days inside an active
+        markdown window are skipped to avoid back-to-back fires.
+        """
+        if not dates or not inventory_records:
+            return
+
+        history: dict[tuple[int, int], list[tuple[date, int]]] = {}
+        for rec in inventory_records:
+            key = (int(rec["store_id"]), int(rec["product_id"]))
+            history.setdefault(key, []).append((rec["date"], int(rec["on_hand_qty"])))
+
+        discount_pct = Decimal(str(cfg.markdown_depth_pct)).quantize(_PCT_QUANTIZE)
+        first_date = dates[0]
+        last_date = dates[-1]
+        price_by_product: dict[int, Decimal] = {
+            int(spec["product_id"]): self._as_decimal(spec["base_price"]) for spec in product_specs
+        }
+
+        for key in sorted(history.keys()):
+            store_id, product_id = key
+            base_price = price_by_product.get(product_id)
+            if base_price is None:
+                continue
+            series = sorted(history[key])
+            if not series:
+                continue
+
+            markdown_price = (base_price * (Decimal("1") - discount_pct)).quantize(_PRICE_QUANTIZE)
+            last_refresh_date = first_date
+            last_md_end: date | None = None
+            prev_on_hand: int | None = None
+
+            for current_date, on_hand in series:
+                # Spike detection: a positive jump > spike threshold
+                # against the previous day is an implicit refresh.
+                if (
+                    prev_on_hand is not None
+                    and prev_on_hand > 0
+                    and on_hand > prev_on_hand * (1 + _AGE_DAYS_SPIKE_THRESHOLD)
+                ):
+                    last_refresh_date = current_date
+                prev_on_hand = on_hand
+
+                # Inside an active markdown window: hold off.
+                if last_md_end is not None and current_date <= last_md_end:
+                    continue
+
+                age = (current_date - last_refresh_date).days
+                if age < cfg.age_days_threshold:
+                    continue
+                # Don't markdown an empty / near-empty shelf.
+                if on_hand < cfg.markdown_min_units_remaining:
+                    continue
+
+                md_start = current_date
+                md_end = min(
+                    md_start + timedelta(days=cfg.markdown_duration_days - 1),
+                    last_date,
+                )
+                promo_records.append(
+                    {
+                        "product_id": product_id,
+                        "store_id": store_id,
+                        "name": "Aged-Inventory Clearance",
+                        "kind": "markdown",
+                        "discount_pct": discount_pct,
+                        "discount_amount": None,
+                        "bundle_member_product_ids": None,
+                        "start_date": md_start,
+                        "end_date": md_end,
+                    }
+                )
+                price_history_records.append(
+                    {
+                        "product_id": product_id,
+                        "store_id": store_id,
+                        "price": markdown_price,
+                        "valid_from": md_start,
+                        "valid_to": md_end,
+                    }
+                )
+                self._fill_date_range(
+                    markdown_dates.setdefault(key, set()),
+                    md_start,
+                    md_end,
+                )
+                last_md_end = md_end
+                last_refresh_date = md_end + timedelta(days=1)
 
     # ---------------------------------------------------------------------- #
     # Helpers

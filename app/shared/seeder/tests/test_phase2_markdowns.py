@@ -352,19 +352,6 @@ class TestStockoutRiskTrigger:
 
 
 class TestMarkdownGeneratorValidation:
-    def test_age_days_trigger_raises_not_implemented(self) -> None:
-        gen = MarkdownGenerator(
-            random.Random(0),
-            MarkdownConfig(enable=True, trigger="age_days"),
-        )
-        with pytest.raises(NotImplementedError, match="#94"):
-            gen.generate(
-                product_specs=_product_specs(),
-                store_ids=[10],
-                stockout_dates={},
-                dates=_dates(date(2024, 1, 1), 30),
-            )
-
     def test_depth_pct_below_zero_raises(self) -> None:
         gen = MarkdownGenerator(
             random.Random(0),
@@ -416,5 +403,221 @@ class TestMarkdownGeneratorValidation:
             store_ids=[10],
             stockout_dates={(10, 1): {date(2024, 3, 15)}},
             dates=_dates(date(2024, 1, 1), 90),
+        )
+        assert rng.getstate() == baseline_state
+
+
+# ---------------------------------------------------------------------- #
+# age_days trigger (#94)
+# ---------------------------------------------------------------------- #
+
+
+def _flat_inventory(
+    store_id: int,
+    product_id: int,
+    start: date,
+    days: int,
+    on_hand: int,
+) -> list[dict[str, Any]]:
+    """Build a constant-``on_hand`` inventory series with no spikes."""
+    return [
+        {
+            "date": start + timedelta(days=i),
+            "store_id": store_id,
+            "product_id": product_id,
+            "on_hand_qty": on_hand,
+        }
+        for i in range(days)
+    ]
+
+
+class TestAgeDaysTrigger:
+    """Tests for the ``age_days`` markdown trigger (issue #94)."""
+
+    def test_no_inventory_records_fires_nothing(self) -> None:
+        """Empty / missing inventory_records → no markdowns (defensive)."""
+        gen = MarkdownGenerator(
+            random.Random(0),
+            MarkdownConfig(enable=True, trigger="age_days", age_days_threshold=10),
+        )
+        promos, prices, md_dates = gen.generate(
+            product_specs=_product_specs(),
+            store_ids=[10],
+            stockout_dates={},
+            dates=_dates(date(2024, 1, 1), 90),
+            inventory_records=None,
+        )
+        assert promos == [] and prices == [] and md_dates == {}
+
+    def test_threshold_not_met_fires_nothing(self) -> None:
+        """Age never crosses threshold over the seeded range → no fire."""
+        inv = _flat_inventory(10, 1, date(2024, 1, 1), days=10, on_hand=50)
+        gen = MarkdownGenerator(
+            random.Random(0),
+            MarkdownConfig(enable=True, trigger="age_days", age_days_threshold=60),
+        )
+        promos, prices, _md = gen.generate(
+            product_specs=_product_specs(),
+            store_ids=[10],
+            stockout_dates={},
+            dates=_dates(date(2024, 1, 1), 10),
+            inventory_records=inv,
+        )
+        assert promos == [] and prices == []
+
+    def test_threshold_met_fires_markdown(self) -> None:
+        """Flat inventory past threshold → fires on the threshold day."""
+        start = date(2024, 1, 1)
+        inv = _flat_inventory(10, 1, start, days=20, on_hand=50)
+        gen = MarkdownGenerator(
+            random.Random(0),
+            MarkdownConfig(
+                enable=True,
+                trigger="age_days",
+                age_days_threshold=5,
+                markdown_duration_days=3,
+                markdown_min_units_remaining=5,
+            ),
+        )
+        promos, prices, md_dates = gen.generate(
+            product_specs=_product_specs(),
+            store_ids=[10],
+            stockout_dates={},
+            dates=_dates(start, 20),
+            inventory_records=inv,
+        )
+        assert len(promos) >= 1
+        first = promos[0]
+        # Age starts counting at dates[0]; threshold 5 → first fire on day 5
+        # (2024-01-06).
+        assert first["start_date"] == start + timedelta(days=5)
+        assert first["end_date"] == start + timedelta(days=7)  # duration 3
+        assert first["kind"] == "markdown"
+        assert first["name"] == "Aged-Inventory Clearance"
+        assert (10, 1) in md_dates
+        assert len(prices) == len(promos)
+
+    def test_spike_resets_age_counter(self) -> None:
+        """A 50% on_hand jump mid-range delays the next fire."""
+        start = date(2024, 1, 1)
+        # Day 0..4: on_hand=50 (steady), day 5: jumps to 100 (>30% jump → refresh).
+        # After the spike, age counter resets — next fire is day 5+threshold.
+        inv: list[dict[str, Any]] = []
+        for i in range(20):
+            on_hand = 50 if i < 5 else 100
+            inv.append(
+                {
+                    "date": start + timedelta(days=i),
+                    "store_id": 10,
+                    "product_id": 1,
+                    "on_hand_qty": on_hand,
+                }
+            )
+        gen = MarkdownGenerator(
+            random.Random(0),
+            MarkdownConfig(
+                enable=True,
+                trigger="age_days",
+                age_days_threshold=8,
+                markdown_duration_days=3,
+            ),
+        )
+        promos, _prices, _md = gen.generate(
+            product_specs=_product_specs(),
+            store_ids=[10],
+            stockout_dates={},
+            dates=_dates(start, 20),
+            inventory_records=inv,
+        )
+        # Without the spike, threshold 8 would fire on day 8 (2024-01-09).
+        # With a refresh on day 5, the first fire shifts to day 5+8=13.
+        assert len(promos) >= 1
+        assert promos[0]["start_date"] == start + timedelta(days=13)
+
+    def test_post_fire_reset_avoids_back_to_back(self) -> None:
+        """After firing, the age counter resets to the firing day."""
+        start = date(2024, 1, 1)
+        inv = _flat_inventory(10, 1, start, days=30, on_hand=50)
+        gen = MarkdownGenerator(
+            random.Random(0),
+            MarkdownConfig(
+                enable=True,
+                trigger="age_days",
+                age_days_threshold=5,
+                markdown_duration_days=3,
+            ),
+        )
+        promos, _prices, _md = gen.generate(
+            product_specs=_product_specs(),
+            store_ids=[10],
+            stockout_dates={},
+            dates=_dates(start, 30),
+            inventory_records=inv,
+        )
+        # First fire on day 5; markdown window 5..7; next fire eligible
+        # at day 8 + 5 = day 13. So firing days = [5, 13, 21, 29].
+        starts = [p["start_date"] for p in promos]
+        assert starts == [
+            start + timedelta(days=5),
+            start + timedelta(days=13),
+            start + timedelta(days=21),
+            start + timedelta(days=29),
+        ]
+
+    def test_skips_low_inventory(self) -> None:
+        """on_hand below ``markdown_min_units_remaining`` blocks firing."""
+        start = date(2024, 1, 1)
+        # on_hand = 2 (below default min of 5), aged past threshold.
+        inv = _flat_inventory(10, 1, start, days=20, on_hand=2)
+        gen = MarkdownGenerator(
+            random.Random(0),
+            MarkdownConfig(
+                enable=True,
+                trigger="age_days",
+                age_days_threshold=5,
+                markdown_min_units_remaining=5,
+            ),
+        )
+        promos, _prices, _md = gen.generate(
+            product_specs=_product_specs(),
+            store_ids=[10],
+            stockout_dates={},
+            dates=_dates(start, 20),
+            inventory_records=inv,
+        )
+        assert promos == []
+
+    def test_unknown_product_silently_skipped(self) -> None:
+        """Inventory rows referencing unknown products produce no rows."""
+        start = date(2024, 1, 1)
+        inv = _flat_inventory(10, 999, start, days=20, on_hand=50)  # product 999 not in specs
+        gen = MarkdownGenerator(
+            random.Random(0),
+            MarkdownConfig(enable=True, trigger="age_days", age_days_threshold=5),
+        )
+        promos, _prices, _md = gen.generate(
+            product_specs=_product_specs(),
+            store_ids=[10],
+            stockout_dates={},
+            dates=_dates(start, 20),
+            inventory_records=inv,
+        )
+        assert promos == []
+
+    def test_no_rng_consumption(self) -> None:
+        """Enabled age_days path is deterministic — rng untouched."""
+        rng = random.Random(42)
+        baseline_state = rng.getstate()
+        start = date(2024, 1, 1)
+        inv = _flat_inventory(10, 1, start, days=20, on_hand=50)
+        MarkdownGenerator(
+            rng,
+            MarkdownConfig(enable=True, trigger="age_days", age_days_threshold=5),
+        ).generate(
+            product_specs=_product_specs(),
+            store_ids=[10],
+            stockout_dates={},
+            dates=_dates(start, 20),
+            inventory_records=inv,
         )
         assert rng.getstate() == baseline_state
