@@ -659,10 +659,10 @@ class TestReplenishmentLeakage:
     def test_count_window_uses_shift_then_rolling(self) -> None:
         """CRITICAL: ``shift(1).rolling(W).sum()`` MUST be the order.
 
-        Events on dates 2024-01-01, 2024-01-03, 2024-01-05 with W=7 (the
-        smallest window the config schema allows; ``ReplenishmentConfig``
-        bounds ``count_window_days`` at ``ge=7``). Sales rows on every
-        date 2024-01-01..2024-01-07.
+        Events on dates 2024-01-01, 2024-01-03, 2024-01-05 with W=7
+        (comfortably above the ``ReplenishmentConfig`` floor of
+        ``count_window_days >= 3``). Sales rows on every date
+        2024-01-01..2024-01-07.
 
         Per-row event_count = [1, 0, 1, 0, 1, 0, 0].
         Correct ``shift(1).rolling(7, min_periods=1).sum()`` -> NaN at

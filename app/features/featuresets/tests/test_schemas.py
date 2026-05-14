@@ -195,9 +195,9 @@ class TestReplenishmentConfig:
             ReplenishmentConfig(lag_days=31)
 
     def test_rejects_count_window_below_min(self):
-        """count_window_days below 7 should be rejected."""
+        """count_window_days below 3 should be rejected."""
         with pytest.raises(ValidationError):
-            ReplenishmentConfig(count_window_days=6)
+            ReplenishmentConfig(count_window_days=2)
 
     def test_rejects_count_window_above_max(self):
         """count_window_days above 60 should be rejected."""
