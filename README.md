@@ -68,6 +68,24 @@ curl http://localhost:8123/health
 # Response: {"status":"ok"}
 ```
 
+### Try it: end-to-end demo
+
+Once steps 1-7 are green, run the full demo pipeline with a single command:
+
+```bash
+make demo
+```
+
+This drives `seed -> features -> train x 3 -> backtest -> register -> alias -> agent`
+against the running API in ~90-180 s and emits a final line like:
+
+```
+runs=3 winner=seasonal_naive alias=demo-production wall_clock=87s
+```
+
+See `scripts/run_demo.py` for the contract and `make help` for the
+related targets (`demo-quick` skips re-seeding; `demo-clean` wipes the DB first).
+
 ### Frontend Setup
 
 8. **Install frontend dependencies**
