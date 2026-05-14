@@ -224,7 +224,7 @@ class ReplenishmentConfig(FeatureConfigBase):
         include_days_since_last: Emit days_since_last_replenishment_lag{N}.
         include_count_window: Emit replenishment_count_w{W}_lag{N}.
         lag_days: Lag offset (>= 1).
-        count_window_days: Rolling-window size for count features (7-60).
+        count_window_days: Rolling-window size for count features (3-60).
     """
 
     include_days_since_last: bool = True
@@ -232,7 +232,7 @@ class ReplenishmentConfig(FeatureConfigBase):
     lag_days: int = Field(default=1, ge=1, le=30, description="Lag offset in days")
     count_window_days: int = Field(
         default=14,
-        ge=7,
+        ge=3,
         le=60,
         description="Rolling-window size for replenishment count features",
     )

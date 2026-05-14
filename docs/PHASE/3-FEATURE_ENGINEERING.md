@@ -267,7 +267,7 @@ ReplenishmentConfig(
     include_days_since_last=True,   # default True
     include_count_window=True,      # default True
     lag_days=1,                      # 1..30
-    count_window_days=14,            # 7..60
+    count_window_days=14,            # 3..60
 )
 ```
 
