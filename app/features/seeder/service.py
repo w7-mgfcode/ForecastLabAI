@@ -364,6 +364,14 @@ def list_scenarios() -> list[schemas.ScenarioInfo]:
             start_date=date(2024, 1, 1),
             end_date=date(2024, 12, 31),
         ),
+        schemas.ScenarioInfo(
+            name="demo_minimal",
+            description="Tiny preset for the make demo target (3 stores x 10 products x 92 days)",
+            stores=3,
+            products=10,
+            start_date=date(2024, 10, 1),
+            end_date=date(2024, 12, 31),
+        ),
     ]
 
     logger.info("seeder.scenarios.listed", count=len(scenarios))

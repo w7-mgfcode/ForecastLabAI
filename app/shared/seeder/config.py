@@ -17,6 +17,7 @@ class ScenarioPreset(str, Enum):
     STOCKOUT_HEAVY = "stockout_heavy"
     NEW_LAUNCHES = "new_launches"
     SPARSE = "sparse"
+    DEMO_MINIMAL = "demo_minimal"
 
 
 @dataclass
@@ -601,6 +602,28 @@ class SeederConfig:
                     random_gaps_per_series=3,
                     gap_min_days=2,
                     gap_max_days=10,
+                ),
+            )
+
+        if scenario == ScenarioPreset.DEMO_MINIMAL:
+            # Tiny preset for the `make demo` target. Keeps wall-clock comfortable
+            # on a developer laptop while still producing a non-NaN backtest WAPE
+            # with strategy=expanding, n_splits=3, horizon=14, min_train_size=30
+            # (needs >= 30 + 3*14 = 72 days; 92 days here leaves margin).
+            return cls(
+                seed=seed,
+                start_date=date(2024, 10, 1),
+                end_date=date(2024, 12, 31),
+                dimensions=DimensionConfig(stores=3, products=10),
+                time_series=TimeSeriesConfig(
+                    base_demand=100,
+                    trend="linear",
+                    trend_slope=0.0005,
+                    noise_sigma=0.10,
+                ),
+                retail=RetailPatternConfig(
+                    promotion_probability=0.1,
+                    stockout_probability=0.02,
                 ),
             )
 

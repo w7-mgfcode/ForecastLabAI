@@ -15,7 +15,7 @@ class TestListScenarios:
         """Test that all scenario presets are returned."""
         scenarios = service.list_scenarios()
 
-        assert len(scenarios) == 6
+        assert len(scenarios) == 7
 
         names = [s.name for s in scenarios]
         assert "retail_standard" in names
@@ -24,6 +24,17 @@ class TestListScenarios:
         assert "stockout_heavy" in names
         assert "new_launches" in names
         assert "sparse" in names
+        assert "demo_minimal" in names
+
+    def test_demo_minimal_dimensions(self):
+        """Test that demo_minimal is the small preset for the make demo target."""
+        scenarios = service.list_scenarios()
+
+        demo = next(s for s in scenarios if s.name == "demo_minimal")
+        assert demo.stores == 3
+        assert demo.products == 10
+        assert demo.start_date == date(2024, 10, 1)
+        assert demo.end_date == date(2024, 12, 31)
 
     def test_scenario_info_structure(self):
         """Test that scenarios have required fields."""
@@ -65,6 +76,7 @@ class TestGetScenarioPreset:
             "stockout_heavy",
             "new_launches",
             "sparse",
+            "demo_minimal",
         ]
 
         for name in valid_names:
