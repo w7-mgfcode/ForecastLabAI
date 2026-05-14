@@ -17,6 +17,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -89,6 +90,15 @@ def uvicorn_subprocess() -> Iterator[subprocess.Popen[bytes]]:
     # Force a known app_env so seeder_allow_production guard doesn't bite.
     env.setdefault("APP_ENV", "development")
 
+    # Redirect uvicorn output to a temp file rather than a subprocess.PIPE.
+    # The seeder + structlog produce enough INFO output to fill a 64-KB
+    # pipe buffer during /seeder/generate; once full, uvicorn blocks on
+    # write and the HTTP request appears to hang. Writing to a file
+    # never blocks, and we keep the file around so failure mode can
+    # inspect it.
+    log_file_path = Path(tempfile.gettempdir()) / f"uvicorn-e2e-{os.getpid()}.log"
+    log_file = log_file_path.open("w", buffering=1)
+
     proc = subprocess.Popen(  # noqa: S603 — internal command, trusted args
         [
             UV_BIN,
@@ -104,8 +114,8 @@ def uvicorn_subprocess() -> Iterator[subprocess.Popen[bytes]]:
         ],
         cwd=str(REPO_ROOT),
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
     )
 
     try:
@@ -115,9 +125,11 @@ def uvicorn_subprocess() -> Iterator[subprocess.Popen[bytes]]:
                 proc.wait(timeout=5.0)
             except subprocess.TimeoutExpired:
                 proc.kill()
+            log_file.close()
+            log_tail = log_file_path.read_text()[-2000:] if log_file_path.exists() else "(no log)"
             pytest.skip(
                 f"uvicorn did not become healthy on {DEMO_API_URL} within "
-                f"{UVICORN_BOOT_TIMEOUT_S:.0f}s — check that migrations ran"
+                f"{UVICORN_BOOT_TIMEOUT_S:.0f}s — tail of log:\n{log_tail}"
             )
         yield proc
     finally:
@@ -127,6 +139,10 @@ def uvicorn_subprocess() -> Iterator[subprocess.Popen[bytes]]:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=5.0)
+        log_file.close()
+        # Best-effort cleanup; leave the file in place if the test failed.
+        if proc.returncode == 0:
+            log_file_path.unlink(missing_ok=True)
 
 
 @pytest.mark.integration
@@ -144,8 +160,13 @@ def test_run_demo_e2e_exits_green(uvicorn_subprocess: subprocess.Popen[bytes]) -
             "--reset",
             "--api-url",
             DEMO_API_URL,
+            # Per-step timeout. /seeder/generate for demo_minimal can spend
+            # 60-90 s on inserts on slower hardware (3 stores x 10 products
+            # x 92 days of sales + inventory + prices + promotions). The
+            # default 60 s is fine for the foreground steps but tight for
+            # seed; bump to 120 s for the integration run.
             "--timeout",
-            "60",
+            "120",
         ],
         cwd=str(REPO_ROOT),
         capture_output=True,

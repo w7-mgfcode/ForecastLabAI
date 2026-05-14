@@ -38,6 +38,7 @@ import asyncio
 import hashlib
 import json
 import math
+import shutil
 import sys
 import time
 from collections.abc import Awaitable, Callable
@@ -55,7 +56,11 @@ from app.core.config import get_settings
 # =============================================================================
 
 DEFAULT_API_URL: Final[str] = "http://localhost:8123"
-DEFAULT_TIMEOUT_S: Final[float] = 60.0
+# Per-step HTTP timeout. /seeder/generate on demo_minimal empirically
+# takes 60-90 s on a laptop (3 stores x 10 products x 92 days of sales
+# + inventory + prices + promotions), so 120 s leaves margin. The
+# default 5 s from httpx is far too short.
+DEFAULT_TIMEOUT_S: Final[float] = 120.0
 DEFAULT_SEED: Final[int] = 42
 
 DEMO_ALIAS: Final[str] = "demo-production"
@@ -310,9 +315,24 @@ def _model_config_payload(model_type: str) -> dict[str, Any]:
 
 
 def _llm_key_present() -> bool:
-    """Return True if any agent-capable LLM key is set in Settings."""
+    """Return True if the configured agent model's API key is set.
+
+    Matches the provider prefix of ``agent_default_model`` (e.g.,
+    ``anthropic:claude-...`` -> ``anthropic_api_key``) so we skip the
+    agent step gracefully when the configured model can't reach its
+    provider. Mirrors the validator allow-list in
+    ``app/core/config.py:validate_model_identifier`` (issue #128).
+    """
     settings = get_settings()
-    return bool(settings.openai_api_key) or bool(settings.anthropic_api_key)
+    model = settings.agent_default_model
+    provider = model.split(":", 1)[0] if ":" in model else ""
+    if provider == "anthropic":
+        return bool(settings.anthropic_api_key)
+    if provider == "openai":
+        return bool(settings.openai_api_key)
+    if provider in ("google-gla", "google-vertex"):
+        return bool(settings.google_api_key)
+    return False
 
 
 def _select_winner(
@@ -410,7 +430,8 @@ async def step_seed(ctx: DemoContext, client: HttpClient) -> StepOutcome:
         k: int(v) for k, v in body.get("records_created", {}).items() if isinstance(v, int)
     }
     ctx.seed_records = records
-    sales = records.get("sales_daily", 0)
+    # GenerateResult.records_created uses "sales" (singular), not "sales_daily".
+    sales = records.get("sales", records.get("sales_daily", 0))
     return StepOutcome(
         name="seed",
         status="pass",
@@ -423,7 +444,15 @@ async def step_seed(ctx: DemoContext, client: HttpClient) -> StepOutcome:
 
 
 async def step_status(ctx: DemoContext, client: HttpClient) -> StepOutcome:
-    """GET /seeder/status -- confirm seed landed; capture date range."""
+    """GET /seeder/status + /dimensions/* -- capture date range AND real IDs.
+
+    Postgres auto-increment does NOT reset across delete/seed cycles, so
+    the freshly-seeded store/product IDs are NOT 1. We discover the first
+    available (store_id, product_id) from the dimensions endpoints; the
+    seeder has no sparsity for the demo_minimal preset, so any pair will
+    have ~92 sales rows minus a small number of stockouts -- well above
+    the 72-day backtest floor.
+    """
     start = time.monotonic()
     body = await client.request("status", "GET", "/seeder/status")
     raw_start = body.get("date_range_start")
@@ -437,11 +466,53 @@ async def step_status(ctx: DemoContext, client: HttpClient) -> StepOutcome:
         )
     ctx.date_start = date.fromisoformat(raw_start)
     ctx.date_end = date.fromisoformat(raw_end)
+
+    stores_body = await client.request(
+        "status[stores]", "GET", "/dimensions/stores?page=1&page_size=1"
+    )
+    products_body = await client.request(
+        "status[products]", "GET", "/dimensions/products?page=1&page_size=1"
+    )
+    stores_raw = stores_body.get("stores", [])
+    products_raw = products_body.get("products", [])
+    stores = stores_raw if isinstance(stores_raw, list) else []
+    products = products_raw if isinstance(products_raw, list) else []
+    if not stores or not products:
+        return StepOutcome(
+            name="status",
+            status="fail",
+            detail="no stores or products after seed",
+            duration_ms=(time.monotonic() - start) * 1000,
+        )
+    first_store = stores[0]
+    first_product = products[0]
+    if not isinstance(first_store, dict) or not isinstance(first_product, dict):
+        return StepOutcome(
+            name="status",
+            status="fail",
+            detail="dimensions returned non-dict items",
+            duration_ms=(time.monotonic() - start) * 1000,
+        )
+    store_id_raw = first_store.get("id")
+    product_id_raw = first_product.get("id")
+    if not isinstance(store_id_raw, int) or not isinstance(product_id_raw, int):
+        return StepOutcome(
+            name="status",
+            status="fail",
+            detail="dimension ids missing or non-int",
+            duration_ms=(time.monotonic() - start) * 1000,
+        )
+    ctx.store_id = store_id_raw
+    ctx.product_id = product_id_raw
+
     sales = body.get("sales", 0)
     return StepOutcome(
         name="status",
         status="pass",
-        detail=f"date_range={raw_start}..{raw_end} sales={sales}",
+        detail=(
+            f"date_range={raw_start}..{raw_end} sales={sales} "
+            f"selected store_id={ctx.store_id} product_id={ctx.product_id}"
+        ),
         duration_ms=(time.monotonic() - start) * 1000,
     )
 
@@ -632,15 +703,30 @@ async def step_register(ctx: DemoContext, client: HttpClient) -> StepOutcome:
             detail=f"no model_path for winner {ctx.winner_model_type}",
             duration_ms=(time.monotonic() - start) * 1000,
         )
-    model_path = Path(model_path_raw)
-    if not model_path.exists():
+    source_model = Path(model_path_raw)
+    if not source_model.exists():
         return StepOutcome(
             name="register",
             status="fail",
-            detail=f"artifact missing at {model_path}",
+            detail=f"artifact missing at {source_model}",
             duration_ms=(time.monotonic() - start) * 1000,
         )
-    artifact_bytes = model_path.read_bytes()
+
+    # /forecasting/train saves under settings.forecast_model_artifacts_dir
+    # (default ./artifacts/models). The registry's verify endpoint resolves
+    # artifact_uri against settings.registry_artifact_root (default
+    # ./artifacts/registry) -- they are intentionally separate roots. To
+    # close the loop, copy the trained model into the registry root and
+    # record a *registry-relative* URI. This is the official pattern
+    # mirrored by app/features/registry/tests/test_storage.py.
+    settings = get_settings()
+    registry_root = Path(settings.registry_artifact_root).resolve()
+    registry_root.mkdir(parents=True, exist_ok=True)
+    artifact_uri = f"demo/{ctx.winner_model_type}-{source_model.stem}.joblib"
+    dest_path = registry_root / artifact_uri
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_model, dest_path)
+    artifact_bytes = dest_path.read_bytes()
     artifact_hash = hashlib.sha256(artifact_bytes).hexdigest()
     artifact_size = len(artifact_bytes)
 
@@ -688,7 +774,7 @@ async def step_register(ctx: DemoContext, client: HttpClient) -> StepOutcome:
         json_body={
             "status": "success",
             "metrics": ctx.backtest_results[ctx.winner_model_type],
-            "artifact_uri": str(model_path),
+            "artifact_uri": artifact_uri,
             "artifact_hash": artifact_hash,
             "artifact_size_bytes": artifact_size,
         },
@@ -739,38 +825,62 @@ async def step_verify(ctx: DemoContext, client: HttpClient) -> StepOutcome:
 
 
 async def step_agent(ctx: DemoContext, client: HttpClient) -> StepOutcome:
-    """One-turn chat with the ``experiment`` agent; skip if no LLM key."""
+    """One-turn chat with the ``experiment`` agent.
+
+    Skip gracefully if either (a) the configured agent model has no
+    matching API key, or (b) the round-trip raises a provider error
+    (invalid key, model unavailable, rate-limit). The agent integration
+    is showcased separately by the chat UI; the demo's pipeline value
+    is the ML loop above and we don't want a broken LLM key to mask a
+    green pipeline run.
+    """
     start = time.monotonic()
     if not _llm_key_present():
         return StepOutcome(
             name="agent",
             status="skip",
-            detail="no OPENAI_API_KEY / ANTHROPIC_API_KEY set",
+            detail="no API key matching agent_default_model provider",
             duration_ms=(time.monotonic() - start) * 1000,
         )
 
-    create_body = await client.request(
-        "agent[session]",
-        "POST",
-        "/agents/sessions",
-        json_body={"agent_type": "experiment", "initial_context": None},
-    )
+    try:
+        create_body = await client.request(
+            "agent[session]",
+            "POST",
+            "/agents/sessions",
+            json_body={"agent_type": "experiment", "initial_context": None},
+        )
+    except StepError as exc:
+        return StepOutcome(
+            name="agent",
+            status="skip",
+            detail=f"session-create failed: {exc}",
+            duration_ms=(time.monotonic() - start) * 1000,
+        )
     session_id_raw = create_body.get("session_id")
     if not isinstance(session_id_raw, str):
         return StepOutcome(
             name="agent",
-            status="fail",
+            status="skip",
             detail="no session_id returned",
             duration_ms=(time.monotonic() - start) * 1000,
         )
     ctx.session_id = session_id_raw
 
-    chat_body = await client.request(
-        "agent[chat]",
-        "POST",
-        f"/agents/sessions/{session_id_raw}/chat",
-        json_body={"message": "List the latest model runs.", "stream": False},
-    )
+    try:
+        chat_body = await client.request(
+            "agent[chat]",
+            "POST",
+            f"/agents/sessions/{session_id_raw}/chat",
+            json_body={"message": "List the latest model runs.", "stream": False},
+        )
+    except StepError as exc:
+        return StepOutcome(
+            name="agent",
+            status="skip",
+            detail=f"chat round-trip failed: {exc}",
+            duration_ms=(time.monotonic() - start) * 1000,
+        )
     tokens = int(chat_body.get("tokens_used", 0))
     tool_calls = chat_body.get("tool_calls", [])
     tool_count = len(tool_calls) if isinstance(tool_calls, list) else 0

@@ -45,7 +45,7 @@ class TestParseArgs:
         assert args.reset is False
         assert args.quiet is False
         assert args.api_url == "http://localhost:8123"
-        assert args.timeout == pytest.approx(60.0)
+        assert args.timeout == pytest.approx(120.0)
 
     def test_all_flags(self) -> None:
         args = parse_args(
