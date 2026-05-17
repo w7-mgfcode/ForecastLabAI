@@ -15,6 +15,7 @@ from app.features.agents.routes import router as agents_router
 from app.features.agents.websocket import router as agents_ws_router
 from app.features.analytics.routes import router as analytics_router
 from app.features.backtesting.routes import router as backtesting_router
+from app.features.demo.routes import router as demo_router
 from app.features.dimensions.routes import router as dimensions_router
 from app.features.featuresets.routes import router as featuresets_router
 from app.features.forecasting.routes import router as forecasting_router
@@ -124,6 +125,7 @@ def create_app() -> FastAPI:
     app.include_router(agents_router)
     app.include_router(agents_ws_router)
     app.include_router(seeder_router)
+    app.include_router(demo_router)
 
     return app
 

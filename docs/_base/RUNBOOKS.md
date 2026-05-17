@@ -86,6 +86,15 @@ rm -rf frontend/node_modules && corepack enable pnpm && cd frontend && pnpm inst
 uv run python scripts/run_demo.py --seed 42 --quiet 2>&1 | tee demo.log
 ```
 
+### Showcase page (`/showcase`) pipeline fails at step X
+**Symptoms:** The dashboard Showcase page (`/showcase`) — or `POST /demo/run` — shows a step card flip to ❌, the run stops, and the summary banner is red.
+**Diagnosis flow (matches `app/features/demo/pipeline.py` step names):**
+1. **`status` step fails** — `skip_seed=true` (the default) ran against an empty database. Seed first: tick **Re-seed first** on the page, or `POST /seeder/generate` the `demo_minimal` scenario, or run `make demo` once.
+2. **`register` step fails with `HTTP 500 -- Database Error`** — the registry's `_find_duplicate` hit multiple pre-existing `model_run` rows with the same config hash (accumulated by prior `make demo` / `run_demo.py` runs). Not a demo-slice bug — the demo correctly surfaces the registry's 500. Fix by clearing stale runs or running against a fresh database.
+3. **`agent` step shows ⏭️** — no API key matches the configured `agent_default_model` provider, or the provider rejected the key. Expected; not a failure. The pipeline still goes green.
+4. **Page shows an `error` banner ("Pipeline could not start")** — either the start frame was malformed, or another run is already in progress (`409`). Only one demo pipeline runs at a time (module-level `asyncio.Lock`). Wait for the active run to finish.
+**Notes:** the `POST /demo/run` body and `WS /demo/stream` events are documented in `docs/_base/API_CONTRACTS.md`. The pipeline mirrors `scripts/run_demo.py`; the per-step diagnosis for `make demo` above applies to the same steps.
+
 ### release-please skipped the bump after a dev → main merge
 **Symptoms:** `dev → main` PR is merged, `CD Release` workflow on `main` completes in ~10s, **no Release PR** is opened. release-please log shows `No user facing commits found since <sha> - skipping`.
 **Root cause:** `gh pr merge --merge` uses the **PR title** as the merge-commit subject. If that subject is a valid conventional commit of a non-bumping type (`chore`, `docs`, `refactor`, `test`, `ci`), release-please reads it at face value, classifies the whole merge as non-bumping, and stops. Prior dev→main merges done via the GitHub web UI used the default `Merge pull request #N from <branch>` subject — non-conventional — so release-please traversed to the underlying commits and bumped correctly.
