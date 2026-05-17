@@ -45,6 +45,8 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 | agents | DELETE | `/agents/sessions/{session_id}` | Close session |
 | agents | WS | `/agents/stream` | Token-by-token streaming + tool-call events |
 | seeder | (see `app/features/seeder/routes.py`) | `/seeder/*` | Trigger scenarios, status, customization |
+| demo | POST | `/demo/run` | Run the end-to-end demo pipeline in-process; returns a `DemoRunResult`. `409 application/problem+json` if a run is already active |
+| demo | WS | `/demo/stream` | Stream one `StepEvent` per pipeline step for the live Showcase page |
 
 ## WebSocket Events (`/agents/stream`)
 
@@ -59,6 +61,19 @@ Verified against `app/features/agents/websocket.py` and `app/features/agents/sch
   - `approval_required` — emitted when a tool in `agent_require_approval` is pending; the chat REST `/agents/sessions/{id}/approve` endpoint releases it
   - `complete` — `data: {"message": str, "tokens_used": int, "tool_calls_count": int}` (`CompleteEvent`)
   - `error` — `data: {"error": str, "error_type": str, "recoverable": bool}` (`ErrorEvent`). On `recoverable: false` (e.g., `session_not_found`, `session_expired`), the client should close.
+
+## WebSocket Events (`/demo/stream`)
+
+Drives the end-to-end demo pipeline for the dashboard Showcase page. Verified against `app/features/demo/routes.py` and `app/features/demo/schemas.py` (`StepEvent`).
+
+- **Client → server (one start frame):** `{"seed": int, "reset": bool, "skip_seed": bool}` — all fields optional (`DemoRunRequest` supplies defaults `seed=42`, `reset=false`, `skip_seed=true`). The pipeline runs once, then the server closes.
+- **Server → client (every frame):** Pydantic-serialized `StepEvent` — `{"event_type", "step_name", "step_index", "total_steps", "status", "detail", "duration_ms", "data", "timestamp"}`.
+- **`event_type` values (Literal in `StepEvent`):**
+  - `step_start` — a step began; `status` is `null`.
+  - `step_complete` — a step finished; `status ∈ {pass, fail, skip, warn}`, `data` carries structured payload (backtest `per_model` WAPE + `winner`; register `run_id` + `alias`).
+  - `pipeline_complete` — final event; `data` carries `winner_model_type`, `winner_wape`, `winning_run_id`, `alias`, `wall_clock_s`.
+  - `error` — bad start frame or a concurrent run already in progress; one event, then the server closes.
+- Concurrency: a module-level `asyncio.Lock` allows one pipeline at a time. A second `POST /demo/run` returns `409`; a second `WS /demo/stream` receives one `error` event.
 
 ## Async Events / Queues
 
