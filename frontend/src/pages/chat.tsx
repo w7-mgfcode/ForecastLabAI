@@ -55,7 +55,7 @@ export default function ChatPage() {
         setCurrentToolCall(null)
         break
 
-      case 'approval_required':
+      case 'approval_required': {
         // Backend sends full pending action under "action"
         const action = event.data.action as Record<string, unknown> | undefined
         setPendingAction({
@@ -64,6 +64,7 @@ export default function ChatPage() {
           details: action ?? (event.data.details as Record<string, unknown> | undefined),
         })
         break
+      }
 
       case 'complete':
         // Finalize the streaming message

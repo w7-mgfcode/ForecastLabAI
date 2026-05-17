@@ -9,6 +9,7 @@ import { ROUTES } from '@/lib/constants'
 
 // Lazy-loaded page components
 const DashboardPage = lazy(() => import('@/pages/dashboard'))
+const ShowcasePage = lazy(() => import('@/pages/showcase'))
 const SalesExplorerPage = lazy(() => import('@/pages/explorer/sales'))
 const StoresExplorerPage = lazy(() => import('@/pages/explorer/stores'))
 const ProductsExplorerPage = lazy(() => import('@/pages/explorer/products'))
@@ -35,6 +36,14 @@ function App() {
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <DashboardPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.SHOWCASE}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <ShowcasePage />
                   </Suspense>
                 }
               />

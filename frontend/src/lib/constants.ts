@@ -1,6 +1,7 @@
 // Route paths
 export const ROUTES = {
   DASHBOARD: '/',
+  SHOWCASE: '/showcase',
   EXPLORER: {
     SALES: '/explorer/sales',
     STORES: '/explorer/stores',
@@ -19,6 +20,7 @@ export const ROUTES = {
 // Navigation items for the top nav
 export const NAV_ITEMS = [
   { label: 'Dashboard', href: ROUTES.DASHBOARD },
+  { label: 'Showcase', href: ROUTES.SHOWCASE },
   {
     label: 'Explorer',
     items: [
@@ -43,8 +45,14 @@ export const NAV_ITEMS = [
 // Default pagination
 export const DEFAULT_PAGE_SIZE = 25
 
-// WebSocket URL
+// WebSocket URL (agent chat stream)
 export const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8123/agents/stream'
+
+// WebSocket URL for the demo showcase pipeline stream. Derived from the API
+// base URL so it tracks whatever host the SPA is configured to call.
+export const DEMO_WS_URL =
+  (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8123').replace(/^http/, 'ws') +
+  '/demo/stream'
 
 // Feature flags
 export const ENABLE_AGENT_CHAT = import.meta.env.VITE_ENABLE_AGENT_CHAT !== 'false'

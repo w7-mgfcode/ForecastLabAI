@@ -320,3 +320,39 @@ export interface VerifyResult {
   warning_count: number
   failed_count: number
 }
+
+// === Demo Showcase ===
+export type DemoStepStatus = 'running' | 'pass' | 'fail' | 'skip' | 'warn'
+export type DemoEventType = 'step_start' | 'step_complete' | 'pipeline_complete' | 'error'
+
+// One streamed pipeline event from WS /demo/stream (matches the backend
+// StepEvent Pydantic model; snake_case on the wire).
+export interface StepEvent {
+  event_type: DemoEventType
+  step_name: string
+  step_index: number
+  total_steps: number
+  status: DemoStepStatus | null
+  detail: string
+  duration_ms: number
+  data: Record<string, unknown>
+  timestamp: string
+}
+
+// Start frame for WS /demo/stream and request body for POST /demo/run.
+export interface DemoRunRequest {
+  seed?: number
+  reset?: boolean
+  skip_seed?: boolean
+}
+
+// Aggregate result returned by the synchronous POST /demo/run.
+export interface DemoRunResult {
+  overall_status: 'pass' | 'fail'
+  steps: StepEvent[]
+  winner_model_type: string | null
+  winner_wape: number | null
+  winning_run_id: string | null
+  alias: string | null
+  wall_clock_s: number
+}
