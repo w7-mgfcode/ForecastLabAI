@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.11](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.10...v0.2.11) (2026-05-18)
+
+
+### Features
+
+* release v0.2.11 — visualization fixes, job picker, demo showcase ([#158](https://github.com/w7-mgfcode/ForecastLabAI/issues/158)) ([1df4ae7](https://github.com/w7-mgfcode/ForecastLabAI/commit/1df4ae7a867cb2c551c76508530421ef0dab0f85))
+
 ## [0.2.10](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.9...v0.2.10) (2026-05-18)
 
 
