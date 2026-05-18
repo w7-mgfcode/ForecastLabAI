@@ -6,6 +6,7 @@ Provides shared configuration and utility functions for all agents.
 from __future__ import annotations
 
 import functools
+import inspect
 import os
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -37,7 +38,18 @@ def recoverable[**P, ToolReturnT](
     Returns:
         The wrapped tool function, signature preserved for PydanticAI schema
         extraction.
+
+    Raises:
+        TypeError: If ``func`` is not a coroutine function. The wrapper
+            ``await``s ``func``, so wrapping a sync callable would only fail
+            (with an opaque "not awaitable" error) when the tool is first
+            called — this guard surfaces the mistake at decoration time.
     """
+    if not inspect.iscoroutinefunction(func):
+        raise TypeError(
+            f"@recoverable wraps async tool functions only; "
+            f"{getattr(func, '__qualname__', func)!r} is not a coroutine function."
+        )
 
     @functools.wraps(func)
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> ToolReturnT:
@@ -106,6 +118,19 @@ def get_fallback_model() -> str:
     """
     settings = get_settings()
     return settings.agent_fallback_model
+
+
+def get_agent_retries() -> int:
+    """Get the configured retry budget for agent tool calls and output validation.
+
+    PydanticAI defaults to 1 retry; without this the configured
+    ``agent_retry_attempts`` setting is silently ignored.
+
+    Returns:
+        Number of retry attempts for tool calls and structured-output validation.
+    """
+    settings = get_settings()
+    return settings.agent_retry_attempts
 
 
 def get_model_settings() -> dict[str, Any]:
