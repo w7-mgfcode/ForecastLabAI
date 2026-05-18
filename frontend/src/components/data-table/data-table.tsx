@@ -97,11 +97,13 @@ export function DataTable<TData, TValue>({
           </TableHeader>
           <TableBody>
             {isLoading ? (
-              // Loading skeleton
+              // Loading skeleton — one cell per *visible* column so the
+              // skeleton width matches the rendered table after a
+              // column-visibility toggle.
               Array.from({ length: pagination.pageSize }).map((_, i) => (
                 <TableRow key={i}>
-                  {columns.map((_, j) => (
-                    <TableCell key={j}>
+                  {table.getVisibleLeafColumns().map((column) => (
+                    <TableCell key={column.id}>
                       <Skeleton className="h-4 w-full" />
                     </TableCell>
                   ))}
@@ -113,6 +115,20 @@ export function DataTable<TData, TValue>({
                   key={row.id}
                   data-state={row.getIsSelected() && 'selected'}
                   onClick={onRowClick ? () => onRowClick(row.original) : undefined}
+                  // A clickable row must be keyboard-operable: expose it as a
+                  // button to assistive tech and fire on Enter / Space.
+                  onKeyDown={
+                    onRowClick
+                      ? (event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault()
+                            onRowClick(row.original)
+                          }
+                        }
+                      : undefined
+                  }
+                  tabIndex={onRowClick ? 0 : undefined}
+                  role={onRowClick ? 'button' : undefined}
                   className={cn(onRowClick && 'cursor-pointer')}
                 >
                   {row.getVisibleCells().map((cell) => (
@@ -128,7 +144,7 @@ export function DataTable<TData, TValue>({
             ) : (
               <TableRow>
                 <TableCell
-                  colSpan={columns.length}
+                  colSpan={table.getVisibleLeafColumns().length}
                   className="h-24 text-center"
                 >
                   {emptyMessage}
