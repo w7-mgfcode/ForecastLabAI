@@ -13,7 +13,9 @@ export const ROUTES = {
     FORECAST: '/visualize/forecast',
     BACKTEST: '/visualize/backtest',
   },
+  KNOWLEDGE: '/knowledge',
   CHAT: '/chat',
+  GUIDE: '/guide',
   ADMIN: '/admin',
 } as const
 
@@ -38,7 +40,9 @@ export const NAV_ITEMS = [
       { label: 'Backtest Results', href: ROUTES.VISUALIZE.BACKTEST },
     ],
   },
+  { label: 'Knowledge', href: ROUTES.KNOWLEDGE },
   { label: 'Chat', href: ROUTES.CHAT },
+  { label: 'Agent Guide', href: ROUTES.GUIDE },
   { label: 'Admin', href: ROUTES.ADMIN },
 ] as const
 

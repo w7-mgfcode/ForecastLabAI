@@ -23,6 +23,8 @@ ForecastLabAI is a portfolio-grade, single-host retail-demand-forecasting system
 | [`scripts/run_demo.py`](../../scripts/run_demo.py) | End-to-end pipeline driver — seed → features → train ×3 → backtest → register → alias → agent | First-run demonstrability, integration debugging |
 | [`app/features/demo/`](../../app/features/demo/) | In-process e2e demo slice — `POST /demo/run` + `WS /demo/stream` drive the pipeline via `ASGITransport` (no cross-slice imports) | Showcase page, in-product demo |
 | [`frontend/src/pages/showcase.tsx`](../../frontend/src/pages/showcase.tsx) | The Showcase page — streams the live pipeline into the dashboard as status cards | Demoing the system in-browser |
+| [`frontend/src/pages/knowledge.tsx`](../../frontend/src/pages/knowledge.tsx) | The Knowledge page — indexed RAG corpus, live semantic search, and live system state | Surfacing what the agents can draw on |
+| [`frontend/src/pages/guide.tsx`](../../frontend/src/pages/guide.tsx) | The Agent Guide page — agent tools, approval gate, live session limits, example prompts | Explaining how to use the chat agents |
 | [`alembic/versions/`](../../alembic/versions/) | Six migrations through `d6e0f2g3h456_create_agent_session_table.py` | DB-schema questions, migration drift |
 | [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) | Phase-by-phase architecture narrative | High-level component reasoning |
 | [`docs/PHASE-index.md`](../PHASE-index.md) | Index of all 11 phase docs | Locating per-phase deep-dive |

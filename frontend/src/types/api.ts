@@ -181,6 +181,35 @@ export interface IndexDocumentResponse {
   chunks_created: number
 }
 
+// Semantic-search request for POST /rag/retrieve.
+// Mirrors app/features/rag/schemas.py RetrieveRequest (extra="forbid" — send
+// nothing beyond these fields). Omit similarity_threshold to use the server default.
+export interface RetrieveRequest {
+  query: string
+  top_k?: number // 1..50, server default 5
+  similarity_threshold?: number // 0..1
+  filters?: Record<string, unknown> | null
+}
+
+// One matching chunk from a semantic search.
+export interface ChunkResult {
+  chunk_id: string
+  source_id: string
+  source_path: string
+  source_type: string
+  content: string
+  relevance_score: number // 0..1
+  metadata: Record<string, unknown> | null
+}
+
+// Response from POST /rag/retrieve.
+export interface RetrieveResponse {
+  results: ChunkResult[]
+  query_embedding_time_ms: number
+  search_time_ms: number
+  total_chunks_searched: number
+}
+
 // === Agents WebSocket ===
 export type AgentEventType =
   | 'text_delta'
@@ -373,6 +402,11 @@ export interface AIModelConfig {
   agent_temperature: number
   agent_max_tokens: number
   agent_thinking_budget: number | null
+  agent_max_tool_calls: number
+  agent_timeout_seconds: number
+  agent_retry_attempts: number
+  agent_session_ttl_minutes: number
+  agent_require_approval: string[]
   rag_embedding_provider: string
   rag_embedding_model: string
   rag_embedding_dimension: number

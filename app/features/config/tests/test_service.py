@@ -97,6 +97,24 @@ class TestGetEffectiveConfig:
         assert anthropic.masked is not None
         assert "supersecretvalue" not in config.model_dump_json()
 
+    @pytest.mark.asyncio
+    async def test_get_effective_config_maps_agent_limits(self):
+        """The agent session-limit fields are sourced from the Settings singleton."""
+        settings = get_settings()
+        settings.agent_max_tool_calls = 7
+        settings.agent_timeout_seconds = 99
+        settings.agent_retry_attempts = 2
+        settings.agent_session_ttl_minutes = 45
+        settings.agent_require_approval = ["create_alias"]
+
+        config = await service.get_effective_config(_mock_db())
+
+        assert config.agent_max_tool_calls == 7
+        assert config.agent_timeout_seconds == 99
+        assert config.agent_retry_attempts == 2
+        assert config.agent_session_ttl_minutes == 45
+        assert config.agent_require_approval == ["create_alias"]
+
 
 # =============================================================================
 # Unit tests — update_config

@@ -13,6 +13,8 @@ Portfolio-grade end-to-end retail demand forecasting system.
 - **Agentic Layer**: PydanticAI agents for autonomous experimentation and evidence-grounded Q&A with human-in-the-loop approval
 - **Data Seeder (The Forge)**: Reproducible synthetic data generator with realistic time-series patterns, scenario presets, and retail effects
 - **AI Models Console**: `/admin` → AI Models tab — swap the agent LLM (incl. fully-local Ollama), the RAG embedding model, and provider API keys at runtime; changes apply live with no restart
+- **Knowledge Page**: `/knowledge` — browse the indexed RAG corpus, run a live semantic search, and see the live system state (seeded data, model runs, deployment aliases) the agents draw on
+- **Agent Guide**: `/guide` — in-product reference for the two chat agents — their tools, the human-in-the-loop approval gate, live session limits, and copy-paste example prompts
 
 ## Quick Start
 
