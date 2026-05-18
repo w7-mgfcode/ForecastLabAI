@@ -12,7 +12,9 @@ const DashboardPage = lazy(() => import('@/pages/dashboard'))
 const ShowcasePage = lazy(() => import('@/pages/showcase'))
 const SalesExplorerPage = lazy(() => import('@/pages/explorer/sales'))
 const StoresExplorerPage = lazy(() => import('@/pages/explorer/stores'))
+const StoreDetailPage = lazy(() => import('@/pages/explorer/store-detail'))
 const ProductsExplorerPage = lazy(() => import('@/pages/explorer/products'))
+const ProductDetailPage = lazy(() => import('@/pages/explorer/product-detail'))
 const RunsExplorerPage = lazy(() => import('@/pages/explorer/runs'))
 const JobsMonitorPage = lazy(() => import('@/pages/explorer/jobs'))
 const ForecastPage = lazy(() => import('@/pages/visualize/forecast'))
@@ -66,10 +68,26 @@ function App() {
                 }
               />
               <Route
+                path={ROUTES.EXPLORER.STORE_DETAIL}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <StoreDetailPage />
+                  </Suspense>
+                }
+              />
+              <Route
                 path={ROUTES.EXPLORER.PRODUCTS}
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <ProductsExplorerPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.EXPLORER.PRODUCT_DETAIL}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <ProductDetailPage />
                   </Suspense>
                 }
               />

@@ -76,6 +76,46 @@ export interface DrilldownResponse {
   product_id: number | null
 }
 
+// Bucket size for GET /analytics/timeseries.
+export type TimeGranularity = 'day' | 'week' | 'month' | 'quarter'
+
+// One aggregated period of the sales time series.
+export interface TimeSeriesPoint {
+  period: string // ISO date (bucket start)
+  metrics: KPIMetrics
+}
+
+// Response from GET /analytics/timeseries (points ascending by period).
+export interface TimeSeriesResponse {
+  granularity: TimeGranularity
+  points: TimeSeriesPoint[]
+  total_points: number
+  start_date: string
+  end_date: string
+  store_id: number | null
+  product_id: number | null
+  category: string | null
+}
+
+// One day of a product's lifecycle demand curve.
+export interface LifecyclePoint {
+  date: string // ISO date
+  stage: string
+  multiplier: number
+}
+
+// Response from GET /dimensions/products/{id}/lifecycle-curve.
+export interface LifecycleCurveResponse {
+  product_id: number
+  sku: string
+  launch_date: string | null
+  discontinue_date: string | null
+  start_date: string
+  end_date: string
+  points: LifecyclePoint[]
+  total: number
+}
+
 // === Registry ===
 export type RunStatus = 'pending' | 'running' | 'success' | 'failed' | 'archived'
 
