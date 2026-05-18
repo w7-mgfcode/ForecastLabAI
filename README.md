@@ -39,7 +39,7 @@ docker-compose up -d
 3. **Install dependencies**
 
 ```bash
-uv sync
+uv sync --extra dev
 # or: pip install -e ".[dev]"
 ```
 

@@ -2,26 +2,25 @@
 # These owners will be requested for review when PRs touch their areas
 #
 # Format: path @username or @org/team
-# Note: Replace placeholder usernames with actual GitHub usernames
 
 # Default owners for everything
-* @your-username
+* @w7-mgfcode
 
 # Core infrastructure
-/app/core/ @your-username
+/app/core/ @w7-mgfcode
 
 # Feature modules (add specific owners as team grows)
-/app/features/ @your-username
+/app/features/ @w7-mgfcode
 
 # CI/CD configuration
-/.github/ @your-username
+/.github/ @w7-mgfcode
 
 # Database migrations
-/alembic/ @your-username
+/alembic/ @w7-mgfcode
 
 # Documentation
-/docs/ @your-username
+/docs/ @w7-mgfcode
 
 # Configuration files
-/pyproject.toml @your-username
-/docker-compose.yml @your-username
+/pyproject.toml @w7-mgfcode
+/docker-compose.yml @w7-mgfcode
