@@ -1,0 +1,47 @@
+# ForecastLabAI
+
+> Portfolio-grade, single-host retail demand-forecasting system covering the full lifecycle — data platform, ingest, time-safe feature engineering, forecasting, backtesting, model registry, RAG, a PydanticAI agentic layer, and a React 19 dashboard. Python 3.12 + FastAPI + SQLAlchemy 2.0 async + Pydantic v2; PostgreSQL 16 + pgvector; runs end-to-end via `docker compose up`.
+
+This file follows the llms.txt convention: a curated, markup-free map of the repository's documentation for LLM consumption. The repository has no hosted documentation site, so links are relative paths within the repo. For the full inlined content of the core docs, see `llms-full.txt`.
+
+## Core Documentation
+
+- [README](README.md): Quick start, feature list, full HTTP/WebSocket endpoint reference, frontend stack.
+- [AGENTS.md](AGENTS.md): Universal cross-tool agent brief — stack, setup, commands, validation gates, conventions, safety, git flow.
+- [CLAUDE.md](CLAUDE.md): Claude Code operating index — imports AGENTS.md and the deep-dive reference suite.
+
+## Reference Suite (docs/_base)
+
+- [Developer Guide](docs/_base/DEV_GUIDE.md): Human-maintained onboarding — what the project is, setup, testing, technology rationale.
+- [Architecture](docs/_base/ARCHITECTURE.md): System boundaries, component inventory, communication patterns, deployment flow.
+- [API Contracts](docs/_base/API_CONTRACTS.md): HTTP endpoint surface, WebSocket events, external integrations, schema-change policy.
+- [Runbooks](docs/_base/RUNBOOKS.md): Common incidents and resolutions, break-glass procedures, release/rollback.
+- [Security](docs/_base/SECURITY.md): Threat model, hard rules, secrets management, input validation, LLM/agent security.
+- [Rules](docs/_base/RULES.md): Change-authority matrix, hard invariants, forbidden patterns, escalation paths.
+- [Domain Model](docs/_base/DOMAIN_MODEL.md): Bounded contexts, core aggregates, key invariants, ubiquitous language.
+- [Repo Map Index](docs/_base/REPO_MAP_INDEX.md): Service and dependency map, document index, dependency hotspots.
+- [Pipeline Contract](docs/_base/PIPELINE_CONTRACT.md): CI/CD stages, merge gates, release flow, artifact contract.
+
+## Architecture & Decisions
+
+- [Architecture Narrative](docs/ARCHITECTURE.md): Phase-by-phase architecture walkthrough.
+- [ADR Index](docs/ADR/ADR-INDEX.md): Architectural decision records index.
+- [ADR-0002: Vite SPA frontend](docs/ADR/ADR-0002-frontend-architecture-vite-spa-first.md): Why a Vite SPA over server-side rendering.
+- [ADR-0003: pgvector in Postgres](docs/ADR/ADR-0003-vector-storage-pgvector-in-postgres.md): Why pgvector over a managed vector DB.
+
+## Developer Workflow
+
+- [Daily Flow](docs/DAILY-FLOW.md): Developer day-in-the-life loop.
+- [Git & GitHub Guide](docs/GIT-GITHUB-GUIDE.md): Branch, PR, and release workflow.
+- [Phase Flow](docs/PHASE-FLOW.md): The INITIAL → PRP → code pipeline.
+- [Data Seeder Guide](docs/DATA-SEEDER.md): "The Forge" — operating the synthetic-data seeder.
+
+## Optional
+
+- [Phase Index](docs/PHASE-index.md): Index of the 11 per-phase implementation docs under `docs/PHASE/`.
+- [Validation Standards](docs/validation/): Tooling standards — ruff, mypy, pyright, pytest, logging.
+- [GitHub Workflow Reference](docs/github/github-complete-reference.md): CI/CD workflow reference and diagrams.
+- [RAG / Ollama Setup](docs/rag-ollama-setup.md): Switching RAG embeddings to a local Ollama provider.
+- [PRPs](PRPs/): Per-phase Project Requirements Plans (PRP-0 through PRP-22).
+- [INITIAL Specs](PRPs/INITIAL/): Pre-PRP discovery specs that feed each PRP.
+- [Optional Features](docs/optional-features/): Candidate-feature briefs not yet scheduled for implementation.
