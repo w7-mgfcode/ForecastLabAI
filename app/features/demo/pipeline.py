@@ -29,7 +29,7 @@ import shutil
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -55,8 +55,10 @@ DEMO_FEATURESET_LOOKBACK_DAYS = 60
 DEMO_SCENARIO = "demo_minimal"
 DEMO_SEED_STORES = 3
 DEMO_SEED_PRODUCTS = 10
-DEMO_SEED_START = date(2024, 10, 1)
-DEMO_SEED_END = date(2024, 12, 31)
+# Seed window is anchored to *today* so the showcase always demos
+# current-looking data; it runs DEMO_SEED_SPAN_DAYS back from today (92 days
+# inclusive). Must stay >= 72 for a non-NaN backtest WAPE (see step_backtest).
+DEMO_SEED_SPAN_DAYS = 91
 
 DEMO_MODEL_TYPES: tuple[str, ...] = ("naive", "seasonal_naive", "moving_average")
 
@@ -272,6 +274,8 @@ async def step_seed(ctx: DemoContext, client: _Client) -> StepResult:
     """Seed the ``demo_minimal`` scenario (skipped when ``skip_seed`` is set)."""
     if ctx.skip_seed:
         return ("skip", "skip_seed=true (assuming a seeded database)", {})
+    seed_end = datetime.now(UTC).date()
+    seed_start = seed_end - timedelta(days=DEMO_SEED_SPAN_DAYS)
     body = await client.request(
         "seed",
         "POST",
@@ -281,8 +285,8 @@ async def step_seed(ctx: DemoContext, client: _Client) -> StepResult:
             "seed": ctx.seed,
             "stores": DEMO_SEED_STORES,
             "products": DEMO_SEED_PRODUCTS,
-            "start_date": DEMO_SEED_START.isoformat(),
-            "end_date": DEMO_SEED_END.isoformat(),
+            "start_date": seed_start.isoformat(),
+            "end_date": seed_end.isoformat(),
             "sparsity": 0.0,
             "dry_run": False,
         },

@@ -142,6 +142,11 @@ List model runs with optional filtering and pagination.
 **Pagination:**
 - `page`: Page number (1-indexed, default: 1)
 - `page_size`: Runs per page (default: 20, max: 100)
+
+**Sorting:**
+- `sort_by`: Allow-listed column (created_at, model_type, status, store_id,
+  product_id). Unknown values fall back to the default order.
+- `sort_order`: `asc` or `desc` (default: `asc`).
 """,
 )
 async def list_runs(
@@ -152,6 +157,12 @@ async def list_runs(
     run_status: RunStatus | None = Query(None, alias="status", description="Filter by status"),
     store_id: int | None = Query(None, ge=1, description="Filter by store ID"),
     product_id: int | None = Query(None, ge=1, description="Filter by product ID"),
+    sort_by: str | None = Query(
+        None,
+        description="Sort column: created_at|model_type|status|store_id|product_id. "
+        "Unknown values use the default order (created_at desc).",
+    ),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$", description="Sort direction."),
 ) -> RunListResponse:
     """List model runs with filtering and pagination.
 
@@ -163,6 +174,8 @@ async def list_runs(
         run_status: Filter by status.
         store_id: Filter by store ID.
         product_id: Filter by product ID.
+        sort_by: Allow-listed sort column; unknown values use the default order.
+        sort_order: Sort direction ("asc" or "desc").
 
     Returns:
         Paginated list of runs.
@@ -177,6 +190,8 @@ async def list_runs(
         status=run_status,
         store_id=store_id,
         product_id=product_id,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
 
     return response

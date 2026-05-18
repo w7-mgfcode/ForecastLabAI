@@ -12,12 +12,19 @@ const DashboardPage = lazy(() => import('@/pages/dashboard'))
 const ShowcasePage = lazy(() => import('@/pages/showcase'))
 const SalesExplorerPage = lazy(() => import('@/pages/explorer/sales'))
 const StoresExplorerPage = lazy(() => import('@/pages/explorer/stores'))
+const StoreDetailPage = lazy(() => import('@/pages/explorer/store-detail'))
 const ProductsExplorerPage = lazy(() => import('@/pages/explorer/products'))
+const ProductDetailPage = lazy(() => import('@/pages/explorer/product-detail'))
 const RunsExplorerPage = lazy(() => import('@/pages/explorer/runs'))
+const RunDetailPage = lazy(() => import('@/pages/explorer/run-detail'))
+const RunComparePage = lazy(() => import('@/pages/explorer/run-compare'))
 const JobsMonitorPage = lazy(() => import('@/pages/explorer/jobs'))
+const JobDetailPage = lazy(() => import('@/pages/explorer/job-detail'))
 const ForecastPage = lazy(() => import('@/pages/visualize/forecast'))
 const BacktestPage = lazy(() => import('@/pages/visualize/backtest'))
 const ChatPage = lazy(() => import('@/pages/chat'))
+const KnowledgePage = lazy(() => import('@/pages/knowledge'))
+const GuidePage = lazy(() => import('@/pages/guide'))
 const AdminPage = lazy(() => import('@/pages/admin'))
 
 function PageLoader() {
@@ -64,10 +71,26 @@ function App() {
                 }
               />
               <Route
+                path={ROUTES.EXPLORER.STORE_DETAIL}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <StoreDetailPage />
+                  </Suspense>
+                }
+              />
+              <Route
                 path={ROUTES.EXPLORER.PRODUCTS}
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <ProductsExplorerPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.EXPLORER.PRODUCT_DETAIL}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <ProductDetailPage />
                   </Suspense>
                 }
               />
@@ -80,10 +103,34 @@ function App() {
                 }
               />
               <Route
+                path={ROUTES.EXPLORER.RUN_COMPARE}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <RunComparePage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.EXPLORER.RUN_DETAIL}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <RunDetailPage />
+                  </Suspense>
+                }
+              />
+              <Route
                 path={ROUTES.EXPLORER.JOBS}
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <JobsMonitorPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.EXPLORER.JOB_DETAIL}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <JobDetailPage />
                   </Suspense>
                 }
               />
@@ -104,10 +151,26 @@ function App() {
                 }
               />
               <Route
+                path={ROUTES.KNOWLEDGE}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <KnowledgePage />
+                  </Suspense>
+                }
+              />
+              <Route
                 path={ROUTES.CHAT}
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <ChatPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.GUIDE}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <GuidePage />
                   </Suspense>
                 }
               />

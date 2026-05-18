@@ -76,6 +76,46 @@ export interface DrilldownResponse {
   product_id: number | null
 }
 
+// Bucket size for GET /analytics/timeseries.
+export type TimeGranularity = 'day' | 'week' | 'month' | 'quarter'
+
+// One aggregated period of the sales time series.
+export interface TimeSeriesPoint {
+  period: string // ISO date (bucket start)
+  metrics: KPIMetrics
+}
+
+// Response from GET /analytics/timeseries (points ascending by period).
+export interface TimeSeriesResponse {
+  granularity: TimeGranularity
+  points: TimeSeriesPoint[]
+  total_points: number
+  start_date: string
+  end_date: string
+  store_id: number | null
+  product_id: number | null
+  category: string | null
+}
+
+// One day of a product's lifecycle demand curve.
+export interface LifecyclePoint {
+  date: string // ISO date
+  stage: string
+  multiplier: number
+}
+
+// Response from GET /dimensions/products/{id}/lifecycle-curve.
+export interface LifecycleCurveResponse {
+  product_id: number
+  sku: string
+  launch_date: string | null
+  discontinue_date: string | null
+  start_date: string
+  end_date: string
+  points: LifecyclePoint[]
+  total: number
+}
+
 // === Registry ===
 export type RunStatus = 'pending' | 'running' | 'success' | 'failed' | 'archived'
 
@@ -123,6 +163,17 @@ export interface RunCompareResponse {
   run_b: ModelRun
   config_diff: Record<string, unknown>
   metrics_diff: Record<string, { a: number | null; b: number | null; diff: number | null }>
+}
+
+// Response from GET /registry/runs/{run_id}/verify (SHA-256 integrity check).
+// On a checksum mismatch the endpoint returns HTTP 200 with verified:false + error.
+export interface ArtifactVerifyResponse {
+  verified: boolean
+  run_id: string
+  artifact_uri: string
+  stored_hash?: string
+  computed_hash?: string
+  error?: string
 }
 
 // === Jobs ===
@@ -179,6 +230,35 @@ export interface IndexDocumentRequest {
 export interface IndexDocumentResponse {
   source_id: string
   chunks_created: number
+}
+
+// Semantic-search request for POST /rag/retrieve.
+// Mirrors app/features/rag/schemas.py RetrieveRequest (extra="forbid" — send
+// nothing beyond these fields). Omit similarity_threshold to use the server default.
+export interface RetrieveRequest {
+  query: string
+  top_k?: number // 1..50, server default 5
+  similarity_threshold?: number // 0..1
+  filters?: Record<string, unknown> | null
+}
+
+// One matching chunk from a semantic search.
+export interface ChunkResult {
+  chunk_id: string
+  source_id: string
+  source_path: string
+  source_type: string
+  content: string
+  relevance_score: number // 0..1
+  metadata: Record<string, unknown> | null
+}
+
+// Response from POST /rag/retrieve.
+export interface RetrieveResponse {
+  results: ChunkResult[]
+  query_embedding_time_ms: number
+  search_time_ms: number
+  total_chunks_searched: number
 }
 
 // === Agents WebSocket ===
@@ -373,6 +453,11 @@ export interface AIModelConfig {
   agent_temperature: number
   agent_max_tokens: number
   agent_thinking_budget: number | null
+  agent_max_tool_calls: number
+  agent_timeout_seconds: number
+  agent_retry_attempts: number
+  agent_session_ttl_minutes: number
+  agent_require_approval: string[]
   rag_embedding_provider: string
   rag_embedding_model: string
   rag_embedding_dimension: number

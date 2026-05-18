@@ -9,10 +9,13 @@ Portfolio-grade end-to-end retail demand forecasting system.
 - **Serving Layer**: Typed FastAPI endpoints (Pydantic v2 validation)
 - **Model Registry**: Run configs, metrics, artifacts, and data windows for reproducibility
 - **Dashboard**: React 19 + Vite + Tailwind CSS 4 + shadcn/ui for data exploration and model management
+- **Explorer**: Click-through detail pages for stores, products, model runs, and jobs; run-vs-run comparison and SHA-256 artifact integrity verification; server-side sortable, CSV-exportable tables with column-visibility toggles and URL-shareable filter/sort/page state across every Explorer page; date-scoped KPIs, revenue bar/line charts, and cross-filtering on the Sales page
 - **RAG Knowledge Base**: Postgres pgvector embeddings + evidence-grounded answers with citations
 - **Agentic Layer**: PydanticAI agents for autonomous experimentation and evidence-grounded Q&A with human-in-the-loop approval
 - **Data Seeder (The Forge)**: Reproducible synthetic data generator with realistic time-series patterns, scenario presets, and retail effects
 - **AI Models Console**: `/admin` → AI Models tab — swap the agent LLM (incl. fully-local Ollama), the RAG embedding model, and provider API keys at runtime; changes apply live with no restart
+- **Knowledge Page**: `/knowledge` — browse the indexed RAG corpus, run a live semantic search, and see the live system state (seeded data, model runs, deployment aliases) the agents draw on
+- **Agent Guide**: `/guide` — in-product reference for the two chat agents — their tools, the human-in-the-loop approval gate, live session limits, and copy-paste example prompts
 
 ## Quick Start
 
@@ -449,11 +452,13 @@ curl "http://localhost:8123/dimensions/products?search=Cola&category=Beverage"
 - 1-indexed pagination (page=1 is first page)
 - Case-insensitive search in code/sku and name fields
 - Filter by region, store_type, category, or brand
+- Optional `sort_by` / `sort_order` on the store and product lists (allow-listed columns; unknown values fall back to the default order)
 
 ### Analytics
 
 - `GET /analytics/kpis` - Compute aggregated KPIs for a date range
 - `GET /analytics/drilldowns` - Drill into data by dimension (store, product, category, region, date)
+- `GET /analytics/timeseries` - Period-bucketed sales series (day/week/month/quarter) for revenue-over-time charts
 
 **Example KPI Request:**
 ```bash

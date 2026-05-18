@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +26,7 @@ from app.features.data_platform.models import (
 from app.features.seeder import schemas
 from app.shared.seeder import DataSeeder, ScenarioPreset, SeederConfig
 from app.shared.seeder.config import (
+    DEMO_MINIMAL_SPAN_DAYS,
     BundleConfig,
     ChangepointConfig,
     ChangepointEvent,
@@ -39,6 +40,8 @@ from app.shared.seeder.config import (
     ReturnsConfig,
     SparsityConfig,
     SubstitutionConfig,
+    default_seed_end_date,
+    default_seed_start_date,
 )
 
 logger = get_logger(__name__)
@@ -315,14 +318,21 @@ def list_scenarios() -> list[schemas.ScenarioInfo]:
     Returns:
         List of ScenarioInfo with preset details.
     """
+    # Date ranges are anchored to *today* so the picker reflects the windows the
+    # seeder will actually produce. holiday_rush is the one exception: it is
+    # deliberately calendar-pinned to a 2024 Q4 holiday window.
+    today = default_seed_end_date()
+    year_ago = default_seed_start_date()
+    demo_start = today - timedelta(days=DEMO_MINIMAL_SPAN_DAYS)
+
     scenarios = [
         schemas.ScenarioInfo(
             name="retail_standard",
             description="Normal retail patterns with mild seasonality and linear trend",
             stores=10,
             products=50,
-            start_date=date(2024, 1, 1),
-            end_date=date(2024, 12, 31),
+            start_date=year_ago,
+            end_date=today,
         ),
         schemas.ScenarioInfo(
             name="holiday_rush",
@@ -337,40 +347,40 @@ def list_scenarios() -> list[schemas.ScenarioInfo]:
             description="Noisy, unpredictable data with frequent anomalies for robustness testing",
             stores=10,
             products=50,
-            start_date=date(2024, 1, 1),
-            end_date=date(2024, 12, 31),
+            start_date=year_ago,
+            end_date=today,
         ),
         schemas.ScenarioInfo(
             name="stockout_heavy",
             description="Frequent stockouts (25% probability) for inventory modeling",
             stores=10,
             products=50,
-            start_date=date(2024, 1, 1),
-            end_date=date(2024, 12, 31),
+            start_date=year_ago,
+            end_date=today,
         ),
         schemas.ScenarioInfo(
             name="new_launches",
             description="100 products with gradual launch ramp patterns",
             stores=10,
             products=100,
-            start_date=date(2024, 1, 1),
-            end_date=date(2024, 12, 31),
+            start_date=year_ago,
+            end_date=today,
         ),
         schemas.ScenarioInfo(
             name="sparse",
             description="50% missing combinations and random date gaps for gap handling",
             stores=10,
             products=50,
-            start_date=date(2024, 1, 1),
-            end_date=date(2024, 12, 31),
+            start_date=year_ago,
+            end_date=today,
         ),
         schemas.ScenarioInfo(
             name="demo_minimal",
             description="Tiny preset for the make demo target (3 stores x 10 products x 92 days)",
             stores=3,
             products=10,
-            start_date=date(2024, 10, 1),
-            end_date=date(2024, 12, 31),
+            start_date=demo_start,
+            end_date=today,
         ),
     ]
 

@@ -21,6 +21,7 @@ from typing import Any
 import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
 
 from app.core.config import get_settings
 from app.features.registry.models import DeploymentAlias, ModelRun
@@ -38,6 +39,18 @@ from app.features.registry.schemas import (
 )
 
 logger = structlog.get_logger()
+
+# Allow-listed sort columns for the run list endpoint. sort_by is user input —
+# it MUST resolve through this map to a real mapped column; an unknown key
+# falls back to the default order (never an error, never raw SQL). JSONB
+# columns (metrics, runtime_info, agent_context) are intentionally excluded.
+_RUN_SORT_COLUMNS: dict[str, InstrumentedAttribute[Any]] = {
+    "created_at": ModelRun.created_at,
+    "model_type": ModelRun.model_type,
+    "status": ModelRun.status,
+    "store_id": ModelRun.store_id,
+    "product_id": ModelRun.product_id,
+}
 
 
 class InvalidTransitionError(ValueError):
@@ -263,6 +276,8 @@ class RegistryService:
         status: RunStatus | None = None,
         store_id: int | None = None,
         product_id: int | None = None,
+        sort_by: str | None = None,
+        sort_order: str = "asc",
     ) -> RunListResponse:
         """List runs with filtering and pagination.
 
@@ -274,6 +289,10 @@ class RegistryService:
             status: Filter by status.
             store_id: Filter by store ID.
             product_id: Filter by product ID.
+            sort_by: Allow-listed sort column (created_at, model_type, status,
+                store_id, product_id). Unknown values fall back to the default
+                order (created_at desc).
+            sort_order: Sort direction ("asc" or "desc").
 
         Returns:
             Paginated list of runs.
@@ -295,9 +314,17 @@ class RegistryService:
         total_result = await db.execute(count_stmt)
         total = total_result.scalar_one()
 
+        # Apply ordering: allow-listed sort column, else the default
+        # (created_at desc — UNCHANGED, keeps existing callers/tests green).
+        sort_column = _RUN_SORT_COLUMNS.get(sort_by) if sort_by else None
+        if sort_column is not None:
+            order_by = sort_column.desc() if sort_order == "desc" else sort_column.asc()
+        else:
+            order_by = ModelRun.created_at.desc()
+
         # Apply pagination
         offset = (page - 1) * page_size
-        stmt = stmt.order_by(ModelRun.created_at.desc()).offset(offset).limit(page_size)
+        stmt = stmt.order_by(order_by).offset(offset).limit(page_size)
 
         result = await db.execute(stmt)
         runs = result.scalars().all()

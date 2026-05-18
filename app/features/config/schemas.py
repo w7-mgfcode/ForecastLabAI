@@ -72,6 +72,13 @@ class AIModelConfig(BaseModel):
     agent_thinking_budget: int | None = Field(
         description="Extended-reasoning token budget (Gemini 2.5+); None disables it"
     )
+    agent_max_tool_calls: int = Field(description="Per-session tool-call cap")
+    agent_timeout_seconds: int = Field(description="Per-run agent timeout (seconds)")
+    agent_retry_attempts: int = Field(description="Agent retry attempts on failure")
+    agent_session_ttl_minutes: int = Field(description="Session time-to-live (minutes)")
+    agent_require_approval: list[str] = Field(
+        description="Tool names gated by human-in-the-loop approval"
+    )
     rag_embedding_provider: str = Field(description="RAG embedding provider: 'openai' | 'ollama'")
     rag_embedding_model: str = Field(description="OpenAI embedding model name")
     rag_embedding_dimension: int = Field(description="Embedding vector dimension")

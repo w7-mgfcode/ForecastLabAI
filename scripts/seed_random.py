@@ -40,6 +40,8 @@ from app.shared.seeder.config import (
     RetailPatternConfig,
     SparsityConfig,
     TimeSeriesConfig,
+    default_seed_end_date,
+    default_seed_start_date,
 )
 from app.shared.seeder.rag_scenario import run_rag_scenario
 
@@ -112,8 +114,10 @@ def load_config_from_yaml(path: Path) -> SeederConfig:
 
     # Parse date range
     date_range = data.get("date_range", {})
-    start_date = parse_date(date_range["start"]) if "start" in date_range else date(2024, 1, 1)
-    end_date = parse_date(date_range["end"]) if "end" in date_range else date(2024, 12, 31)
+    start_date = (
+        parse_date(date_range["start"]) if "start" in date_range else default_seed_start_date()
+    )
+    end_date = parse_date(date_range["end"]) if "end" in date_range else default_seed_end_date()
 
     # Parse time series config
     ts_data = data.get("time_series", {})
@@ -243,14 +247,14 @@ Examples:
     parser.add_argument(
         "--start-date",
         type=parse_date,
-        default=date(2024, 1, 1),
-        help="Start of date range (default: 2024-01-01)",
+        default=default_seed_start_date(),
+        help="Start of date range (default: one year before today)",
     )
     parser.add_argument(
         "--end-date",
         type=parse_date,
-        default=date(2024, 12, 31),
-        help="End of date range (default: 2024-12-31)",
+        default=default_seed_end_date(),
+        help="End of date range (default: today)",
     )
     parser.add_argument(
         "--sparsity",

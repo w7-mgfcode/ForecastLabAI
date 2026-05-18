@@ -159,11 +159,17 @@ List jobs with pagination and optional filtering.
 - `job_type`: Filter by job type (train, predict, backtest)
 - `status`: Filter by status (pending, running, completed, failed, cancelled)
 
+**Sorting**:
+- `sort_by`: Allow-listed column (created_at, completed_at, job_type, status).
+  Unknown values fall back to the default order.
+- `sort_order`: `asc` or `desc` (default: `asc`).
+
 **Example Use Cases**:
 1. List all jobs: `GET /jobs`
 2. List failed jobs: `GET /jobs?status=failed`
 3. List train jobs: `GET /jobs?job_type=train`
 4. Paginate: `GET /jobs?page=2&page_size=10`
+5. Sort by status: `GET /jobs?sort_by=status&sort_order=desc`
 """,
 )
 async def list_jobs(
@@ -172,6 +178,12 @@ async def list_jobs(
     page_size: int = Query(20, ge=1, le=100, description="Jobs per page (max 100)"),
     job_type: JobType | None = Query(None, description="Filter by job type"),
     status: JobStatus | None = Query(None, description="Filter by status"),
+    sort_by: str | None = Query(
+        None,
+        description="Sort column: created_at|completed_at|job_type|status. "
+        "Unknown values use the default order (created_at desc).",
+    ),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$", description="Sort direction."),
 ) -> JobListResponse:
     """List jobs with pagination and filtering.
 
@@ -181,6 +193,8 @@ async def list_jobs(
         page_size: Number of jobs per page.
         job_type: Filter by job type (optional).
         status: Filter by status (optional).
+        sort_by: Allow-listed sort column; unknown values use the default order.
+        sort_order: Sort direction ("asc" or "desc").
 
     Returns:
         Paginated list of jobs.
@@ -192,6 +206,8 @@ async def list_jobs(
         page_size=page_size,
         job_type=job_type,
         status=status,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
 
 

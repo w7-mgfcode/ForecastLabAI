@@ -67,6 +67,16 @@ async def list_stores(
         min_length=2,
         description="Search in code and name (case-insensitive)",
     ),
+    sort_by: str | None = Query(
+        None,
+        description="Sort column: code, name, region, city, or store_type. "
+        "Unknown values fall back to the default order (code).",
+    ),
+    sort_order: str = Query(
+        "asc",
+        pattern="^(asc|desc)$",
+        description="Sort direction: asc or desc.",
+    ),
 ) -> StoreListResponse:
     """List stores with pagination and filtering.
 
@@ -77,6 +87,8 @@ async def list_stores(
         region: Filter by region.
         store_type: Filter by store type.
         search: Search in code and name.
+        sort_by: Allow-listed sort column (unknown values use default order).
+        sort_order: Sort direction (asc or desc).
 
     Returns:
         Paginated list of stores.
@@ -89,6 +101,8 @@ async def list_stores(
         region=region,
         store_type=store_type,
         search=search,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
 
 
@@ -178,6 +192,16 @@ async def list_products(
         min_length=2,
         description="Search in SKU and name (case-insensitive)",
     ),
+    sort_by: str | None = Query(
+        None,
+        description="Sort column: sku, name, category, brand, or base_price. "
+        "Unknown values fall back to the default order (sku).",
+    ),
+    sort_order: str = Query(
+        "asc",
+        pattern="^(asc|desc)$",
+        description="Sort direction: asc or desc.",
+    ),
 ) -> ProductListResponse:
     """List products with pagination and filtering.
 
@@ -188,6 +212,8 @@ async def list_products(
         category: Filter by category.
         brand: Filter by brand.
         search: Search in SKU and name.
+        sort_by: Allow-listed sort column (unknown values use default order).
+        sort_order: Sort direction (asc or desc).
 
     Returns:
         Paginated list of products.
@@ -200,6 +226,8 @@ async def list_products(
         category=category,
         brand=brand,
         search=search,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
 
 

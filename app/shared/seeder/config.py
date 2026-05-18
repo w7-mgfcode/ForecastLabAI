@@ -3,9 +3,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from enum import Enum
 from typing import Literal
+
+DEFAULT_SEED_SPAN_DAYS = 365
+"""Span of the default seeded window. Generated data ends *today* and runs
+this many days backwards, so datasets, forecasts, and the demo showcase
+always look current instead of being frozen in a hard-coded calendar year."""
+
+DEMO_MINIMAL_SPAN_DAYS = 91
+"""Span of the ``demo_minimal`` window (92 calendar days inclusive). Must stay
+>= 72 so an expanding backtest with n_splits=3 + horizon=14 +
+min_train_size=30 produces a non-NaN WAPE."""
+
+
+def default_seed_end_date() -> date:
+    """End of the default seeded window — anchored to the current (UTC) date."""
+    return datetime.now(UTC).date()
+
+
+def default_seed_start_date() -> date:
+    """Start of the default seeded window — ``DEFAULT_SEED_SPAN_DAYS`` before today."""
+    return datetime.now(UTC).date() - timedelta(days=DEFAULT_SEED_SPAN_DAYS)
 
 
 class ScenarioPreset(str, Enum):
@@ -472,8 +492,8 @@ class SeederConfig:
     """
 
     seed: int = 42
-    start_date: date = field(default_factory=lambda: date(2024, 1, 1))
-    end_date: date = field(default_factory=lambda: date(2024, 12, 31))
+    start_date: date = field(default_factory=default_seed_start_date)
+    end_date: date = field(default_factory=default_seed_end_date)
     dimensions: DimensionConfig = field(default_factory=DimensionConfig)
     time_series: TimeSeriesConfig = field(default_factory=TimeSeriesConfig)
     retail: RetailPatternConfig = field(default_factory=RetailPatternConfig)
@@ -519,6 +539,10 @@ class SeederConfig:
             )
 
         if scenario == ScenarioPreset.HOLIDAY_RUSH:
+            # Deliberately calendar-pinned: the holiday dates and Q4 monthly
+            # seasonality below model a specific 2024 Black Friday / Christmas
+            # window, so this scenario is NOT re-anchored to today. Pass an
+            # explicit start_date/end_date to shift it.
             return cls(
                 seed=seed,
                 start_date=date(2024, 10, 1),
@@ -606,14 +630,17 @@ class SeederConfig:
             )
 
         if scenario == ScenarioPreset.DEMO_MINIMAL:
-            # Tiny preset for the `make demo` target. Keeps wall-clock comfortable
-            # on a developer laptop while still producing a non-NaN backtest WAPE
-            # with strategy=expanding, n_splits=3, horizon=14, min_train_size=30
-            # (needs >= 30 + 3*14 = 72 days; 92 days here leaves margin).
+            # Tiny preset for the `make demo` target. Anchored to *today* so the
+            # showcase always demos current-looking data; the window runs
+            # DEMO_MINIMAL_SPAN_DAYS back from today (92 days inclusive). Keeps
+            # wall-clock comfortable on a developer laptop while still producing
+            # a non-NaN backtest WAPE with strategy=expanding, n_splits=3,
+            # horizon=14, min_train_size=30 (needs >= 30 + 3*14 = 72 days).
+            demo_end = default_seed_end_date()
             return cls(
                 seed=seed,
-                start_date=date(2024, 10, 1),
-                end_date=date(2024, 12, 31),
+                start_date=demo_end - timedelta(days=DEMO_MINIMAL_SPAN_DAYS),
+                end_date=demo_end,
                 dimensions=DimensionConfig(stores=3, products=10),
                 time_series=TimeSeriesConfig(
                     base_demand=100,

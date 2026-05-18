@@ -8,6 +8,8 @@ interface UseStoresParams {
   region?: string
   storeType?: string
   search?: string
+  sortBy?: string
+  sortOrder?: 'asc' | 'desc'
   enabled?: boolean
 }
 
@@ -17,10 +19,12 @@ export function useStores({
   region,
   storeType,
   search,
+  sortBy,
+  sortOrder,
   enabled = true,
 }: UseStoresParams) {
   return useQuery({
-    queryKey: ['stores', { page, pageSize, region, storeType, search }],
+    queryKey: ['stores', { page, pageSize, region, storeType, search, sortBy, sortOrder }],
     queryFn: () =>
       api<StoreListResponse>('/dimensions/stores', {
         params: {
@@ -29,6 +33,8 @@ export function useStores({
           region,
           store_type: storeType,
           search: search && search.length >= 2 ? search : undefined,
+          sort_by: sortBy,
+          sort_order: sortOrder,
         },
       }),
     placeholderData: keepPreviousData,

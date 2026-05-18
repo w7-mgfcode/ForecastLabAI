@@ -1,6 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import type { SourceListResponse, IndexDocumentRequest, IndexDocumentResponse } from '@/types/api'
+import type {
+  SourceListResponse,
+  IndexDocumentRequest,
+  IndexDocumentResponse,
+  RetrieveRequest,
+  RetrieveResponse,
+} from '@/types/api'
 
 export function useRagSources() {
   return useQuery({
@@ -31,5 +37,15 @@ export function useIndexDocument() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['rag-sources'] })
     },
+  })
+}
+
+// Mutation: semantic search over the knowledge base (POST /rag/retrieve).
+// Search results are ephemeral — no cache invalidation. A 502 (no embedding
+// provider configured) surfaces as an ApiError the caller degrades gracefully.
+export function useRetrieve() {
+  return useMutation({
+    mutationFn: (body: RetrieveRequest) =>
+      api<RetrieveResponse>('/rag/retrieve', { method: 'POST', body }),
   })
 }

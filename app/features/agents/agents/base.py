@@ -14,6 +14,7 @@ from typing import Any
 import structlog
 from pydantic_ai import ModelRetry
 from pydantic_ai.models import Model
+from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.ollama import OllamaProvider
 
@@ -118,6 +119,56 @@ def get_fallback_model() -> str:
     """
     settings = get_settings()
     return settings.agent_fallback_model
+
+
+def build_agent_model_with_fallback() -> Model | str:
+    """Build the PydanticAI ``model`` argument, wrapping primary + fallback.
+
+    When the primary model raises a provider error — HTTP 5xx, rate limit,
+    timeout, i.e. any ``pydantic_ai.exceptions.ModelAPIError`` — PydanticAI's
+    :class:`FallbackModel` transparently retries the request against
+    ``agent_fallback_model``. This keeps an agent run alive through a transient
+    provider outage (e.g. a Gemini ``503 UNAVAILABLE``) instead of surfacing a
+    hard error. ``FallbackModel``'s default ``fallback_on=(ModelAPIError,)``
+    already covers that case.
+
+    The primary model is returned alone (no fallback wrapper) when:
+
+    - no fallback is configured, or it equals the primary identifier; or
+    - the fallback provider has no API key — wrapping it would only move the
+      failure, so the agent runs primary-only and logs a warning.
+
+    Returns:
+        A :class:`FallbackModel` (primary then fallback) when a usable fallback
+        is configured, otherwise the primary model argument from
+        :func:`build_agent_model`.
+
+    Raises:
+        ValueError: If the primary provider's API key is not configured
+            (fail-fast — an agent with no usable primary cannot run).
+    """
+    primary_id = get_model_identifier()
+    validate_api_key_for_model(primary_id)  # fail-fast on the primary
+    primary = build_agent_model(primary_id)
+
+    fallback_id = get_fallback_model()
+    if not fallback_id or fallback_id == primary_id:
+        return primary
+
+    try:
+        validate_api_key_for_model(fallback_id)
+    except ValueError:
+        logger.warning(
+            "agents.fallback_disabled",
+            reason="missing_api_key",
+            primary=primary_id,
+            fallback=fallback_id,
+        )
+        return primary
+
+    fallback = build_agent_model(fallback_id)
+    logger.info("agents.fallback_enabled", primary=primary_id, fallback=fallback_id)
+    return FallbackModel(primary, fallback)
 
 
 def get_agent_retries() -> int:

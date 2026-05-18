@@ -8,12 +8,23 @@ export const ROUTES = {
     PRODUCTS: '/explorer/products',
     RUNS: '/explorer/runs',
     JOBS: '/explorer/jobs',
+    // Click-through detail routes (dynamic segments) — reached from table rows,
+    // intentionally NOT in NAV_ITEMS.
+    STORE_DETAIL: '/explorer/stores/:storeId',
+    PRODUCT_DETAIL: '/explorer/products/:productId',
+    RUN_DETAIL: '/explorer/runs/:runId',
+    JOB_DETAIL: '/explorer/jobs/:jobId',
+    // Static — must out-rank RUN_DETAIL's :runId segment (React Router v6
+    // ranks by specificity, so registration order does not matter).
+    RUN_COMPARE: '/explorer/runs/compare',
   },
   VISUALIZE: {
     FORECAST: '/visualize/forecast',
     BACKTEST: '/visualize/backtest',
   },
+  KNOWLEDGE: '/knowledge',
   CHAT: '/chat',
+  GUIDE: '/guide',
   ADMIN: '/admin',
 } as const
 
@@ -38,7 +49,9 @@ export const NAV_ITEMS = [
       { label: 'Backtest Results', href: ROUTES.VISUALIZE.BACKTEST },
     ],
   },
+  { label: 'Knowledge', href: ROUTES.KNOWLEDGE },
   { label: 'Chat', href: ROUTES.CHAT },
+  { label: 'Agent Guide', href: ROUTES.GUIDE },
   { label: 'Admin', href: ROUTES.ADMIN },
 ] as const
 

@@ -5,9 +5,11 @@ with filtering and search capabilities.
 """
 
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
 
 from app.core.logging import get_logger
 from app.features.data_platform.models import Product, Store
@@ -23,6 +25,24 @@ from app.shared.seeder.config import LifecycleConfig
 from app.shared.seeder.generators.lifecycle import LifecycleGenerator
 
 logger = get_logger(__name__)
+
+# Allow-listed sort columns for the dimension list endpoints. sort_by is user
+# input — it MUST resolve through these maps to a real mapped column; an
+# unknown key falls back to the default order (never an error, never raw SQL).
+_STORE_SORT_COLUMNS: dict[str, InstrumentedAttribute[Any]] = {
+    "code": Store.code,
+    "name": Store.name,
+    "region": Store.region,
+    "city": Store.city,
+    "store_type": Store.store_type,
+}
+_PRODUCT_SORT_COLUMNS: dict[str, InstrumentedAttribute[Any]] = {
+    "sku": Product.sku,
+    "name": Product.name,
+    "category": Product.category,
+    "brand": Product.brand,
+    "base_price": Product.base_price,
+}
 
 
 class DimensionService:
@@ -40,6 +60,8 @@ class DimensionService:
         region: str | None = None,
         store_type: str | None = None,
         search: str | None = None,
+        sort_by: str | None = None,
+        sort_order: str = "asc",
     ) -> StoreListResponse:
         """List stores with pagination and filtering.
 
@@ -50,6 +72,9 @@ class DimensionService:
             region: Filter by region (exact match).
             store_type: Filter by store type (exact match).
             search: Search in store code and name (case-insensitive).
+            sort_by: Allow-listed sort column (code, name, region, city,
+                store_type). Unknown values fall back to the default order.
+            sort_order: Sort direction ("asc" or "desc").
 
         Returns:
             Paginated list of stores.
@@ -76,9 +101,16 @@ class DimensionService:
         total_result = await db.execute(count_stmt)
         total = total_result.scalar_one()
 
-        # Apply pagination and ordering
+        # Apply ordering: allow-listed sort column, else the default (code).
+        sort_column = _STORE_SORT_COLUMNS.get(sort_by) if sort_by else None
+        if sort_column is not None:
+            order_by = sort_column.desc() if sort_order == "desc" else sort_column.asc()
+        else:
+            order_by = Store.code.asc()
+
+        # Apply pagination
         offset = (page - 1) * page_size
-        stmt = stmt.order_by(Store.code).offset(offset).limit(page_size)
+        stmt = stmt.order_by(order_by).offset(offset).limit(page_size)
 
         # Execute query
         result = await db.execute(stmt)
@@ -153,6 +185,8 @@ class DimensionService:
         category: str | None = None,
         brand: str | None = None,
         search: str | None = None,
+        sort_by: str | None = None,
+        sort_order: str = "asc",
     ) -> ProductListResponse:
         """List products with pagination and filtering.
 
@@ -163,6 +197,9 @@ class DimensionService:
             category: Filter by category (exact match).
             brand: Filter by brand (exact match).
             search: Search in SKU and name (case-insensitive).
+            sort_by: Allow-listed sort column (sku, name, category, brand,
+                base_price). Unknown values fall back to the default order.
+            sort_order: Sort direction ("asc" or "desc").
 
         Returns:
             Paginated list of products.
@@ -189,9 +226,16 @@ class DimensionService:
         total_result = await db.execute(count_stmt)
         total = total_result.scalar_one()
 
-        # Apply pagination and ordering
+        # Apply ordering: allow-listed sort column, else the default (sku).
+        sort_column = _PRODUCT_SORT_COLUMNS.get(sort_by) if sort_by else None
+        if sort_column is not None:
+            order_by = sort_column.desc() if sort_order == "desc" else sort_column.asc()
+        else:
+            order_by = Product.sku.asc()
+
+        # Apply pagination
         offset = (page - 1) * page_size
-        stmt = stmt.order_by(Product.sku).offset(offset).limit(page_size)
+        stmt = stmt.order_by(order_by).offset(offset).limit(page_size)
 
         # Execute query
         result = await db.execute(stmt)

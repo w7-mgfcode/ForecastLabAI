@@ -8,6 +8,8 @@ interface UseProductsParams {
   category?: string
   brand?: string
   search?: string
+  sortBy?: string
+  sortOrder?: 'asc' | 'desc'
   enabled?: boolean
 }
 
@@ -17,10 +19,12 @@ export function useProducts({
   category,
   brand,
   search,
+  sortBy,
+  sortOrder,
   enabled = true,
 }: UseProductsParams) {
   return useQuery({
-    queryKey: ['products', { page, pageSize, category, brand, search }],
+    queryKey: ['products', { page, pageSize, category, brand, search, sortBy, sortOrder }],
     queryFn: () =>
       api<ProductListResponse>('/dimensions/products', {
         params: {
@@ -29,6 +33,8 @@ export function useProducts({
           category,
           brand,
           search: search && search.length >= 2 ? search : undefined,
+          sort_by: sortBy,
+          sort_order: sortOrder,
         },
       }),
     placeholderData: keepPreviousData,

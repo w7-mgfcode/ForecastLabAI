@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import {
   ColumnDef,
   flexRender,
@@ -6,6 +7,7 @@ import {
   PaginationState,
   OnChangeFn,
   SortingState,
+  VisibilityState,
 } from '@tanstack/react-table'
 import {
   Table,
@@ -16,7 +18,9 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { DataTablePagination } from './data-table-pagination'
+import { DataTableViewOptions } from './data-table-view-options'
 import { Skeleton } from '@/components/ui/skeleton'
+import { cn } from '@/lib/utils'
 
 interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[]
@@ -26,6 +30,10 @@ interface DataTableProps<TData, TValue> {
   onPaginationChange: OnChangeFn<PaginationState>
   sorting?: SortingState
   onSortingChange?: OnChangeFn<SortingState>
+  /** When set, each data row becomes clickable and calls this with the row. */
+  onRowClick?: (row: TData) => void
+  /** When true, renders a column-visibility dropdown above the table. */
+  enableColumnVisibility?: boolean
   isLoading?: boolean
   emptyMessage?: string
 }
@@ -38,9 +46,13 @@ export function DataTable<TData, TValue>({
   onPaginationChange,
   sorting,
   onSortingChange,
+  onRowClick,
+  enableColumnVisibility = false,
   isLoading = false,
   emptyMessage = 'No results.',
 }: DataTableProps<TData, TValue>) {
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({})
+
   const table = useReactTable({
     data,
     columns,
@@ -48,9 +60,11 @@ export function DataTable<TData, TValue>({
     state: {
       pagination,
       sorting,
+      columnVisibility,
     },
     onPaginationChange,
     onSortingChange,
+    onColumnVisibilityChange: setColumnVisibility,
     getCoreRowModel: getCoreRowModel(),
     manualPagination: true,
     manualSorting: true,
@@ -58,6 +72,11 @@ export function DataTable<TData, TValue>({
 
   return (
     <div className="space-y-4">
+      {enableColumnVisibility && (
+        <div className="flex justify-end">
+          <DataTableViewOptions table={table} />
+        </div>
+      )}
       <div className="rounded-md border">
         <Table>
           <TableHeader>
@@ -93,6 +112,8 @@ export function DataTable<TData, TValue>({
                 <TableRow
                   key={row.id}
                   data-state={row.getIsSelected() && 'selected'}
+                  onClick={onRowClick ? () => onRowClick(row.original) : undefined}
+                  className={cn(onRowClick && 'cursor-pointer')}
                 >
                   {row.getVisibleCells().map((cell) => (
                     <TableCell key={cell.id}>

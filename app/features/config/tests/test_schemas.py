@@ -105,6 +105,11 @@ class TestResponseSchemas:
             agent_temperature=0.1,
             agent_max_tokens=4096,
             agent_thinking_budget=None,
+            agent_max_tool_calls=10,
+            agent_timeout_seconds=120,
+            agent_retry_attempts=3,
+            agent_session_ttl_minutes=120,
+            agent_require_approval=["create_alias", "archive_run"],
             rag_embedding_provider="openai",
             rag_embedding_model="text-embedding-3-small",
             rag_embedding_dimension=1536,
@@ -114,6 +119,33 @@ class TestResponseSchemas:
             overridden_keys=[],
         )
         assert cfg.agent_thinking_budget is None
+
+    def test_ai_model_config_carries_agent_limits(self):
+        """AIModelConfig exposes the read-only agent session-limit fields."""
+        cfg = AIModelConfig(
+            agent_default_model="anthropic:claude-sonnet-4-5",
+            agent_fallback_model="openai:gpt-4o",
+            agent_temperature=0.1,
+            agent_max_tokens=4096,
+            agent_thinking_budget=None,
+            agent_max_tool_calls=10,
+            agent_timeout_seconds=120,
+            agent_retry_attempts=3,
+            agent_session_ttl_minutes=120,
+            agent_require_approval=["create_alias", "archive_run"],
+            rag_embedding_provider="openai",
+            rag_embedding_model="text-embedding-3-small",
+            rag_embedding_dimension=1536,
+            ollama_base_url="http://localhost:11434",
+            ollama_embedding_model="nomic-embed-text",
+            api_keys=[],
+            overridden_keys=[],
+        )
+        assert cfg.agent_max_tool_calls == 10
+        assert cfg.agent_timeout_seconds == 120
+        assert cfg.agent_retry_attempts == 3
+        assert cfg.agent_session_ttl_minutes == 120
+        assert cfg.agent_require_approval == ["create_alias", "archive_run"]
 
     def test_api_key_status(self):
         """ApiKeyStatus carries presence + a masked preview."""

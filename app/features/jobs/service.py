@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -45,6 +46,17 @@ _BACKTEST_METRICS: tuple[str, ...] = ("mae", "smape", "wape", "bias")
 # WAPE is the demo's primary model-selection metric, so its stability is the
 # most meaningful single number; change this constant to pick a different one.
 _STABILITY_METRIC: str = "wape"
+
+# Allow-listed sort columns for the job list endpoint. sort_by is user input —
+# it MUST resolve through this map to a real mapped column; an unknown key
+# falls back to the default order (never an error, never raw SQL). JSONB
+# columns (params, result) are intentionally excluded — not meaningfully sortable.
+_JOB_SORT_COLUMNS: dict[str, InstrumentedAttribute[Any]] = {
+    "created_at": Job.created_at,
+    "completed_at": Job.completed_at,
+    "job_type": Job.job_type,
+    "status": Job.status,
+}
 
 
 def _finite(value: float) -> float:
@@ -208,6 +220,8 @@ class JobService:
         page_size: int = 20,
         job_type: JobType | None = None,
         status: JobStatus | None = None,
+        sort_by: str | None = None,
+        sort_order: str = "asc",
     ) -> JobListResponse:
         """List jobs with pagination and filtering.
 
@@ -217,6 +231,10 @@ class JobService:
             page_size: Number of jobs per page.
             job_type: Filter by job type (optional).
             status: Filter by status (optional).
+            sort_by: Allow-listed sort column (created_at, completed_at,
+                job_type, status). Unknown values fall back to the default
+                order (created_at desc).
+            sort_order: Sort direction ("asc" or "desc").
 
         Returns:
             Paginated list of jobs.
@@ -235,9 +253,17 @@ class JobService:
         count_result = await db.execute(count_stmt)
         total = count_result.scalar_one()
 
+        # Apply ordering: allow-listed sort column, else the default
+        # (created_at desc — UNCHANGED, keeps existing callers/tests green).
+        sort_column = _JOB_SORT_COLUMNS.get(sort_by) if sort_by else None
+        if sort_column is not None:
+            order_by = sort_column.desc() if sort_order == "desc" else sort_column.asc()
+        else:
+            order_by = Job.created_at.desc()
+
         # Apply pagination
         offset = (page - 1) * page_size
-        stmt = stmt.order_by(Job.created_at.desc()).offset(offset).limit(page_size)
+        stmt = stmt.order_by(order_by).offset(offset).limit(page_size)
 
         # Execute query
         result = await db.execute(stmt)
