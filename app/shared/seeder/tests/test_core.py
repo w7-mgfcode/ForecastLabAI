@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.shared.seeder.config import SeederConfig, SparsityConfig
+from app.shared.seeder.config import (
+    SeederConfig,
+    SparsityConfig,
+    default_seed_end_date,
+    default_seed_start_date,
+)
 from app.shared.seeder.core import DataSeeder, SeederResult
 
 
@@ -402,12 +407,12 @@ class TestSeederConfigDefaults:
         assert seeder.config.dimensions.products == 50
 
     def test_default_date_range(self):
-        """Test default date range is full year 2024."""
+        """Test the default date range is anchored to today and runs backwards."""
         config = SeederConfig()
         seeder = DataSeeder(config)
 
-        assert seeder.config.start_date == date(2024, 1, 1)
-        assert seeder.config.end_date == date(2024, 12, 31)
+        assert seeder.config.start_date == default_seed_start_date()
+        assert seeder.config.end_date == default_seed_end_date()
 
     def test_custom_sparsity(self):
         """Test custom sparsity configuration."""
