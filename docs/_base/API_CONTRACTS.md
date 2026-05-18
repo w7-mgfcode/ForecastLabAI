@@ -47,6 +47,10 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 | seeder | (see `app/features/seeder/routes.py`) | `/seeder/*` | Trigger scenarios, status, customization |
 | demo | POST | `/demo/run` | Run the end-to-end demo pipeline in-process; returns a `DemoRunResult`. `409 application/problem+json` if a run is already active |
 | demo | WS | `/demo/stream` | Stream one `StepEvent` per pipeline step for the live Showcase page |
+| config | GET | `/config/ai` | Effective AI-model config (agent LLM + RAG embeddings); API keys masked, never raw |
+| config | PATCH | `/config/ai` | Persist + apply AI-model changes live (no restart). `409` if an embedding-dimension change would orphan indexed RAG chunks (resend with `force=true`) |
+| config | GET | `/config/providers/health` | Per-provider connectivity — Ollama probed live, cloud providers by API-key presence |
+| config | GET | `/config/ollama/models` | Models pulled on the configured Ollama host. `502` if the host is unreachable |
 
 ## WebSocket Events (`/agents/stream`)
 

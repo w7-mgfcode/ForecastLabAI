@@ -356,3 +356,61 @@ export interface DemoRunResult {
   alias: string | null
   wall_clock_s: number
 }
+
+// === AI Model Configuration (/config) ===
+
+// Presence + masked preview of one provider API key (never the raw value).
+export interface ApiKeyStatus {
+  provider: string
+  is_set: boolean
+  masked: string | null
+}
+
+// Effective AI-model configuration — GET /config/ai response.
+export interface AIModelConfig {
+  agent_default_model: string
+  agent_fallback_model: string
+  agent_temperature: number
+  agent_max_tokens: number
+  agent_thinking_budget: number | null
+  rag_embedding_provider: string
+  rag_embedding_model: string
+  rag_embedding_dimension: number
+  ollama_base_url: string
+  ollama_embedding_model: string
+  api_keys: ApiKeyStatus[]
+  overridden_keys: string[]
+}
+
+// Partial update for PATCH /config/ai — only non-null fields are applied.
+export interface AIModelConfigUpdate {
+  agent_default_model?: string
+  agent_fallback_model?: string
+  agent_temperature?: number
+  agent_max_tokens?: number
+  agent_thinking_budget?: number | null
+  rag_embedding_provider?: 'openai' | 'ollama'
+  rag_embedding_model?: string
+  rag_embedding_dimension?: number
+  ollama_base_url?: string
+  ollama_embedding_model?: string
+  openai_api_key?: string
+  anthropic_api_key?: string
+  google_api_key?: string
+  force?: boolean
+}
+
+// One model pulled on the Ollama host.
+export interface OllamaModel {
+  name: string
+  size_bytes: number | null
+  family: string | null
+}
+
+// Connectivity status for one AI provider — GET /config/providers/health.
+export interface ProviderHealth {
+  provider: string
+  reachable: boolean
+  detail: string
+  models: string[]
+}

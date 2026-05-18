@@ -6,6 +6,58 @@ from typing import Literal
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Valid agent LLM provider prefixes for a "provider:model-name" identifier.
+# "ollama" runs the agent fully local via Ollama's OpenAI-compatible endpoint.
+VALID_MODEL_PROVIDERS: tuple[str, ...] = (
+    "anthropic",
+    "openai",
+    "google-gla",
+    "google-vertex",
+    "ollama",
+)
+
+
+def validate_model_identifier(v: str) -> str:
+    """Validate an agent model identifier of the form ``provider:model-name``.
+
+    Shared by the ``Settings`` field validators and the runtime config service
+    (``app/features/config``) so a UI-driven model change is checked the same
+    way an env-var-driven one is.
+
+    Args:
+        v: Model identifier string (e.g. ``anthropic:claude-sonnet-4-5``,
+            ``ollama:llama3.1``).
+
+    Returns:
+        The validated model identifier, unchanged.
+
+    Raises:
+        ValueError: If the format is invalid, the model name is blank, or the
+            provider is not in :data:`VALID_MODEL_PROVIDERS`.
+    """
+    if ":" not in v:
+        raise ValueError(
+            f"Invalid model identifier '{v}'. "
+            "Expected format: 'provider:model-name' "
+            "(e.g., 'anthropic:claude-sonnet-4-5', 'ollama:llama3.1')"
+        )
+    provider, model_name = v.split(":", 1)
+
+    # Validate model name is non-empty and not just whitespace
+    if not model_name or not model_name.strip():
+        raise ValueError(
+            f"Invalid model identifier '{v}'. "
+            "Model name after ':' cannot be empty or blank. "
+            "Expected format: 'provider:model-name' "
+            "(e.g., 'anthropic:claude-sonnet-4-5', 'ollama:llama3.1')"
+        )
+
+    if provider not in VALID_MODEL_PROVIDERS:
+        raise ValueError(
+            f"Unknown provider '{provider}'. Valid providers: {list(VALID_MODEL_PROVIDERS)}"
+        )
+    return v
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
@@ -130,39 +182,9 @@ class Settings(BaseSettings):
 
     @field_validator("agent_default_model", "agent_fallback_model")
     @classmethod
-    def validate_model_identifier(cls, v: str) -> str:
-        """Validate model identifier format (provider:model-name).
-
-        Args:
-            v: Model identifier string.
-
-        Returns:
-            Validated model identifier.
-
-        Raises:
-            ValueError: If format is invalid or model name is missing.
-        """
-        if ":" not in v:
-            raise ValueError(
-                f"Invalid model identifier '{v}'. "
-                "Expected format: 'provider:model-name' "
-                "(e.g., 'anthropic:claude-sonnet-4-5', 'google-gla:gemini-3-flash')"
-            )
-        provider, model_name = v.split(":", 1)
-
-        # Validate model name is non-empty and not just whitespace
-        if not model_name or not model_name.strip():
-            raise ValueError(
-                f"Invalid model identifier '{v}'. "
-                "Model name after ':' cannot be empty or blank. "
-                "Expected format: 'provider:model-name' "
-                "(e.g., 'anthropic:claude-sonnet-4-5', 'google-gla:gemini-3-flash')"
-            )
-
-        valid_providers = ["anthropic", "openai", "google-gla", "google-vertex"]
-        if provider not in valid_providers:
-            raise ValueError(f"Unknown provider '{provider}'. Valid providers: {valid_providers}")
-        return v
+    def _validate_agent_model(cls, v: str) -> str:
+        """Validate agent model identifiers via :func:`validate_model_identifier`."""
+        return validate_model_identifier(v)
 
     @property
     def is_development(self) -> bool:

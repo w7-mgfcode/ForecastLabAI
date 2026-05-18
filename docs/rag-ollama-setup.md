@@ -32,6 +32,11 @@
 
 **HU:** Ez az útmutató dokumentálja, hogyan kell konfigurálni a ForecastLabAI RAG (Retrieval-Augmented Generation) rendszert, hogy Ollama-t használjon embedding provider-ként az OpenAI helyett. Ez lehetővé teszi a teljesen lokális/LAN-alapú embedding generálást külső API függőségek nélkül.
 
+> **Note / Megjegyzés:** Ollama can now also back the **chat agent**, not just RAG
+> embeddings. Set `AGENT_DEFAULT_MODEL=ollama:<model>` (e.g. `ollama:llama3.1`),
+> or switch it live from the `/admin` → **AI Models** tab — no `.env` edit or
+> restart needed. See `PRPs/PRP-18-ai-model-admin-console.md`.
+
 ### Architecture / Architektúra
 
 ```
