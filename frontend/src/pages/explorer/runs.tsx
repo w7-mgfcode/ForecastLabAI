@@ -11,8 +11,15 @@ import { getStatusVariant } from '@/lib/status-utils'
 import { ErrorDisplay } from '@/components/common/error-display'
 import { Button } from '@/components/ui/button'
 import { toCsv, downloadCsv, type CsvColumn } from '@/lib/csv-export'
+import { parseEnumParam, parsePageParam } from '@/lib/url-params'
 import type { ModelRun, RunStatus } from '@/types/api'
 import { DEFAULT_PAGE_SIZE, ROUTES } from '@/lib/constants'
+
+// Allow-lists for the URL-driven filter/sort params. A hand-edited URL value
+// outside these is dropped (treated as "no filter") rather than blind-cast.
+const RUN_STATUSES: readonly RunStatus[] = ['pending', 'running', 'success', 'failed', 'archived']
+const MODEL_TYPES = ['naive', 'seasonal_naive', 'moving_average', 'lightgbm'] as const
+const RUN_SORT_KEYS = ['created_at', 'model_type', 'status', 'store_id', 'product_id'] as const
 
 const columns: ColumnDef<ModelRun>[] = [
   {
@@ -89,11 +96,12 @@ export default function RunsExplorerPage() {
   const [searchParams, setSearchParams] = useSearchParams()
 
   // URL query string is the single source of truth for filter/sort/page state,
-  // so a pasted URL reproduces the exact view.
-  const modelType = searchParams.get('model_type') ?? undefined
-  const status = searchParams.get('status') ?? undefined
-  const page = Number(searchParams.get('page')) || 1
-  const sortBy = searchParams.get('sort_by') ?? undefined
+  // so a pasted URL reproduces the exact view. Each param is validated so a
+  // junk value degrades gracefully instead of reaching the API.
+  const modelType = parseEnumParam(searchParams.get('model_type'), MODEL_TYPES)
+  const status = parseEnumParam(searchParams.get('status'), RUN_STATUSES)
+  const page = parsePageParam(searchParams.get('page'))
+  const sortBy = parseEnumParam(searchParams.get('sort_by'), RUN_SORT_KEYS)
   const sortOrder: 'asc' | 'desc' = searchParams.get('sort_order') === 'desc' ? 'desc' : 'asc'
 
   const pagination: PaginationState = {
@@ -106,7 +114,7 @@ export default function RunsExplorerPage() {
     page,
     pageSize: pagination.pageSize,
     modelType,
-    status: status as RunStatus | undefined,
+    status,
     sortBy,
     sortOrder: sortBy ? sortOrder : undefined,
   })

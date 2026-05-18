@@ -14,18 +14,28 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { dateRangeToStrings, stringsToDateRange } from '@/lib/date-utils'
+import { parseEnumParam, parseIdParam } from '@/lib/url-params'
 import { formatCurrency, formatNumber } from '@/lib/api'
 import type { DrilldownDimension } from '@/types/api'
+
+/** The drilldown dimensions a shareable URL is allowed to select. */
+const DRILLDOWN_DIMENSIONS: readonly DrilldownDimension[] = [
+  'store',
+  'product',
+  'category',
+  'region',
+  'date',
+]
 
 export default function SalesExplorerPage() {
   const [searchParams, setSearchParams] = useSearchParams()
 
   // dimension + cross-filter state live in the URL so the view is shareable.
-  const dimension = (searchParams.get('dimension') as DrilldownDimension | null) ?? 'store'
-  const storeIdParam = searchParams.get('store_id')
-  const productIdParam = searchParams.get('product_id')
-  const storeId = storeIdParam ? Number(storeIdParam) : undefined
-  const productId = productIdParam ? Number(productIdParam) : undefined
+  // A hand-edited URL can carry an unknown dimension or a NaN id — validate
+  // both before they reach the drilldown/timeseries hooks.
+  const dimension = parseEnumParam(searchParams.get('dimension'), DRILLDOWN_DIMENSIONS) ?? 'store'
+  const storeId = parseIdParam(searchParams.get('store_id'))
+  const productId = parseIdParam(searchParams.get('product_id'))
 
   const startParam = searchParams.get('start_date')
   const endParam = searchParams.get('end_date')

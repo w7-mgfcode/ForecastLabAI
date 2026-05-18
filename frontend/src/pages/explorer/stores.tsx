@@ -8,8 +8,16 @@ import { DataTableColumnHeader } from '@/components/data-table/data-table-column
 import { ErrorDisplay } from '@/components/common/error-display'
 import { Button } from '@/components/ui/button'
 import { toCsv, downloadCsv, type CsvColumn } from '@/lib/csv-export'
+import { parseEnumParam, parsePageParam } from '@/lib/url-params'
 import type { Store } from '@/types/api'
 import { DEFAULT_PAGE_SIZE } from '@/lib/constants'
+
+// Allow-lists for the URL-driven filter/sort params — these mirror the filter
+// dropdown options and the backend sort allow-list. A value outside them is
+// dropped rather than blind-cast.
+const REGIONS = ['North', 'South', 'East', 'West'] as const
+const STORE_TYPES = ['Supermarket', 'Convenience', 'Hypermarket'] as const
+const STORE_SORT_KEYS = ['code', 'name', 'region', 'city', 'store_type'] as const
 
 const columns: ColumnDef<Store>[] = [
   {
@@ -59,12 +67,13 @@ export default function StoresExplorerPage() {
   const [searchParams, setSearchParams] = useSearchParams()
 
   // URL query string is the single source of truth for filter/sort/page state,
-  // so a pasted URL reproduces the exact view.
+  // so a pasted URL reproduces the exact view. Each param is validated so a
+  // junk value degrades gracefully instead of reaching the API.
   const search = searchParams.get('search') ?? ''
-  const region = searchParams.get('region') ?? undefined
-  const storeType = searchParams.get('store_type') ?? undefined
-  const page = Number(searchParams.get('page')) || 1
-  const sortBy = searchParams.get('sort_by') ?? undefined
+  const region = parseEnumParam(searchParams.get('region'), REGIONS)
+  const storeType = parseEnumParam(searchParams.get('store_type'), STORE_TYPES)
+  const page = parsePageParam(searchParams.get('page'))
+  const sortBy = parseEnumParam(searchParams.get('sort_by'), STORE_SORT_KEYS)
   const sortOrder: 'asc' | 'desc' = searchParams.get('sort_order') === 'desc' ? 'desc' : 'asc'
 
   const pagination: PaginationState = {

@@ -9,6 +9,7 @@ import { ErrorDisplay } from '@/components/common/error-display'
 import { Button } from '@/components/ui/button'
 import { formatCurrency } from '@/lib/api'
 import { toCsv, downloadCsv, type CsvColumn } from '@/lib/csv-export'
+import { parsePageParam } from '@/lib/url-params'
 import type { Product } from '@/types/api'
 import { DEFAULT_PAGE_SIZE } from '@/lib/constants'
 
@@ -62,7 +63,9 @@ export default function ProductsExplorerPage() {
   // URL query string is the single source of truth for filter/sort/page state.
   const search = searchParams.get('search') ?? ''
   const category = searchParams.get('category') ?? undefined
-  const page = Number(searchParams.get('page')) || 1
+  // Clamp `page` to a positive integer — a hand-edited NaN/negative value
+  // would otherwise reach the API as-is.
+  const page = parsePageParam(searchParams.get('page'))
   const sortBy = searchParams.get('sort_by') ?? undefined
   const sortOrder: 'asc' | 'desc' = searchParams.get('sort_order') === 'desc' ? 'desc' : 'asc'
 

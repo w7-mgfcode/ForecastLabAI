@@ -23,6 +23,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { toast } from 'sonner'
 import { toCsv, downloadCsv, type CsvColumn } from '@/lib/csv-export'
+import { parsePageParam } from '@/lib/url-params'
 import type { Job, JobStatus, JobType } from '@/types/api'
 import { DEFAULT_PAGE_SIZE } from '@/lib/constants'
 
@@ -43,7 +44,9 @@ export default function JobsMonitorPage() {
   // so a pasted URL reproduces the exact view.
   const jobType = searchParams.get('job_type') ?? undefined
   const status = searchParams.get('status') ?? undefined
-  const page = Number(searchParams.get('page')) || 1
+  // Clamp `page` to a positive integer — a hand-edited NaN/negative value
+  // would otherwise reach the API as-is.
+  const page = parsePageParam(searchParams.get('page'))
   const sortBy = searchParams.get('sort_by') ?? undefined
   const sortOrder: 'asc' | 'desc' = searchParams.get('sort_order') === 'desc' ? 'desc' : 'asc'
 
