@@ -7,6 +7,8 @@ from pydantic_ai.models.openai import OpenAIChatModel
 
 from app.core.config import get_settings
 from app.features.agents.agents.base import build_agent_model, validate_api_key_for_model
+from app.features.agents.agents.experiment import create_experiment_agent
+from app.features.agents.agents.rag_assistant import create_rag_assistant_agent
 
 
 @pytest.fixture(autouse=True)
@@ -41,3 +43,23 @@ def test_validate_api_key_for_model_ollama_skips_key_check():
     settings.google_api_key = ""
     # Should return without raising even though no cloud key is configured.
     validate_api_key_for_model("ollama:llama3.1")
+
+
+def test_experiment_agent_uses_prompted_output():
+    """The experiment agent uses PromptedOutput, not the default ToolOutput.
+
+    Regression for issue #173: weaker/local models cannot satisfy the
+    default tool-based structured-output mode and fail output validation.
+    """
+    settings = get_settings()
+    settings.agent_default_model = "ollama:llama3.1"
+    agent = create_experiment_agent()
+    assert type(agent._output_schema).__name__ == "PromptedOutputSchema"
+
+
+def test_rag_assistant_agent_uses_prompted_output():
+    """The RAG assistant agent uses PromptedOutput (issue #173)."""
+    settings = get_settings()
+    settings.agent_default_model = "ollama:llama3.1"
+    agent = create_rag_assistant_agent()
+    assert type(agent._output_schema).__name__ == "PromptedOutputSchema"
