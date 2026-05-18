@@ -27,6 +27,9 @@ ForecastLabAI is a portfolio-grade, single-host retail-demand-forecasting system
 | [`frontend/src/pages/guide.tsx`](../../frontend/src/pages/guide.tsx) | The Agent Guide page — agent tools, approval gate, live session limits, example prompts | Explaining how to use the chat agents |
 | [`frontend/src/pages/explorer/store-detail.tsx`](../../frontend/src/pages/explorer/store-detail.tsx) | The store detail page — entity profile, date-scoped KPIs, revenue-over-time chart, top-products drilldown | Investigating a single store |
 | [`frontend/src/pages/explorer/product-detail.tsx`](../../frontend/src/pages/explorer/product-detail.tsx) | The product detail page — profile, KPIs, revenue + lifecycle-demand curves, top-stores drilldown | Investigating a single product |
+| [`frontend/src/pages/explorer/run-detail.tsx`](../../frontend/src/pages/explorer/run-detail.tsx) | The model-run detail page — profile, JSON config/metrics/runtime info, store/product cross-links, artifact integrity verify, compare link | Investigating a single model run |
+| [`frontend/src/pages/explorer/job-detail.tsx`](../../frontend/src/pages/explorer/job-detail.tsx) | The job detail page — profile, params/result JSON, error details, linked run, cancel action, live polling | Investigating a single job |
+| [`frontend/src/pages/explorer/run-compare.tsx`](../../frontend/src/pages/explorer/run-compare.tsx) | The run-comparison page — two run pickers, side-by-side profile, config_diff, metrics_diff with delta indicators; deep-linkable via `?a=&b=` | Comparing two model runs |
 | [`alembic/versions/`](../../alembic/versions/) | Six migrations through `d6e0f2g3h456_create_agent_session_table.py` | DB-schema questions, migration drift |
 | [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) | Phase-by-phase architecture narrative | High-level component reasoning |
 | [`docs/PHASE-index.md`](../PHASE-index.md) | Index of all 11 phase docs | Locating per-phase deep-dive |

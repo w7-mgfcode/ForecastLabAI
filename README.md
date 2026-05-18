@@ -9,7 +9,7 @@ Portfolio-grade end-to-end retail demand forecasting system.
 - **Serving Layer**: Typed FastAPI endpoints (Pydantic v2 validation)
 - **Model Registry**: Run configs, metrics, artifacts, and data windows for reproducibility
 - **Dashboard**: React 19 + Vite + Tailwind CSS 4 + shadcn/ui for data exploration and model management
-- **Explorer**: Click-through store & product detail pages with date-scoped KPIs and revenue charts; sortable, CSV-exportable tables with column-visibility toggles; revenue bar/line charts and URL-shareable cross-filtering on the Sales page
+- **Explorer**: Click-through detail pages for stores, products, model runs, and jobs; run-vs-run comparison and SHA-256 artifact integrity verification; server-side sortable, CSV-exportable tables with column-visibility toggles and URL-shareable filter/sort/page state across every Explorer page; date-scoped KPIs, revenue bar/line charts, and cross-filtering on the Sales page
 - **RAG Knowledge Base**: Postgres pgvector embeddings + evidence-grounded answers with citations
 - **Agentic Layer**: PydanticAI agents for autonomous experimentation and evidence-grounded Q&A with human-in-the-loop approval
 - **Data Seeder (The Forge)**: Reproducible synthetic data generator with realistic time-series patterns, scenario presets, and retail effects

@@ -16,7 +16,10 @@ const StoreDetailPage = lazy(() => import('@/pages/explorer/store-detail'))
 const ProductsExplorerPage = lazy(() => import('@/pages/explorer/products'))
 const ProductDetailPage = lazy(() => import('@/pages/explorer/product-detail'))
 const RunsExplorerPage = lazy(() => import('@/pages/explorer/runs'))
+const RunDetailPage = lazy(() => import('@/pages/explorer/run-detail'))
+const RunComparePage = lazy(() => import('@/pages/explorer/run-compare'))
 const JobsMonitorPage = lazy(() => import('@/pages/explorer/jobs'))
+const JobDetailPage = lazy(() => import('@/pages/explorer/job-detail'))
 const ForecastPage = lazy(() => import('@/pages/visualize/forecast'))
 const BacktestPage = lazy(() => import('@/pages/visualize/backtest'))
 const ChatPage = lazy(() => import('@/pages/chat'))
@@ -100,10 +103,34 @@ function App() {
                 }
               />
               <Route
+                path={ROUTES.EXPLORER.RUN_COMPARE}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <RunComparePage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.EXPLORER.RUN_DETAIL}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <RunDetailPage />
+                  </Suspense>
+                }
+              />
+              <Route
                 path={ROUTES.EXPLORER.JOBS}
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <JobsMonitorPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.EXPLORER.JOB_DETAIL}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <JobDetailPage />
                   </Suspense>
                 }
               />

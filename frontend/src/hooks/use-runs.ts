@@ -1,6 +1,13 @@
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import type { RunListResponse, ModelRun, Alias, RunCompareResponse, RunStatus } from '@/types/api'
+import type {
+  RunListResponse,
+  ModelRun,
+  Alias,
+  RunCompareResponse,
+  RunStatus,
+  ArtifactVerifyResponse,
+} from '@/types/api'
 
 interface UseRunsParams {
   page: number
@@ -9,6 +16,8 @@ interface UseRunsParams {
   status?: RunStatus
   storeId?: number
   productId?: number
+  sortBy?: string
+  sortOrder?: 'asc' | 'desc'
   enabled?: boolean
 }
 
@@ -19,10 +28,15 @@ export function useRuns({
   status,
   storeId,
   productId,
+  sortBy,
+  sortOrder,
   enabled = true,
 }: UseRunsParams) {
   return useQuery({
-    queryKey: ['runs', { page, pageSize, modelType, status, storeId, productId }],
+    queryKey: [
+      'runs',
+      { page, pageSize, modelType, status, storeId, productId, sortBy, sortOrder },
+    ],
     queryFn: () =>
       api<RunListResponse>('/registry/runs', {
         params: {
@@ -32,6 +46,8 @@ export function useRuns({
           status,
           store_id: storeId,
           product_id: productId,
+          sort_by: sortBy,
+          sort_order: sortOrder,
         },
       }),
     placeholderData: keepPreviousData,
@@ -52,6 +68,21 @@ export function useCompareRuns(runIdA: string, runIdB: string, enabled = false) 
     queryKey: ['runs', 'compare', runIdA, runIdB],
     queryFn: () => api<RunCompareResponse>(`/registry/compare/${runIdA}/${runIdB}`),
     enabled: enabled && !!runIdA && !!runIdB,
+  })
+}
+
+/**
+ * Button-gated artifact integrity check. Pass `enabled` from component state
+ * (false until the user clicks "Verify"), then call `refetch()` to re-run.
+ * The endpoint returns HTTP 200 with `verified:false` on a checksum mismatch
+ * and only errors (404/400) for a missing run/artifact.
+ */
+export function useVerifyArtifact(runId: string, enabled = false) {
+  return useQuery({
+    queryKey: ['runs', runId, 'verify'],
+    queryFn: () => api<ArtifactVerifyResponse>(`/registry/runs/${runId}/verify`),
+    enabled: enabled && !!runId,
+    retry: false,
   })
 }
 

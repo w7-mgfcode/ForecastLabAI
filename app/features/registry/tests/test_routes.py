@@ -215,6 +215,97 @@ class TestListRunsEndpoint:
         assert data["page_size"] == 2
 
 
+class TestListRunsSortEndpoint:
+    """Tests for sort_by / sort_order on GET /registry/runs."""
+
+    @staticmethod
+    async def _create_run(client: AsyncClient, model_type: str) -> str:
+        """Create a run with the given model_type, return its run_id."""
+        response = await client.post(
+            "/registry/runs",
+            json={
+                "model_type": model_type,
+                "model_config": {},
+                "data_window_start": "2024-01-01",
+                "data_window_end": "2024-01-31",
+                "store_id": 1,
+                "product_id": 1,
+            },
+        )
+        assert response.status_code == 201
+        return str(response.json()["run_id"])
+
+    @staticmethod
+    def _test_model_types(payload: dict[str, object]) -> list[str]:
+        """Model types of the test-prefixed runs, in response order."""
+        runs = payload["runs"]
+        assert isinstance(runs, list)
+        return [r["model_type"] for r in runs if str(r["model_type"]).startswith("test-sort-")]
+
+    async def test_sort_by_model_type_desc(self, client: AsyncClient) -> None:
+        """sort_by=model_type&sort_order=desc orders runs descending."""
+        for model_type in ("test-sort-aaa", "test-sort-bbb", "test-sort-ccc"):
+            await self._create_run(client, model_type)
+
+        response = await client.get(
+            "/registry/runs?sort_by=model_type&sort_order=desc&page_size=100"
+        )
+        assert response.status_code == 200
+        assert self._test_model_types(response.json()) == [
+            "test-sort-ccc",
+            "test-sort-bbb",
+            "test-sort-aaa",
+        ]
+
+    async def test_sort_by_model_type_asc(self, client: AsyncClient) -> None:
+        """sort_by=model_type&sort_order=asc orders runs ascending."""
+        for model_type in ("test-sort-ccc", "test-sort-aaa", "test-sort-bbb"):
+            await self._create_run(client, model_type)
+
+        response = await client.get(
+            "/registry/runs?sort_by=model_type&sort_order=asc&page_size=100"
+        )
+        assert response.status_code == 200
+        assert self._test_model_types(response.json()) == [
+            "test-sort-aaa",
+            "test-sort-bbb",
+            "test-sort-ccc",
+        ]
+
+    async def test_unknown_sort_by_falls_back_to_default(self, client: AsyncClient) -> None:
+        """An unknown sort_by uses the default order (created_at desc), never errors."""
+        for model_type in ("test-sort-fallback-1", "test-sort-fallback-2"):
+            await self._create_run(client, model_type)
+
+        default = await client.get("/registry/runs?page_size=100")
+        unknown = await client.get("/registry/runs?sort_by=metrics&page_size=100")
+        assert default.status_code == 200
+        assert unknown.status_code == 200
+        default_ids = [r["run_id"] for r in default.json()["runs"]]
+        unknown_ids = [r["run_id"] for r in unknown.json()["runs"]]
+        assert unknown_ids == default_ids
+
+    async def test_default_matches_explicit_created_at_desc(self, client: AsyncClient) -> None:
+        """Omitting sort params == explicit created_at desc (default unchanged)."""
+        for model_type in ("test-sort-def-1", "test-sort-def-2", "test-sort-def-3"):
+            await self._create_run(client, model_type)
+
+        default = await client.get("/registry/runs?page_size=100")
+        explicit = await client.get(
+            "/registry/runs?sort_by=created_at&sort_order=desc&page_size=100"
+        )
+        assert default.status_code == 200
+        assert explicit.status_code == 200
+        assert [r["run_id"] for r in default.json()["runs"]] == [
+            r["run_id"] for r in explicit.json()["runs"]
+        ]
+
+    async def test_invalid_sort_order_rejected(self, client: AsyncClient) -> None:
+        """sort_order outside {asc,desc} is rejected with 422 via the Query regex."""
+        response = await client.get("/registry/runs?sort_order=sideways")
+        assert response.status_code == 422
+
+
 class TestGetRunEndpoint:
     """Tests for GET /registry/runs/{run_id} endpoint."""
 
