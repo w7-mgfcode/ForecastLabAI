@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Bot, Plus } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Bot, Plus, BookOpen } from 'lucide-react'
 import { useWebSocket } from '@/hooks/use-websocket'
 import { ChatMessage, StreamingMessage } from '@/components/chat/chat-message'
 import { ChatInput, ApprovalPrompt } from '@/components/chat/chat-input'
@@ -15,7 +16,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { api } from '@/lib/api'
-import { WS_URL } from '@/lib/constants'
+import { WS_URL, ROUTES } from '@/lib/constants'
 import type { ChatMessage as ChatMessageType, AgentStreamEvent, AgentType, AgentSession } from '@/types/api'
 
 export default function ChatPage() {
@@ -217,6 +218,13 @@ export default function ChatPage() {
             >
               {isCreatingSession ? 'Creating...' : 'Start Session'}
             </Button>
+            <Link
+              to={ROUTES.GUIDE}
+              className="flex items-center justify-center gap-1.5 text-sm text-muted-foreground underline-offset-2 hover:underline"
+            >
+              <BookOpen className="h-3.5 w-3.5" />
+              New here? Read the Agent Guide
+            </Link>
           </CardContent>
         </Card>
       </div>

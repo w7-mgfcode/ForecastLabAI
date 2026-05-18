@@ -18,6 +18,8 @@ const JobsMonitorPage = lazy(() => import('@/pages/explorer/jobs'))
 const ForecastPage = lazy(() => import('@/pages/visualize/forecast'))
 const BacktestPage = lazy(() => import('@/pages/visualize/backtest'))
 const ChatPage = lazy(() => import('@/pages/chat'))
+const KnowledgePage = lazy(() => import('@/pages/knowledge'))
+const GuidePage = lazy(() => import('@/pages/guide'))
 const AdminPage = lazy(() => import('@/pages/admin'))
 
 function PageLoader() {
@@ -104,10 +106,26 @@ function App() {
                 }
               />
               <Route
+                path={ROUTES.KNOWLEDGE}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <KnowledgePage />
+                  </Suspense>
+                }
+              />
+              <Route
                 path={ROUTES.CHAT}
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <ChatPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.GUIDE}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <GuidePage />
                   </Suspense>
                 }
               />
