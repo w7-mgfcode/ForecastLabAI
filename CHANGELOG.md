@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.13](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.12...v0.2.13) (2026-05-18)
+
+
+### Features
+
+* cut v0.2.13 — explorer interactivity, knowledge & guide pages ([#191](https://github.com/w7-mgfcode/ForecastLabAI/issues/191)) ([#192](https://github.com/w7-mgfcode/ForecastLabAI/issues/192)) ([ae37ca5](https://github.com/w7-mgfcode/ForecastLabAI/commit/ae37ca521eb9510c135def4a1e3730e137fb014b))
+
 ## [0.2.12](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.11...v0.2.12) (2026-05-18)
 
 
