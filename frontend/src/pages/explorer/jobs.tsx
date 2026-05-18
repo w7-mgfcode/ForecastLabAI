@@ -21,6 +21,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
+import { toast } from 'sonner'
 import { toCsv, downloadCsv, type CsvColumn } from '@/lib/csv-export'
 import type { Job, JobStatus, JobType } from '@/types/api'
 import { DEFAULT_PAGE_SIZE } from '@/lib/constants'
@@ -64,7 +65,13 @@ export default function JobsMonitorPage() {
   const cancelJob = useCancelJob()
 
   const handleCancelJob = async (jobId: string) => {
-    await cancelJob.mutateAsync(jobId)
+    // mutateAsync rejects on failure — catch it so a cancel error surfaces as
+    // a toast instead of an unhandled promise rejection.
+    try {
+      await cancelJob.mutateAsync(jobId)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to cancel job')
+    }
   }
 
   const columns: ColumnDef<Job>[] = [

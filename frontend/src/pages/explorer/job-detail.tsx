@@ -21,6 +21,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
+import { toast } from 'sonner'
 import { ROUTES } from '@/lib/constants'
 
 function fmtDate(value: string | null | undefined): string {
@@ -74,10 +75,16 @@ export default function JobDetailPage() {
   const job = jobQuery.data
 
   async function handleCancel() {
-    await cancelJob.mutateAsync(jobId)
-    // useCancelJob invalidates ['jobs']; refresh this detail query explicitly
-    // so the page reflects the cancelled status immediately.
-    void queryClient.invalidateQueries({ queryKey: ['jobs', jobId] })
+    // mutateAsync rejects on failure — catch it so a cancel error surfaces as
+    // a toast instead of an unhandled promise rejection.
+    try {
+      await cancelJob.mutateAsync(jobId)
+      // useCancelJob invalidates ['jobs']; refresh this detail query explicitly
+      // so the page reflects the cancelled status immediately.
+      void queryClient.invalidateQueries({ queryKey: ['jobs', jobId] })
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to cancel job')
+    }
   }
 
   return (
