@@ -85,7 +85,15 @@ export default function BacktestPage() {
   // Extract backtest result from job
   const backtestResult = job?.result as BacktestResult | undefined
 
-  const formReady = !!storeId && !!productId && !!dateRange?.from && !!dateRange?.to
+  // The number inputs can be cleared to 0; require a valid split count and
+  // test size so an invalid backtest config can never be submitted.
+  const formReady =
+    !!storeId &&
+    !!productId &&
+    !!dateRange?.from &&
+    !!dateRange?.to &&
+    nSplits >= 2 &&
+    testSize >= 1
 
   async function handleRunBacktest() {
     if (!storeId || !productId || !dateRange?.from || !dateRange?.to) return
@@ -210,7 +218,8 @@ export default function BacktestPage() {
             </Button>
             {!formReady && (
               <span className="text-sm text-muted-foreground">
-                Pick a store, product and date window to enable.
+                Pick a store, product and date window, with at least 2 splits and a 1-day test
+                size, to enable.
               </span>
             )}
           </div>

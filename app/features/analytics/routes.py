@@ -6,11 +6,12 @@ with filtering by store, product, and date range.
 
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.exceptions import BadRequestError
 from app.core.logging import get_logger
 from app.features.analytics.schemas import (
     DrilldownDimension,
@@ -40,23 +41,23 @@ def validate_date_range(start_date: date, end_date: date) -> None:
         end_date: End of analysis period.
 
     Raises:
-        HTTPException: If date range is invalid.
+        BadRequestError: If date range is invalid. Surfaces as an RFC 7807
+            ``application/problem+json`` 400 via the registered handler — a
+            raw ``HTTPException`` would bypass the problem-details envelope.
     """
     settings = get_settings()
 
     if end_date < start_date:
-        raise HTTPException(
-            status_code=400,
-            detail=f"end_date ({end_date}) must be >= start_date ({start_date})",
+        raise BadRequestError(
+            message=f"end_date ({end_date}) must be >= start_date ({start_date})",
         )
 
     days_diff = (end_date - start_date).days
     max_days = settings.analytics_max_date_range_days
 
     if days_diff > max_days:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Date range ({days_diff} days) exceeds maximum allowed ({max_days} days)",
+        raise BadRequestError(
+            message=f"Date range ({days_diff} days) exceeds maximum allowed ({max_days} days)",
         )
 
 
@@ -108,10 +109,12 @@ async def get_kpis(
     ),
     store_id: int | None = Query(
         None,
+        ge=1,
         description="Filter by store ID. Use GET /dimensions/stores to find valid IDs.",
     ),
     product_id: int | None = Query(
         None,
+        ge=1,
         description="Filter by product ID. Use GET /dimensions/products to find valid IDs.",
     ),
     category: str | None = Query(
@@ -134,7 +137,7 @@ async def get_kpis(
         Aggregated KPI metrics.
 
     Raises:
-        HTTPException: If date range is invalid.
+        BadRequestError: If date range is invalid (RFC 7807 400).
     """
     # Validate date range before processing
     validate_date_range(start_date, end_date)
@@ -206,10 +209,12 @@ async def get_drilldowns(
     ),
     store_id: int | None = Query(
         None,
+        ge=1,
         description="Filter by store ID. Use GET /dimensions/stores to find valid IDs.",
     ),
     product_id: int | None = Query(
         None,
+        ge=1,
         description="Filter by product ID. Use GET /dimensions/products to find valid IDs.",
     ),
     max_items: int = Query(
@@ -235,7 +240,7 @@ async def get_drilldowns(
         Drilldown analysis with ranked items.
 
     Raises:
-        HTTPException: If date range is invalid.
+        BadRequestError: If date range is invalid (RFC 7807 400).
     """
     # Validate date range before processing
     validate_date_range(start_date, end_date)
@@ -301,10 +306,12 @@ async def get_timeseries(
     ),
     store_id: int | None = Query(
         None,
+        ge=1,
         description="Filter by store ID. Use GET /dimensions/stores to find valid IDs.",
     ),
     product_id: int | None = Query(
         None,
+        ge=1,
         description="Filter by product ID. Use GET /dimensions/products to find valid IDs.",
     ),
     category: str | None = Query(
@@ -328,7 +335,7 @@ async def get_timeseries(
         Time series response with points in ascending period order.
 
     Raises:
-        HTTPException: If date range is invalid.
+        BadRequestError: If date range is invalid (RFC 7807 400).
     """
     # Validate date range before processing
     validate_date_range(start_date, end_date)
@@ -380,10 +387,12 @@ snapshots exist — never a 404.
 async def get_inventory_status(
     store_id: int | None = Query(
         None,
+        ge=1,
         description="Filter by store ID. Use GET /dimensions/stores to find valid IDs.",
     ),
     product_id: int | None = Query(
         None,
+        ge=1,
         description="Filter by product ID. Use GET /dimensions/products to find valid IDs.",
     ),
     db: AsyncSession = Depends(get_db),

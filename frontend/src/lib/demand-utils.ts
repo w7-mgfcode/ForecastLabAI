@@ -43,7 +43,9 @@ export function inventoryRequirement(
   onOrder: number | null,
 ): number | null {
   if (onHand === null) return null
-  return Math.max(0, Math.round(leadTimeDemand - onHand - (onOrder ?? 0)))
+  // Round up: a fractional shortfall still needs a whole extra unit ordered —
+  // Math.round would under-order when the fraction is below 0.5.
+  return Math.max(0, Math.ceil(leadTimeDemand - onHand - (onOrder ?? 0)))
 }
 
 /**
@@ -86,9 +88,17 @@ export function joinDemandRows(
   leadTimeDays: number,
 ): DemandRow[] {
   const productById = new Map(products.map((product) => [product.id, product]))
-  const inventoryByGrain = new Map(
-    inventory.map((item) => [`${item.store_id}:${item.product_id}`, item]),
-  )
+  // Keep the latest snapshot per grain. The API returns one row per grain, but
+  // a naive Map-from-entries would silently keep whichever row is last in the
+  // array — pick by `date` so order in the response can never matter.
+  const inventoryByGrain = new Map<string, InventoryStatusItem>()
+  for (const item of inventory) {
+    const key = `${item.store_id}:${item.product_id}`
+    const existing = inventoryByGrain.get(key)
+    if (!existing || item.date > existing.date) {
+      inventoryByGrain.set(key, item)
+    }
+  }
 
   const rows: DemandRow[] = []
   for (const job of predictJobs) {

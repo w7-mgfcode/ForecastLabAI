@@ -41,7 +41,10 @@ export function RevenueBarChart({
         {description && <CardDescription>{description}</CardDescription>}
       </CardHeader>
       <CardContent>
-        <ChartContainer config={chartConfig} className={`h-[${height}px] w-full`}>
+        {/* Height is passed via inline style — a `h-[${height}px]` class is a
+            dynamic string Tailwind cannot statically discover, so the JIT
+            compiler drops it at build time. */}
+        <ChartContainer config={chartConfig} className="w-full" style={{ height: `${height}px` }}>
           <BarChart data={data} accessibilityLayer>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="label" tickLine={false} axisLine={false} />

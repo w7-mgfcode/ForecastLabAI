@@ -43,13 +43,14 @@ import sys
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Final
 
 import httpx
 
 from app.core.config import get_settings
+from app.shared.seeder.config import default_seed_end_date
 
 # =============================================================================
 # Constants
@@ -413,7 +414,9 @@ async def step_seed(ctx: DemoContext, client: HttpClient) -> StepOutcome:
             detail="--skip-seed set",
             duration_ms=(time.monotonic() - start) * 1000,
         )
-    seed_end = datetime.now(UTC).date()
+    # Anchor the seed window to the seeder's shared end-date helper so the demo
+    # and the seeder never disagree on "today".
+    seed_end = default_seed_end_date()
     seed_start = seed_end - timedelta(days=DEMO_SEED_SPAN_DAYS)
     body = await client.request(
         "seed",
