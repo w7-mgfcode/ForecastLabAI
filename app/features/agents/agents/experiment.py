@@ -13,7 +13,7 @@ from datetime import date
 from typing import Any, Literal
 
 import structlog
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, PromptedOutput, RunContext
 
 from app.features.agents.agents.base import (
     SAFETY_INSTRUCTIONS,
@@ -90,7 +90,10 @@ def create_experiment_agent() -> Agent[AgentDeps, ExperimentReport]:
     agent: Agent[AgentDeps, ExperimentReport] = Agent(
         model=model,
         deps_type=AgentDeps,
-        output_type=ExperimentReport,
+        # PromptedOutput puts the JSON schema in the prompt and parses the
+        # model's text reply, instead of the default ToolOutput mode which
+        # weaker/local models fail to satisfy (issue #173).
+        output_type=PromptedOutput(ExperimentReport),
         system_prompt=EXPERIMENT_SYSTEM_PROMPT,
         # Apply the configured agent_retry_attempts. Without this PydanticAI
         # defaults to 1, and weaker models fail structured-output validation.

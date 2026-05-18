@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 import structlog
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, PromptedOutput, RunContext
 
 from app.core.config import get_settings
 from app.features.agents.agents.base import (
@@ -85,7 +85,10 @@ def create_rag_assistant_agent() -> Agent[AgentDeps, RAGAnswer]:
     agent: Agent[AgentDeps, RAGAnswer] = Agent(
         model=model,
         deps_type=AgentDeps,
-        output_type=RAGAnswer,
+        # PromptedOutput puts the JSON schema in the prompt and parses the
+        # model's text reply, instead of the default ToolOutput mode which
+        # weaker/local models fail to satisfy (issue #173).
+        output_type=PromptedOutput(RAGAnswer),
         system_prompt=RAG_SYSTEM_PROMPT,
         # Apply the configured agent_retry_attempts. Without this PydanticAI
         # defaults to 1, and weaker models fail structured-output validation.
