@@ -91,6 +91,30 @@ class TestCreateRunEndpoint:
         )
         assert response.status_code == 422
 
+    async def test_create_run_repeated_duplicate_does_not_500(self, client: AsyncClient) -> None:
+        """Repeated identical runs must not 500 (regression for #146).
+
+        Under the default ``registry_duplicate_policy="detect"`` duplicate runs
+        are created intentionally, so multiple non-archived rows can share one
+        config hash. ``_find_duplicate`` previously used ``scalar_one_or_none()``,
+        which raised ``MultipleResultsFound`` once two duplicates existed — the
+        third POST returned ``HTTP 500 Database Error``.
+        """
+        payload = {
+            "model_type": "test-dup-regression",
+            "model_config": {"strategy": "last_value"},
+            "data_window_start": "2024-01-01",
+            "data_window_end": "2024-03-31",
+            "store_id": 1,
+            "product_id": 1,
+        }
+
+        # Three identical creates: 1st has no prior match, 2nd has one,
+        # 3rd would hit the MultipleResultsFound trap before the fix.
+        for _ in range(3):
+            response = await client.post("/registry/runs", json=payload)
+            assert response.status_code == 201, response.text
+
 
 class TestListRunsEndpoint:
     """Tests for GET /registry/runs endpoint."""
