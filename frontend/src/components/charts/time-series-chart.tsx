@@ -39,14 +39,16 @@ export function TimeSeriesChart({
   height = 300,
   className,
 }: TimeSeriesChartProps) {
+  // The --chart-N vars are complete oklch() colours (Tailwind 4 / shadcn v4);
+  // reference them directly — wrapping in hsl() produces invalid CSS (black).
   const chartConfig: ChartConfig = {
     [actualKey]: {
       label: 'Actual',
-      color: 'hsl(var(--chart-1))',
+      color: 'var(--chart-1)',
     },
     [predictedKey]: {
       label: 'Predicted',
-      color: 'hsl(var(--chart-2))',
+      color: 'var(--chart-2)',
     },
   }
 
