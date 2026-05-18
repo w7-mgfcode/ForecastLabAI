@@ -6,7 +6,13 @@ import pytest
 from pydantic_ai.models.openai import OpenAIChatModel
 
 from app.core.config import get_settings
-from app.features.agents.agents.base import build_agent_model, validate_api_key_for_model
+from app.features.agents.agents.base import (
+    build_agent_model,
+    get_agent_retries,
+    validate_api_key_for_model,
+)
+from app.features.agents.agents.experiment import create_experiment_agent
+from app.features.agents.agents.rag_assistant import create_rag_assistant_agent
 
 
 @pytest.fixture(autouse=True)
@@ -41,3 +47,38 @@ def test_validate_api_key_for_model_ollama_skips_key_check():
     settings.google_api_key = ""
     # Should return without raising even though no cloud key is configured.
     validate_api_key_for_model("ollama:llama3.1")
+
+
+def test_get_agent_retries_returns_configured_value():
+    """get_agent_retries reflects the agent_retry_attempts setting."""
+    settings = get_settings()
+    settings.agent_retry_attempts = 5
+    assert get_agent_retries() == 5
+
+
+def test_experiment_agent_applies_retry_attempts():
+    """The experiment agent is built with the configured retry budget.
+
+    Regression for issue #170: agent_retry_attempts was never passed to
+    Agent(), so PydanticAI silently used its default of 1.
+    """
+    settings = get_settings()
+    settings.agent_default_model = "ollama:llama3.1"
+    settings.agent_retry_attempts = 4
+
+    agent = create_experiment_agent()
+
+    assert agent._max_output_retries == 4
+    assert agent._max_tool_retries == 4
+
+
+def test_rag_assistant_agent_applies_retry_attempts():
+    """The RAG assistant agent is built with the configured retry budget."""
+    settings = get_settings()
+    settings.agent_default_model = "ollama:llama3.1"
+    settings.agent_retry_attempts = 4
+
+    agent = create_rag_assistant_agent()
+
+    assert agent._max_output_retries == 4
+    assert agent._max_tool_retries == 4

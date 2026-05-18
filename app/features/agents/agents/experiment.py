@@ -20,6 +20,7 @@ from app.features.agents.agents.base import (
     SYSTEM_PROMPT_HEADER,
     TOOL_USAGE_INSTRUCTIONS,
     build_agent_model,
+    get_agent_retries,
     get_model_identifier,
     get_model_settings,
     requires_approval,
@@ -85,11 +86,16 @@ def create_experiment_agent() -> Agent[AgentDeps, ExperimentReport]:
     validate_api_key_for_model(identifier)  # Fail-fast validation
     model = build_agent_model(identifier)  # str for cloud, Model object for ollama
 
+    retries = get_agent_retries()
     agent: Agent[AgentDeps, ExperimentReport] = Agent(
         model=model,
         deps_type=AgentDeps,
         output_type=ExperimentReport,
         system_prompt=EXPERIMENT_SYSTEM_PROMPT,
+        # Apply the configured agent_retry_attempts. Without this PydanticAI
+        # defaults to 1, and weaker models fail structured-output validation.
+        output_retries=retries,
+        tool_retries=retries,
         **get_model_settings(),
     )
 
