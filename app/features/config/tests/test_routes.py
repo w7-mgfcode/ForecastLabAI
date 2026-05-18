@@ -27,6 +27,11 @@ def _sample_config(
         agent_temperature=agent_temperature,
         agent_max_tokens=4096,
         agent_thinking_budget=None,
+        agent_max_tool_calls=10,
+        agent_timeout_seconds=120,
+        agent_retry_attempts=3,
+        agent_session_ttl_minutes=120,
+        agent_require_approval=["create_alias", "archive_run"],
         rag_embedding_provider="openai",
         rag_embedding_model="text-embedding-3-small",
         rag_embedding_dimension=1536,
@@ -64,6 +69,22 @@ class TestGetAIConfig:
         data = response.json()
         assert data["agent_default_model"] == "anthropic:claude-sonnet-4-5"
         assert data["api_keys"][0]["masked"] == "sk-ant-…1234"
+
+    def test_returns_agent_session_limits(self, client):
+        """GET /config/ai exposes the read-only agent session-limit fields."""
+        with patch(
+            "app.features.config.routes.service.get_effective_config",
+            new=AsyncMock(return_value=_sample_config()),
+        ):
+            response = client.get("/config/ai")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["agent_max_tool_calls"] == 10
+        assert data["agent_timeout_seconds"] == 120
+        assert data["agent_retry_attempts"] == 3
+        assert data["agent_session_ttl_minutes"] == 120
+        assert data["agent_require_approval"] == ["create_alias", "archive_run"]
 
 
 class TestUpdateAIConfig:
