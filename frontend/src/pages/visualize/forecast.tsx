@@ -48,8 +48,13 @@ export default function ForecastPage() {
 
   // A completed `predict` job stores result.forecasts (date + forecast, plus
   // optional lower/upper bounds for models that emit a prediction interval).
-  const forecastData = job?.result?.forecasts as ForecastPoint[] | undefined
-  const hasBounds = !!forecastData?.some(
+  // `job.result` is untyped JSONB — guard with Array.isArray before treating
+  // `forecasts` as an array so a malformed result can never throw on `.some()`.
+  const rawForecasts = job?.result?.forecasts
+  const forecastData: ForecastPoint[] = Array.isArray(rawForecasts)
+    ? (rawForecasts as ForecastPoint[])
+    : []
+  const hasBounds = forecastData.some(
     (point) => point.lower_bound != null && point.upper_bound != null,
   )
 
@@ -68,7 +73,7 @@ export default function ForecastPage() {
   }
 
   function handleExport() {
-    if (!forecastData || !job) return
+    if (forecastData.length === 0 || !job) return
     downloadCsv(`forecast-${job.job_id}.csv`, toCsv(forecastData, csvColumns))
   }
 
@@ -189,7 +194,7 @@ export default function ForecastPage() {
           </Card>
 
           {/* Forecast Chart */}
-          {forecastData && forecastData.length > 0 ? (
+          {forecastData.length > 0 ? (
             <div className="space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <label className="flex items-center gap-2 text-sm">

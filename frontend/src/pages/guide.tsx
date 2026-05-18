@@ -196,8 +196,12 @@ export default function GuidePage() {
                   {tool}
                 </Badge>
               ))
-            ) : (
+            ) : configLoading ? (
               <Skeleton className="h-5 w-40" />
+            ) : (
+              <span className="text-xs text-muted-foreground">
+                Unavailable — the configuration endpoint could not be reached.
+              </span>
             )}
           </div>
         </CardContent>
