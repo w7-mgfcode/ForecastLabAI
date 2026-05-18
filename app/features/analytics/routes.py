@@ -15,6 +15,7 @@ from app.core.logging import get_logger
 from app.features.analytics.schemas import (
     DrilldownDimension,
     DrilldownResponse,
+    InventoryStatusResponse,
     KPIResponse,
     TimeGranularity,
     TimeSeriesResponse,
@@ -341,4 +342,65 @@ async def get_timeseries(
         store_id=store_id,
         product_id=product_id,
         category=category,
+    )
+
+
+# =============================================================================
+# Inventory Status Endpoint
+# =============================================================================
+
+
+@router.get(
+    "/inventory-status",
+    response_model=InventoryStatusResponse,
+    summary="Latest inventory snapshot per store/product",
+    description="""
+Return the most recent `inventory_snapshot_daily` row for each
+(store, product) grain.
+
+**Purpose**: Surface current stock context — on-hand units, on-order units,
+and the stockout flag — so a demand view can compute an inventory requirement.
+
+**Per grain**: the latest snapshot by date (`on_hand_qty`, `on_order_qty`,
+`is_stockout`).
+
+**Filtering Options**:
+- `store_id`: scope to a single store
+- `product_id`: scope to a single product
+
+**Empty data**: returns HTTP 200 with `items: []` and `total_items: 0` when no
+snapshots exist — never a 404.
+
+**Example Use Cases**:
+1. All grains: `GET /analytics/inventory-status`
+2. One store: `GET /analytics/inventory-status?store_id=5`
+3. One grain: `GET /analytics/inventory-status?store_id=5&product_id=10`
+""",
+)
+async def get_inventory_status(
+    store_id: int | None = Query(
+        None,
+        description="Filter by store ID. Use GET /dimensions/stores to find valid IDs.",
+    ),
+    product_id: int | None = Query(
+        None,
+        description="Filter by product ID. Use GET /dimensions/products to find valid IDs.",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> InventoryStatusResponse:
+    """Return the latest inventory snapshot per (store, product) grain.
+
+    Args:
+        store_id: Filter by store ID (optional).
+        product_id: Filter by product ID (optional).
+        db: Database session.
+
+    Returns:
+        Latest snapshot per grain. Empty list when no snapshots exist.
+    """
+    service = AnalyticsService()
+    return await service.compute_inventory_status(
+        db=db,
+        store_id=store_id,
+        product_id=product_id,
     )

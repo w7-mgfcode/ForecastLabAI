@@ -4,6 +4,7 @@ These schemas define KPI aggregations and drilldown responses
 with rich descriptions for LLM tool-calling.
 """
 
+import datetime
 from datetime import date
 from decimal import Decimal
 from enum import Enum
@@ -251,6 +252,69 @@ class TimeSeriesResponse(BaseModel):
     category: str | None = Field(
         None,
         description="Category filter applied (if any). Null means all categories included.",
+    )
+
+
+# =============================================================================
+# Inventory Status Response Schemas
+# =============================================================================
+
+
+class InventoryStatusItem(BaseModel):
+    """Latest inventory snapshot for one (store, product) grain.
+
+    Built from the most recent ``inventory_snapshot_daily`` row for the grain.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    store_id: int = Field(..., description="Store ID.")
+    product_id: int = Field(..., description="Product ID.")
+    # Annotated as ``datetime.date`` (not bare ``date``) because the field name
+    # ``date`` would otherwise shadow the imported ``date`` type.
+    date: datetime.date = Field(
+        ...,
+        description="Snapshot date (the latest available for this grain).",
+    )
+    on_hand_qty: int = Field(
+        ...,
+        ge=0,
+        description="Units on hand at end of day.",
+    )
+    on_order_qty: int = Field(
+        ...,
+        ge=0,
+        description="Units inbound / on order.",
+    )
+    is_stockout: bool = Field(
+        ...,
+        description="True when the grain was out of stock (on_hand_qty is 0).",
+    )
+
+
+class InventoryStatusResponse(BaseModel):
+    """Latest inventory snapshot per (store, product) grain.
+
+    One item per grain — the most recent snapshot. Returns an empty list
+    when no snapshots exist (never a 404).
+    """
+
+    items: list[InventoryStatusItem] = Field(
+        ...,
+        description="One item per (store, product) grain — the latest snapshot.",
+    )
+    total_items: int = Field(
+        ...,
+        ge=0,
+        description="Number of items returned (equals len(items)).",
+    )
+    store_id: int | None = Field(
+        None,
+        description="Store filter applied (if any). Null means all stores included.",
+    )
+    product_id: int | None = Field(
+        None,
+        description="Product filter applied (if any). Null means all products included.",
     )
 
 
