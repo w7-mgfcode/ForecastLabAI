@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
+from app.core.database import get_session_maker
 from app.core.exceptions import register_exception_handlers
 from app.core.health import router as health_router
 from app.core.logging import configure_logging, get_logger
@@ -15,6 +16,8 @@ from app.features.agents.routes import router as agents_router
 from app.features.agents.websocket import router as agents_ws_router
 from app.features.analytics.routes import router as analytics_router
 from app.features.backtesting.routes import router as backtesting_router
+from app.features.config.routes import router as config_router
+from app.features.config.service import apply_overrides_on_startup
 from app.features.demo.routes import router as demo_router
 from app.features.dimensions.routes import router as dimensions_router
 from app.features.featuresets.routes import router as featuresets_router
@@ -48,6 +51,19 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         app_env=settings.app_env,
         debug=settings.debug,
     )
+
+    # Re-apply persisted runtime config overrides onto the Settings singleton.
+    # Warn-and-continue: a missing app_config table must never block startup.
+    try:
+        session_maker = get_session_maker()
+        async with session_maker() as db:
+            await apply_overrides_on_startup(db)
+    except Exception as exc:  # config must never block startup
+        logger.warning(
+            "config.overrides_skipped",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
 
     yield
 
@@ -126,6 +142,7 @@ def create_app() -> FastAPI:
     app.include_router(agents_ws_router)
     app.include_router(seeder_router)
     app.include_router(demo_router)
+    app.include_router(config_router)
 
     return app
 

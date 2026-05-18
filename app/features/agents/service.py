@@ -15,12 +15,14 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
 import structlog
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,6 +57,22 @@ class NoApprovalPendingError(ValueError):
     """No approval action pending for this session."""
 
     pass
+
+
+def _sequential_tool_execution() -> AbstractContextManager[None]:
+    """Run an agent turn's tool calls one at a time, never concurrently.
+
+    Every tool in a run shares the single ``AgentDeps.db`` ``AsyncSession``,
+    and SQLAlchemy forbids concurrent operations on one session. PydanticAI's
+    default parallel tool execution therefore raises ``InvalidRequestError``
+    whenever a model emits more than one DB-touching tool call in a turn
+    (issue #172).
+
+    Both :meth:`AgentService.chat` and :meth:`AgentService.stream_chat` wrap
+    their agent run in this context, so the execution-mode policy lives in
+    exactly one place.
+    """
+    return Agent.parallel_tool_call_execution_mode("sequential")
 
 
 class AgentService:
@@ -238,7 +256,7 @@ class AgentService:
         )
 
         # Run agent with message history
-        message_history = self._deserialize_messages(session.message_history)
+        message_history = self._deserialize_messages(session.message_history, session_id)
 
         logger.info(
             "agents.chat_started",
@@ -249,18 +267,39 @@ class AgentService:
         )
 
         try:
-            result = await asyncio.wait_for(
-                agent.run(
-                    message,
-                    deps=deps,
-                    message_history=message_history,
-                ),
-                timeout=self.settings.agent_timeout_seconds,
-            )
+            with _sequential_tool_execution():
+                result = await asyncio.wait_for(
+                    agent.run(
+                        message,
+                        deps=deps,
+                        message_history=message_history,
+                    ),
+                    timeout=self.settings.agent_timeout_seconds,
+                )
         except TimeoutError as e:
             raise TimeoutError(
                 f"Agent response timed out after {self.settings.agent_timeout_seconds} seconds"
             ) from e
+        except UnexpectedModelBehavior as e:
+            # The model misbehaved (e.g. a tool call exceeded its retry budget).
+            # This is recoverable from the user's perspective — surface a clean
+            # message instead of leaking the raw PydanticAI exception string.
+            logger.warning(
+                "agents.chat_model_misbehavior",
+                session_id=session_id,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            session.last_activity = datetime.now(UTC)
+            await db.flush()
+            return ChatResponse(
+                session_id=session_id,
+                message=(
+                    "I couldn't complete that request — the model produced an "
+                    "invalid tool call. Please try rephrasing, or give me a "
+                    "specific forecasting objective to work on."
+                ),
+            )
 
         # Extract tool calls from result
         tool_calls: list[ToolCallResult] = []
@@ -409,7 +448,7 @@ class AgentService:
             request_id=request_id,
         )
 
-        message_history = self._deserialize_messages(session.message_history)
+        message_history = self._deserialize_messages(session.message_history, session_id)
 
         logger.info(
             "agents.stream_chat_started",
@@ -419,148 +458,178 @@ class AgentService:
 
         # Stream the response
         try:
-            async with asyncio.timeout(self.settings.agent_timeout_seconds):
-                async with agent.run_stream(
-                    message,
-                    deps=deps,
-                    message_history=message_history,
-                ) as result:
-                    try:
-                        async for text in result.stream_text():
-                            yield StreamEvent(
-                                event_type="text_delta",
-                                data={"delta": text},
-                                timestamp=datetime.now(UTC),
+            with _sequential_tool_execution():
+                async with asyncio.timeout(self.settings.agent_timeout_seconds):
+                    async with agent.run_stream(
+                        message,
+                        deps=deps,
+                        message_history=message_history,
+                    ) as result:
+                        try:
+                            async for text in result.stream_text():
+                                yield StreamEvent(
+                                    event_type="text_delta",
+                                    data={"delta": text},
+                                    timestamp=datetime.now(UTC),
+                                )
+                        except Exception as e:
+                            # Structured output agents (output_type=...) cannot stream raw text deltas.
+                            # In that case we skip delta streaming and only emit the final complete event.
+                            logger.info(
+                                "agents.stream_chat_text_delta_unavailable",
+                                session_id=session_id,
+                                error=str(e),
+                                error_type=type(e).__name__,
                             )
-                    except Exception as e:
-                        # Structured output agents (output_type=...) cannot stream raw text deltas.
-                        # In that case we skip delta streaming and only emit the final complete event.
-                        logger.info(
-                            "agents.stream_chat_text_delta_unavailable",
-                            session_id=session_id,
-                            error=str(e),
-                            error_type=type(e).__name__,
+
+                        # Get final result and update session
+                        # NOTE: PydanticAI v1.48 exposes get_output() on StreamedRunResult.
+                        final_result: Any = await result.get_output()
+                        usage = result.usage()
+
+                        session.message_history = self._serialize_messages(result.all_messages())
+                        session.total_tokens_used += usage.total_tokens or 0
+                        session.tool_calls_count += deps.tool_call_count
+                        session.last_activity = datetime.now(UTC)
+                        session.expires_at = session.last_activity + timedelta(
+                            minutes=self.settings.agent_session_ttl_minutes
                         )
 
-                    # Get final result and update session
-                    # NOTE: PydanticAI v1.48 exposes get_output() on StreamedRunResult.
-                    final_result: Any = await result.get_output()
-                    usage = result.usage()
+                        await db.flush()
 
-                    session.message_history = self._serialize_messages(result.all_messages())
-                    session.total_tokens_used += usage.total_tokens or 0
-                    session.tool_calls_count += deps.tool_call_count
-                    session.last_activity = datetime.now(UTC)
-                    session.expires_at = session.last_activity + timedelta(
-                        minutes=self.settings.agent_session_ttl_minutes
-                    )
+                        # Check for pending approval actions (mirror chat() logic)
+                        pending_action = None
+                        pending_approval = False
+                        stream_now = datetime.now(UTC)
 
-                    await db.flush()
+                        # Check for pending_action in result data (primary trigger)
+                        if hasattr(final_result, "pending_action") and final_result.pending_action:
+                            pending_approval = True
+                            pending_action_data = final_result.pending_action
+                            # Extract action details - support both dict and object with attributes
+                            if isinstance(pending_action_data, dict):
+                                action_type = pending_action_data.get("action_type", "unknown")
+                                arguments = pending_action_data.get("arguments", {})
+                                description = pending_action_data.get(
+                                    "description", f"Agent requested approval for {action_type}"
+                                )
+                            else:
+                                action_type = getattr(pending_action_data, "action_type", "unknown")
+                                arguments = getattr(pending_action_data, "arguments", {})
+                                description = getattr(
+                                    pending_action_data,
+                                    "description",
+                                    f"Agent requested approval for {action_type}",
+                                )
 
-                    # Check for pending approval actions (mirror chat() logic)
-                    pending_action = None
-                    pending_approval = False
-                    stream_now = datetime.now(UTC)
-
-                    # Check for pending_action in result data (primary trigger)
-                    if hasattr(final_result, "pending_action") and final_result.pending_action:
-                        pending_approval = True
-                        pending_action_data = final_result.pending_action
-                        # Extract action details - support both dict and object with attributes
-                        if isinstance(pending_action_data, dict):
-                            action_type = pending_action_data.get("action_type", "unknown")
-                            arguments = pending_action_data.get("arguments", {})
-                            description = pending_action_data.get(
-                                "description", f"Agent requested approval for {action_type}"
-                            )
-                        else:
-                            action_type = getattr(pending_action_data, "action_type", "unknown")
-                            arguments = getattr(pending_action_data, "arguments", {})
-                            description = getattr(
-                                pending_action_data,
-                                "description",
-                                f"Agent requested approval for {action_type}",
-                            )
-
-                        session.pending_action = {
-                            "action_id": uuid.uuid4().hex[:16],
-                            "action_type": action_type,
-                            "description": description,
-                            "arguments": arguments,
-                            "created_at": stream_now.isoformat(),
-                            "expires_at": (
-                                stream_now
-                                + timedelta(minutes=self.settings.agent_approval_timeout_minutes)
-                            ).isoformat(),
-                        }
-                        session.status = SessionStatus.AWAITING_APPROVAL.value
-                        pending_action = self._format_pending_action(session.pending_action)
-                    # Fallback: check approval_required flag (legacy trigger)
-                    elif (
-                        hasattr(final_result, "approval_required")
-                        and final_result.approval_required
-                    ):
-                        pending_approval = True
-                        session.pending_action = {
-                            "action_id": uuid.uuid4().hex[:16],
-                            "action_type": "unknown",
-                            "description": "Agent requested approval for an action",
-                            "arguments": {},
-                            "created_at": stream_now.isoformat(),
-                            "expires_at": (
-                                stream_now
-                                + timedelta(minutes=self.settings.agent_approval_timeout_minutes)
-                            ).isoformat(),
-                        }
-                        session.status = SessionStatus.AWAITING_APPROVAL.value
-                        pending_action = self._format_pending_action(session.pending_action)
-
-                    await db.flush()
-
-                    # If approval is required, emit approval_required event
-                    if pending_approval and pending_action:
-                        yield StreamEvent(
-                            event_type="approval_required",
-                            data={
-                                "action": pending_action,
-                                "message": "Human approval required before proceeding.",
-                            },
-                            timestamp=stream_now,
-                        )
-
-                    # Yield completion event
-                    response_message: str = "No response generated."
-                    if final_result:
-                        if hasattr(final_result, "answer") and final_result.answer:
-                            response_message = str(final_result.answer)
-                        elif hasattr(final_result, "summary") and final_result.summary:
-                            response_message = str(final_result.summary)
+                            session.pending_action = {
+                                "action_id": uuid.uuid4().hex[:16],
+                                "action_type": action_type,
+                                "description": description,
+                                "arguments": arguments,
+                                "created_at": stream_now.isoformat(),
+                                "expires_at": (
+                                    stream_now
+                                    + timedelta(
+                                        minutes=self.settings.agent_approval_timeout_minutes
+                                    )
+                                ).isoformat(),
+                            }
+                            session.status = SessionStatus.AWAITING_APPROVAL.value
+                            pending_action = self._format_pending_action(session.pending_action)
+                        # Fallback: check approval_required flag (legacy trigger)
                         elif (
-                            hasattr(final_result, "recommendations")
-                            and final_result.recommendations
+                            hasattr(final_result, "approval_required")
+                            and final_result.approval_required
                         ):
-                            recommendations = final_result.recommendations
-                            if isinstance(recommendations, list) and recommendations:
-                                response_message = "\n".join(str(item) for item in recommendations)
+                            pending_approval = True
+                            session.pending_action = {
+                                "action_id": uuid.uuid4().hex[:16],
+                                "action_type": "unknown",
+                                "description": "Agent requested approval for an action",
+                                "arguments": {},
+                                "created_at": stream_now.isoformat(),
+                                "expires_at": (
+                                    stream_now
+                                    + timedelta(
+                                        minutes=self.settings.agent_approval_timeout_minutes
+                                    )
+                                ).isoformat(),
+                            }
+                            session.status = SessionStatus.AWAITING_APPROVAL.value
+                            pending_action = self._format_pending_action(session.pending_action)
+
+                        await db.flush()
+
+                        # If approval is required, emit approval_required event
+                        if pending_approval and pending_action:
+                            yield StreamEvent(
+                                event_type="approval_required",
+                                data={
+                                    "action": pending_action,
+                                    "message": "Human approval required before proceeding.",
+                                },
+                                timestamp=stream_now,
+                            )
+
+                        # Yield completion event
+                        response_message: str = "No response generated."
+                        if final_result:
+                            if hasattr(final_result, "answer") and final_result.answer:
+                                response_message = str(final_result.answer)
+                            elif hasattr(final_result, "summary") and final_result.summary:
+                                response_message = str(final_result.summary)
+                            elif (
+                                hasattr(final_result, "recommendations")
+                                and final_result.recommendations
+                            ):
+                                recommendations = final_result.recommendations
+                                if isinstance(recommendations, list) and recommendations:
+                                    response_message = "\n".join(
+                                        str(item) for item in recommendations
+                                    )
+                                else:
+                                    response_message = str(final_result)
                             else:
                                 response_message = str(final_result)
-                        else:
-                            response_message = str(final_result)
 
-                    yield StreamEvent(
-                        event_type="complete",
-                        data={
-                            "message": response_message,
-                            "tokens_used": usage.total_tokens or 0,
-                            "tool_calls_count": deps.tool_call_count,
-                            "pending_approval": pending_approval,
-                        },
-                        timestamp=datetime.now(UTC),
-                    )
+                        yield StreamEvent(
+                            event_type="complete",
+                            data={
+                                "message": response_message,
+                                "tokens_used": usage.total_tokens or 0,
+                                "tool_calls_count": deps.tool_call_count,
+                                "pending_approval": pending_approval,
+                            },
+                            timestamp=datetime.now(UTC),
+                        )
         except TimeoutError as e:
             raise TimeoutError(
                 f"Agent response timed out after {self.settings.agent_timeout_seconds} seconds"
             ) from e
+        except UnexpectedModelBehavior as e:
+            # The model misbehaved (e.g. a tool call exceeded its retry budget).
+            # Emit a clean, recoverable `error` event rather than letting the raw
+            # PydanticAI exception bubble to the WebSocket handler.
+            logger.warning(
+                "agents.stream_chat_model_misbehavior",
+                session_id=session_id,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            yield StreamEvent(
+                event_type="error",
+                data={
+                    "error": (
+                        "The assistant produced an invalid tool call and couldn't "
+                        "complete the request. Please try rephrasing your message."
+                    ),
+                    "error_type": "model_behavior_error",
+                    "recoverable": True,
+                },
+                timestamp=datetime.now(UTC),
+            )
+            return
 
         logger.info(
             "agents.stream_chat_completed",
@@ -701,75 +770,60 @@ class AgentService:
         self,
         messages: list[ModelMessage],
     ) -> list[dict[str, Any]]:
-        """Serialize PydanticAI messages for storage.
+        """Serialize PydanticAI messages to JSON-safe dicts for JSONB storage.
 
-        PydanticAI messages (ModelRequest, ModelResponse) are dataclasses,
-        so we use dataclasses.asdict() for serialization.
+        Uses PydanticAI's own ``ModelMessagesTypeAdapter`` so the output can be
+        round-tripped back into real ``ModelMessage`` objects by
+        :meth:`_deserialize_messages`.
 
         Args:
-            messages: List of ModelMessage objects.
+            messages: List of ModelMessage objects (e.g. ``result.all_messages()``).
 
         Returns:
-            List of serializable dictionaries.
+            List of JSON-serializable dictionaries.
         """
-        import dataclasses
-        from datetime import datetime
-
-        def json_safe(obj: object) -> object:
-            """Convert non-JSON-serializable objects to JSON-safe types."""
-            if isinstance(obj, datetime):
-                return obj.isoformat()
-            if isinstance(obj, dict):
-                return {k: json_safe(v) for k, v in obj.items()}
-            if isinstance(obj, list):
-                return [json_safe(item) for item in obj]
-            # Primitive JSON types pass through
-            if isinstance(obj, (str, int, float, bool, type(None))):
-                return obj
-            # Fallback: convert unknown types to string representation
-            return str(obj)
-
-        serialized: list[dict[str, Any]] = []
-        for msg in messages:
-            if dataclasses.is_dataclass(msg) and not isinstance(msg, type):
-                # Convert dataclass to dict, handling nested types
-                try:
-                    msg_dict = dataclasses.asdict(msg)
-                    # Convert datetime objects to ISO strings
-                    # Cast is safe: json_safe preserves dict structure
-                    msg_dict = cast(dict[str, Any], json_safe(msg_dict))
-                    # Add kind discriminator for deserialization
-                    if hasattr(msg, "kind"):
-                        msg_dict["kind"] = msg.kind
-                    serialized.append(msg_dict)
-                except (TypeError, ValueError):
-                    # Fallback for types that can't be converted
-                    serialized.append({"type": type(msg).__name__, "data": str(msg)})
-            else:
-                # Fallback for non-dataclass types
-                serialized.append({"type": type(msg).__name__, "data": str(msg)})
-        return serialized
+        return cast(
+            list[dict[str, Any]],
+            ModelMessagesTypeAdapter.dump_python(messages, mode="json"),
+        )
 
     def _deserialize_messages(
         self,
         data: list[dict[str, Any]],
+        session_id: str,
     ) -> list[ModelMessage]:
-        """Deserialize messages from storage.
+        """Reconstruct PydanticAI ModelMessage objects from stored dicts.
+
+        PydanticAI's ``run()`` / ``run_stream()`` require ``message_history`` to
+        be real ``ModelMessage`` instances — passing raw dicts fails when the
+        framework accesses fields such as ``conversation_id``.
 
         Args:
             data: List of serialized message dictionaries.
+            session_id: Owning session, logged so a failure can be correlated
+                with the specific stored record.
 
         Returns:
-            List of ModelMessage objects.
-
-        Note:
-            PydanticAI handles message reconstruction internally.
-            We return the raw data for now - the agent.run() method
-            accepts message history in various formats.
+            List of ModelMessage objects. Returns an empty list if the stored
+            data cannot be validated (e.g. it predates this serialization
+            format) — a lost history is recoverable; a crash is not.
         """
-        # PydanticAI's run() method can accept message history as dicts
-        # Cast to list[ModelMessage] for type checking
-        return data  # type: ignore[return-value]
+        if not data:
+            return []
+        try:
+            return ModelMessagesTypeAdapter.validate_python(data)
+        except Exception:
+            # Degrade to an empty history on ANY deserialization failure, not
+            # just ValidationError: a malformed stored record (wrong shape,
+            # type errors) must never crash an otherwise-valid agent run.
+            # exc_info preserves the full exception type, message, and traceback.
+            logger.warning(
+                "agents.message_history_deserialize_failed",
+                session_id=session_id,
+                message_count=len(data),
+                exc_info=True,
+            )
+            return []
 
     def _format_pending_action(
         self,

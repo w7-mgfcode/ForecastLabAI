@@ -1,10 +1,21 @@
 """Unit tests for agent service."""
 
+import json
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic_ai import Agent
+from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 
 from app.features.agents.deps import AgentDeps
 from app.features.agents.models import AgentSession, AgentType, SessionStatus
@@ -287,6 +298,192 @@ class TestAgentServiceChat:
         assert response.tokens_used == 100
         mock_agent.run.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_chat_model_misbehavior_returns_friendly_message(
+        self,
+        sample_active_session: AgentSession,
+    ) -> None:
+        """A misbehaving model should yield a clean message, not crash.
+
+        Regression for issue #164: a tool call exceeding its retry budget
+        raised PydanticAI's `UnexpectedModelBehavior`, whose raw string
+        ("Tool '...' exceeded max retries count of 1") leaked to the user.
+        """
+        service = AgentService()
+        mock_db = AsyncMock()
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(
+            side_effect=UnexpectedModelBehavior(
+                "Tool 'tool_compare_backtest_results' exceeded max retries count of 1"
+            )
+        )
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            response = await service.chat(
+                db=mock_db,
+                session_id=sample_active_session.session_id,
+                message="Hello",
+            )
+
+        assert response.session_id == sample_active_session.session_id
+        assert response.pending_approval is False
+        assert "invalid tool call" in response.message
+        assert "exceeded max retries" not in response.message
+
+    @pytest.mark.asyncio
+    async def test_chat_runs_tools_sequentially(
+        self,
+        sample_active_session: AgentSession,
+        sample_experiment_report: ExperimentReport,
+    ) -> None:
+        """chat() must run the agent under sequential tool execution.
+
+        Regression for issue #172: every tool shares the single AgentDeps.db
+        AsyncSession, so concurrent tool calls raised SQLAlchemy's
+        InvalidRequestError. The service must enter PydanticAI's public
+        ``Agent.parallel_tool_call_execution_mode("sequential")`` context
+        around the agent run.
+        """
+        service = AgentService()
+        mock_db = AsyncMock()
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        run_result = MagicMock()
+        run_result.output = sample_experiment_report
+        usage = MagicMock()
+        usage.total_tokens = 1
+        run_result.usage.return_value = usage
+        run_result.all_messages.return_value = []
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(return_value=run_result)
+
+        with (
+            patch.object(service, "_get_agent", return_value=mock_agent),
+            patch.object(Agent, "parallel_tool_call_execution_mode") as mock_mode,
+        ):
+            await service.chat(
+                db=mock_db,
+                session_id=sample_active_session.session_id,
+                message="Run a backtest",
+            )
+
+        mock_mode.assert_called_once_with("sequential")
+
+
+class TestAgentServiceStreamChat:
+    """Tests for streaming chat functionality."""
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_model_misbehavior_yields_error_event(
+        self,
+        sample_active_session: AgentSession,
+    ) -> None:
+        """A misbehaving model should yield a recoverable `error` event, not crash.
+
+        Regression for issue #164: `UnexpectedModelBehavior` raised inside
+        `agent.run_stream` bubbled to the WebSocket handler, which echoed the
+        raw exception string to the client.
+        """
+        service = AgentService()
+        mock_db = AsyncMock()
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        class _RaisingStream:
+            """Async context manager that fails on entry like a misbehaving run."""
+
+            async def __aenter__(self) -> Any:
+                raise UnexpectedModelBehavior(
+                    "Tool 'tool_compare_backtest_results' exceeded max retries count of 1"
+                )
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        mock_agent = MagicMock()
+        mock_agent.run_stream = MagicMock(return_value=_RaisingStream())
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            events = [
+                event
+                async for event in service.stream_chat(
+                    db=mock_db,
+                    session_id=sample_active_session.session_id,
+                    message="Hello",
+                )
+            ]
+
+        assert len(events) == 1
+        assert events[0].event_type == "error"
+        assert events[0].data["recoverable"] is True
+        assert events[0].data["error_type"] == "model_behavior_error"
+        assert "exceeded max retries" not in events[0].data["error"]
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_runs_tools_sequentially(
+        self,
+        sample_active_session: AgentSession,
+    ) -> None:
+        """stream_chat() must also run the agent under sequential tool execution.
+
+        Mirrors test_chat_runs_tools_sequentially for the streaming path so a
+        future change to only one code path cannot silently reintroduce the
+        concurrent-session bug from issue #172.
+        """
+        service = AgentService()
+        mock_db = AsyncMock()
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        class _StubStream:
+            """Minimal async-context-manager stand-in for agent.run_stream(...)."""
+
+            async def __aenter__(self) -> MagicMock:
+                stream = MagicMock()
+
+                async def _stream_text() -> AsyncIterator[str]:
+                    yield "hello"
+
+                stream.stream_text = _stream_text
+                stream.get_output = AsyncMock(return_value=None)
+                usage = MagicMock()
+                usage.total_tokens = 1
+                stream.usage.return_value = usage
+                stream.all_messages.return_value = []
+                return stream
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        mock_agent = MagicMock()
+        mock_agent.run_stream = MagicMock(return_value=_StubStream())
+
+        with (
+            patch.object(service, "_get_agent", return_value=mock_agent),
+            patch.object(Agent, "parallel_tool_call_execution_mode") as mock_mode,
+        ):
+            async for _event in service.stream_chat(
+                db=mock_db,
+                session_id=sample_active_session.session_id,
+                message="Run a backtest",
+            ):
+                pass
+
+        mock_mode.assert_called_once_with("sequential")
+
 
 class TestAgentServiceApproval:
     """Tests for approval workflow."""
@@ -467,16 +664,49 @@ class TestAgentServiceMessageSerialization:
     def test_deserialize_empty_messages(self) -> None:
         """Should handle empty message data."""
         service = AgentService()
-        result = service._deserialize_messages([])
+        result = service._deserialize_messages([], "test-session")
         assert result == []
 
-    def test_deserialize_returns_raw_data(self) -> None:
-        """Should return raw data for PydanticAI compatibility."""
+    def test_serialize_deserialize_roundtrip(self) -> None:
+        """Messages should round-trip back into real ModelMessage objects.
+
+        Regression for issue #166: _deserialize_messages used to return raw
+        dicts, which crashed PydanticAI 1.96 when it accessed `conversation_id`
+        on the history items.
+        """
+        service = AgentService()
+        messages: list[ModelMessage] = [
+            ModelRequest(parts=[UserPromptPart(content="run a backtest")]),
+            ModelResponse(parts=[TextPart(content="done")]),
+        ]
+
+        serialized = service._serialize_messages(messages)
+        # Serialized form must survive a JSONB write (pure JSON types only).
+        json.dumps(serialized)
+
+        restored = service._deserialize_messages(serialized, "test-session")
+
+        assert [type(m).__name__ for m in restored] == ["ModelRequest", "ModelResponse"]
+        # The attribute whose absence on a dict caused the original crash.
+        assert restored[0].conversation_id is None
+
+    def test_deserialize_legacy_format_returns_empty(self) -> None:
+        """Unparseable (pre-#166) stored history degrades to empty, not a crash."""
+        service = AgentService()
+        legacy: list[dict[str, Any]] = [{"type": "ModelRequest", "data": "<str dump>"}]
+        result = service._deserialize_messages(legacy, "test-session")
+        assert result == []
+
+    def test_deserialize_non_validation_error_returns_empty(self) -> None:
+        """Any deserialization failure degrades to empty, not only ValidationError."""
         service = AgentService()
         data: list[dict[str, Any]] = [{"kind": "request", "parts": []}]
-        result = service._deserialize_messages(data)
-        # _deserialize_messages returns raw dicts for PydanticAI
-        assert len(result) == 1
+        with patch(
+            "app.features.agents.service.ModelMessagesTypeAdapter.validate_python",
+            side_effect=TypeError("unexpected adapter failure"),
+        ):
+            result = service._deserialize_messages(data, "test-session")
+        assert result == []
 
 
 class TestAgentServicePendingActionFormat:

@@ -12,14 +12,17 @@ from __future__ import annotations
 from typing import Any
 
 import structlog
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, PromptedOutput, RunContext
 
 from app.core.config import get_settings
 from app.features.agents.agents.base import (
     SAFETY_INSTRUCTIONS,
     SYSTEM_PROMPT_HEADER,
+    build_agent_model,
+    get_agent_retries,
     get_model_identifier,
     get_model_settings,
+    recoverable,
     validate_api_key_for_model,
 )
 from app.features.agents.deps import AgentDeps
@@ -75,14 +78,23 @@ def create_rag_assistant_agent() -> Agent[AgentDeps, RAGAnswer]:
     Returns:
         Configured Agent instance with tools registered.
     """
-    model = get_model_identifier()
-    validate_api_key_for_model(model)  # Fail-fast validation
+    identifier = get_model_identifier()
+    validate_api_key_for_model(identifier)  # Fail-fast validation
+    model = build_agent_model(identifier)  # str for cloud, Model object for ollama
 
+    retries = get_agent_retries()
     agent: Agent[AgentDeps, RAGAnswer] = Agent(
         model=model,
         deps_type=AgentDeps,
-        output_type=RAGAnswer,
+        # PromptedOutput puts the JSON schema in the prompt and parses the
+        # model's text reply, instead of the default ToolOutput mode which
+        # weaker/local models fail to satisfy (issue #173).
+        output_type=PromptedOutput(RAGAnswer),
         system_prompt=RAG_SYSTEM_PROMPT,
+        # Apply the configured agent_retry_attempts. Without this PydanticAI
+        # defaults to 1, and weaker models fail structured-output validation.
+        output_retries=retries,
+        tool_retries=retries,
         **get_model_settings(),
     )
 
@@ -92,6 +104,7 @@ def create_rag_assistant_agent() -> Agent[AgentDeps, RAGAnswer]:
 
     # Register tools with the agent
     @agent.tool
+    @recoverable
     async def tool_retrieve_context(
         ctx: RunContext[AgentDeps],
         query: str,
@@ -176,6 +189,7 @@ def create_rag_assistant_agent() -> Agent[AgentDeps, RAGAnswer]:
         )
 
     @agent.tool
+    @recoverable
     async def tool_list_sources(
         ctx: RunContext[AgentDeps],
     ) -> dict[str, Any]:
@@ -209,3 +223,13 @@ def get_rag_assistant_agent() -> Agent[AgentDeps, RAGAnswer]:
     if _rag_assistant_agent is None:
         _rag_assistant_agent = create_rag_assistant_agent()
     return _rag_assistant_agent
+
+
+def reset_rag_assistant_agent() -> None:
+    """Drop the cached RAG assistant agent so the next get_* call rebuilds it.
+
+    Used after a runtime model/key change so the new configuration takes
+    effect without a process restart.
+    """
+    global _rag_assistant_agent
+    _rag_assistant_agent = None

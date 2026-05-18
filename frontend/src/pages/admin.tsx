@@ -17,6 +17,7 @@ import {
   Warehouse,
   History,
   Percent,
+  Bot,
 } from 'lucide-react'
 import { useRagSources, useDeleteRagSource, useIndexDocument } from '@/hooks/use-rag-sources'
 import { useAliases, useDeleteAlias, useCreateAlias } from '@/hooks/use-runs'
@@ -63,6 +64,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
+import { AIModelsPanel } from '@/components/admin'
 import { toast } from 'sonner'
 import type { ScenarioInfo, VerifyCheck, VerifyCheckStatus } from '@/types/api'
 
@@ -85,6 +87,10 @@ export default function AdminPage() {
             <Flame className="h-4 w-4 mr-2" />
             Data Seeder
           </TabsTrigger>
+          <TabsTrigger value="models">
+            <Bot className="h-4 w-4 mr-2" />
+            AI Models
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="rag" className="mt-6">
@@ -97,6 +103,10 @@ export default function AdminPage() {
 
         <TabsContent value="seeder" className="mt-6">
           <SeederPanel />
+        </TabsContent>
+
+        <TabsContent value="models" className="mt-6">
+          <AIModelsPanel />
         </TabsContent>
       </Tabs>
     </div>

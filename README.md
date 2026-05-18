@@ -12,6 +12,7 @@ Portfolio-grade end-to-end retail demand forecasting system.
 - **RAG Knowledge Base**: Postgres pgvector embeddings + evidence-grounded answers with citations
 - **Agentic Layer**: PydanticAI agents for autonomous experimentation and evidence-grounded Q&A with human-in-the-loop approval
 - **Data Seeder (The Forge)**: Reproducible synthetic data generator with realistic time-series patterns, scenario presets, and retail effects
+- **AI Models Console**: `/admin` → AI Models tab — swap the agent LLM (incl. fully-local Ollama), the RAG embedding model, and provider API keys at runtime; changes apply live with no restart
 
 ## Quick Start
 
