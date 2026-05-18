@@ -9,10 +9,52 @@ import os
 from typing import Any
 
 import structlog
+from pydantic_ai.models import Model
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.ollama import OllamaProvider
 
 from app.core.config import get_settings
 
 logger = structlog.get_logger()
+
+
+def build_agent_model(identifier: str) -> str | Model:
+    """Build the PydanticAI ``model`` argument for an agent identifier.
+
+    Cloud providers accept a plain ``provider:model-name`` string. Ollama does
+    not — it needs an :class:`OpenAIChatModel` bound to an :class:`OllamaProvider`
+    pointed at the host's OpenAI-compatible ``/v1`` endpoint.
+
+    Args:
+        identifier: Model identifier (e.g. ``anthropic:claude-sonnet-4-5``,
+            ``ollama:llama3.1``).
+
+    Returns:
+        The identifier string unchanged for cloud providers, or a configured
+        :class:`OpenAIChatModel` for the ``ollama`` provider.
+    """
+    provider = identifier.split(":", 1)[0]
+    if provider != "ollama":
+        return identifier
+
+    settings = get_settings()
+    model_name = identifier.split(":", 1)[1]
+    # CRITICAL: Ollama's OpenAI-compatible base ends in /v1.
+    base_url = settings.ollama_base_url.rstrip("/") + "/v1"
+    return OpenAIChatModel(model_name, provider=OllamaProvider(base_url=base_url))
+
+
+def reset_agent_caches() -> None:
+    """Drop the cached agent singletons so the next build picks up new config.
+
+    Called by the config service after a successful model/key change. Imports
+    are local to avoid an import cycle (the agent modules import from here).
+    """
+    from app.features.agents.agents.experiment import reset_experiment_agent
+    from app.features.agents.agents.rag_assistant import reset_rag_assistant_agent
+
+    reset_experiment_agent()
+    reset_rag_assistant_agent()
 
 
 def get_model_identifier() -> str:
@@ -67,6 +109,11 @@ def validate_api_key_for_model(model: str) -> None:
     """
     settings = get_settings()
     provider = model.split(":")[0]
+
+    if provider == "ollama":
+        # Local Ollama runs without an API key — nothing to validate or export.
+        logger.debug("agents.api_key_validated", provider=provider, model=model)
+        return
 
     if provider == "anthropic":
         if not settings.anthropic_api_key:

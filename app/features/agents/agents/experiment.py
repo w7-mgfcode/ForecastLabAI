@@ -19,6 +19,7 @@ from app.features.agents.agents.base import (
     SAFETY_INSTRUCTIONS,
     SYSTEM_PROMPT_HEADER,
     TOOL_USAGE_INSTRUCTIONS,
+    build_agent_model,
     get_model_identifier,
     get_model_settings,
     requires_approval,
@@ -74,8 +75,9 @@ def create_experiment_agent() -> Agent[AgentDeps, ExperimentReport]:
     Returns:
         Configured Agent instance with tools registered.
     """
-    model = get_model_identifier()
-    validate_api_key_for_model(model)  # Fail-fast validation
+    identifier = get_model_identifier()
+    validate_api_key_for_model(identifier)  # Fail-fast validation
+    model = build_agent_model(identifier)  # str for cloud, Model object for ollama
 
     agent: Agent[AgentDeps, ExperimentReport] = Agent(
         model=model,
@@ -351,3 +353,13 @@ def get_experiment_agent() -> Agent[AgentDeps, ExperimentReport]:
     if _experiment_agent is None:
         _experiment_agent = create_experiment_agent()
     return _experiment_agent
+
+
+def reset_experiment_agent() -> None:
+    """Drop the cached experiment agent so the next get_* call rebuilds it.
+
+    Used after a runtime model/key change so the new configuration takes
+    effect without a process restart.
+    """
+    global _experiment_agent
+    _experiment_agent = None

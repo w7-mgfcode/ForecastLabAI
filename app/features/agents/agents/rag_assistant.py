@@ -18,6 +18,7 @@ from app.core.config import get_settings
 from app.features.agents.agents.base import (
     SAFETY_INSTRUCTIONS,
     SYSTEM_PROMPT_HEADER,
+    build_agent_model,
     get_model_identifier,
     get_model_settings,
     validate_api_key_for_model,
@@ -75,8 +76,9 @@ def create_rag_assistant_agent() -> Agent[AgentDeps, RAGAnswer]:
     Returns:
         Configured Agent instance with tools registered.
     """
-    model = get_model_identifier()
-    validate_api_key_for_model(model)  # Fail-fast validation
+    identifier = get_model_identifier()
+    validate_api_key_for_model(identifier)  # Fail-fast validation
+    model = build_agent_model(identifier)  # str for cloud, Model object for ollama
 
     agent: Agent[AgentDeps, RAGAnswer] = Agent(
         model=model,
@@ -209,3 +211,13 @@ def get_rag_assistant_agent() -> Agent[AgentDeps, RAGAnswer]:
     if _rag_assistant_agent is None:
         _rag_assistant_agent = create_rag_assistant_agent()
     return _rag_assistant_agent
+
+
+def reset_rag_assistant_agent() -> None:
+    """Drop the cached RAG assistant agent so the next get_* call rebuilds it.
+
+    Used after a runtime model/key change so the new configuration takes
+    effect without a process restart.
+    """
+    global _rag_assistant_agent
+    _rag_assistant_agent = None
