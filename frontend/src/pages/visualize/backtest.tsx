@@ -2,12 +2,11 @@ import { useState } from 'react'
 import { useJob } from '@/hooks/use-jobs'
 import { BacktestFoldsChart, MetricsSummary } from '@/components/charts/backtest-folds-chart'
 import { EmptyState } from '@/components/common/error-display'
+import { JobPicker } from '@/components/common/job-picker'
 import { LoadingState } from '@/components/common/loading-state'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Search, LineChart } from 'lucide-react'
+import { LineChart } from 'lucide-react'
 
 interface BacktestResult {
   aggregated_metrics: {
@@ -31,23 +30,10 @@ interface BacktestResult {
 }
 
 export default function BacktestPage() {
-  const [jobId, setJobId] = useState('')
   const [searchJobId, setSearchJobId] = useState('')
   const [selectedMetric, setSelectedMetric] = useState<'mae' | 'smape' | 'wape' | 'bias'>('mae')
 
   const { data: job, isLoading, error } = useJob(searchJobId, !!searchJobId)
-
-  const handleSearch = () => {
-    if (jobId.trim()) {
-      setSearchJobId(jobId.trim())
-    }
-  }
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleSearch()
-    }
-  }
 
   // Extract backtest result from job
   const backtestResult = job?.result as BacktestResult | undefined
@@ -56,28 +42,21 @@ export default function BacktestPage() {
     <div className="space-y-6">
       <h1 className="text-3xl font-bold">Backtest Results</h1>
 
-      {/* Search by Job ID */}
+      {/* Job picker */}
       <Card>
         <CardHeader>
           <CardTitle>Load Backtest</CardTitle>
           <CardDescription>
-            Enter a completed backtest job ID to visualize the results
+            Pick a completed backtest job to visualize the results
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="flex gap-2">
-            <Input
-              placeholder="Enter job ID (e.g., abc12345...)"
-              value={jobId}
-              onChange={(e) => setJobId(e.target.value)}
-              onKeyDown={handleKeyDown}
-              className="max-w-md"
-            />
-            <Button onClick={handleSearch} disabled={!jobId.trim()}>
-              <Search className="h-4 w-4 mr-2" />
-              Load
-            </Button>
-          </div>
+          <JobPicker
+            jobType="backtest"
+            selectedJobId={searchJobId}
+            onSelect={setSearchJobId}
+            autoSelectLatest
+          />
         </CardContent>
       </Card>
 
@@ -214,7 +193,7 @@ export default function BacktestPage() {
       {!searchJobId && !isLoading && (
         <EmptyState
           title="No backtest loaded"
-          description="Enter a backtest job ID above to visualize the cross-validation results."
+          description="Pick a backtest job above to visualize the cross-validation results."
           icon={<LineChart className="h-12 w-12" />}
         />
       )}
