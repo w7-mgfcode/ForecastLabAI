@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic_ai import ModelRetry
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
+from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel
 
@@ -15,6 +16,7 @@ from app.core.config import get_settings
 from app.features.agents.agents.base import (
     TOOL_USAGE_INSTRUCTIONS,
     build_agent_model,
+    build_agent_model_with_fallback,
     get_agent_retries,
     recoverable,
     validate_api_key_for_model,
@@ -60,6 +62,44 @@ def test_validate_api_key_for_model_ollama_skips_key_check():
     settings.google_api_key = ""
     # Should return without raising even though no cloud key is configured.
     validate_api_key_for_model("ollama:llama3.1")
+
+
+def test_build_agent_model_with_fallback_wraps_primary_and_fallback():
+    """A distinct, key-backed fallback yields a FallbackModel(primary, fallback)."""
+    settings = get_settings()
+    settings.agent_default_model = "anthropic:claude-sonnet-4-5"
+    settings.agent_fallback_model = "openai:gpt-4o"
+    settings.anthropic_api_key = "test-anthropic-key"
+    settings.openai_api_key = "test-openai-key"
+
+    model = build_agent_model_with_fallback()
+
+    assert isinstance(model, FallbackModel)
+
+
+def test_build_agent_model_with_fallback_primary_only_when_fallback_key_missing():
+    """With no API key for the fallback provider, the primary is returned alone."""
+    settings = get_settings()
+    settings.agent_default_model = "anthropic:claude-sonnet-4-5"
+    settings.agent_fallback_model = "openai:gpt-4o"
+    settings.anthropic_api_key = "test-anthropic-key"
+    settings.openai_api_key = ""
+
+    model = build_agent_model_with_fallback()
+
+    assert model == "anthropic:claude-sonnet-4-5"
+
+
+def test_build_agent_model_with_fallback_primary_only_when_fallback_equals_primary():
+    """A fallback identical to the primary adds no resilience — primary returned alone."""
+    settings = get_settings()
+    settings.agent_default_model = "anthropic:claude-sonnet-4-5"
+    settings.agent_fallback_model = "anthropic:claude-sonnet-4-5"
+    settings.anthropic_api_key = "test-anthropic-key"
+
+    model = build_agent_model_with_fallback()
+
+    assert model == "anthropic:claude-sonnet-4-5"
 
 
 def test_prompts_only_reference_registered_tool_names() -> None:

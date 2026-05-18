@@ -19,13 +19,11 @@ from app.features.agents.agents.base import (
     SAFETY_INSTRUCTIONS,
     SYSTEM_PROMPT_HEADER,
     TOOL_USAGE_INSTRUCTIONS,
-    build_agent_model,
+    build_agent_model_with_fallback,
     get_agent_retries,
-    get_model_identifier,
     get_model_settings,
     recoverable,
     requires_approval,
-    validate_api_key_for_model,
 )
 from app.features.agents.deps import AgentDeps
 from app.features.agents.schemas import ExperimentReport
@@ -83,9 +81,9 @@ def create_experiment_agent() -> Agent[AgentDeps, ExperimentReport]:
     Returns:
         Configured Agent instance with tools registered.
     """
-    identifier = get_model_identifier()
-    validate_api_key_for_model(identifier)  # Fail-fast validation
-    model = build_agent_model(identifier)  # str for cloud, Model object for ollama
+    # Primary model, wrapped in a FallbackModel so a transient provider error
+    # (HTTP 5xx, rate limit) on the primary transparently retries the fallback.
+    model = build_agent_model_with_fallback()
 
     retries = get_agent_retries()
     agent: Agent[AgentDeps, ExperimentReport] = Agent(
