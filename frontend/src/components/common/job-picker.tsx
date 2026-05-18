@@ -14,8 +14,8 @@ import {
 import type { Job, JobType } from '@/types/api'
 
 interface JobPickerProps {
-  /** Job type to list — 'predict' for forecasts, 'backtest' for backtests. */
-  jobType: Extract<JobType, 'predict' | 'backtest'>
+  /** Job type to list — 'train', 'predict', or 'backtest'. */
+  jobType: Extract<JobType, 'train' | 'predict' | 'backtest'>
   /** Currently loaded job ID (empty string when nothing is loaded). */
   selectedJobId: string
   /** Called with a job ID when the user picks one or enters one manually. */
