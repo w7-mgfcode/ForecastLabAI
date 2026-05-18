@@ -39,7 +39,7 @@ At the start, the repo focuses on **governance, standards, and specifications** 
 
 - Root specs:
   - `CLAUDE.md` (AI coding guidance for this repo)
-  - `INITIAL-*.md` (feature-level initial specs)
+  - `PRPs/INITIAL/INITIAL-*.md` (feature-level initial specs)
 
 ---
 

@@ -1,0 +1,1920 @@
+# ForecastLabAI — Full Documentation
+
+> Portfolio-grade, single-host retail demand-forecasting system (Python 3.12 + FastAPI + SQLAlchemy 2.0 async + Pydantic v2; PostgreSQL 16 + pgvector; React 19 dashboard). This file inlines the complete content of the core documentation set for full-context LLM consumption. For a navigable index, see `llms.txt`.
+
+Generated from the core docs listed below. Each section is delimited by an `# ===== File: <path> =====` marker.
+
+
+# ===== File: README.md =====
+
+# ForecastLabAI
+
+Portfolio-grade end-to-end retail demand forecasting system.
+
+## Features
+
+- **Data Platform**: Multi-table mini warehouse (store/product/calendar + sales + price/promo/inventory signals)
+- **ForecastOps**: Model zoo with time-based backtesting (rolling/expanding splits) + metrics
+- **Serving Layer**: Typed FastAPI endpoints (Pydantic v2 validation)
+- **Model Registry**: Run configs, metrics, artifacts, and data windows for reproducibility
+- **Dashboard**: React 19 + Vite + Tailwind CSS 4 + shadcn/ui for data exploration and model management
+- **Explorer**: Click-through detail pages for stores, products, model runs, and jobs; run-vs-run comparison and SHA-256 artifact integrity verification; server-side sortable, CSV-exportable tables with column-visibility toggles and URL-shareable filter/sort/page state across every Explorer page; date-scoped KPIs, revenue bar/line charts, and cross-filtering on the Sales page
+- **Demand Planner**: `/visualize/demand` — every completed forecast rolled into a multi-SKU table (tomorrow / next-week / next-month demand + inventory requirement), with a lead-time selector and a single-SKU drill-in; the Forecast and Backtest pages run jobs in-page, export CSV, toggle a prediction-interval band, and cross-link to runs/jobs
+- **RAG Knowledge Base**: Postgres pgvector embeddings + evidence-grounded answers with citations
+- **Agentic Layer**: PydanticAI agents for autonomous experimentation and evidence-grounded Q&A with human-in-the-loop approval
+- **Data Seeder (The Forge)**: Reproducible synthetic data generator with realistic time-series patterns, scenario presets, and retail effects
+- **AI Models Console**: `/admin` → AI Models tab — swap the agent LLM (incl. fully-local Ollama), the RAG embedding model, and provider API keys at runtime; changes apply live with no restart
+- **Knowledge Page**: `/knowledge` — browse the indexed RAG corpus, run a live semantic search, and see the live system state (seeded data, model runs, deployment aliases) the agents draw on
+- **Agent Guide**: `/guide` — in-product reference for the two chat agents — their tools, the human-in-the-loop approval gate, live session limits, and copy-paste example prompts
+
+## Quick Start
+
+### Prerequisites
+
+- Python 3.12+
+- Node.js 20+ and pnpm (for frontend)
+- Docker and Docker Compose
+- uv (recommended) or pip
+
+### Setup
+
+1. **Clone and configure environment**
+
+```bash
+cp .env.example .env
+```
+
+2. **Start PostgreSQL + pgvector**
+
+```bash
+docker-compose up -d
+```
+
+3. **Install dependencies**
+
+```bash
+uv sync --extra dev
+# or: pip install -e ".[dev]"
+```
+
+4. **Run database migrations**
+
+```bash
+uv run alembic upgrade head
+```
+
+5. **Verify database connectivity**
+
+```bash
+uv run python scripts/check_db.py
+```
+
+6. **Start the API server**
+
+```bash
+uv run uvicorn app.main:app --reload --port 8123
+```
+
+7. **Verify the API is running**
+
+```bash
+curl http://localhost:8123/health
+# Response: {"status":"ok"}
+```
+
+### Try it: end-to-end demo
+
+Once steps 1-7 are green, run the full demo pipeline with a single command:
+
+```bash
+make demo
+```
+
+This drives `seed -> features -> train x 3 -> backtest -> register -> alias -> agent`
+against the running API in ~90-180 s and emits a final line like:
+
+```
+runs=3 winner=seasonal_naive alias=demo-production wall_clock=87s
+```
+
+See `scripts/run_demo.py` for the contract and `make help` for the
+related targets (`demo-quick` skips re-seeding; `demo-clean` wipes the DB first).
+
+**Try it in the browser:** with the backend and frontend running, open
+[`/showcase`](http://localhost:5173/showcase) and click **Run pipeline** — the
+same end-to-end flow streams live into the dashboard as status cards (no CLI).
+
+### Frontend Setup
+
+8. **Install frontend dependencies**
+
+```bash
+cd frontend
+pnpm install
+```
+
+9. **Start the development server**
+
+```bash
+pnpm dev
+# Frontend available at http://localhost:5173
+```
+
+The frontend proxies API requests to the backend at `http://localhost:8123`.
+
+## Development
+
+### Testing
+
+```bash
+# Run all tests
+uv run pytest -v
+
+# Run unit tests only (no database required)
+uv run pytest -v -m "not integration"
+
+# Run integration tests (requires PostgreSQL via docker-compose)
+docker-compose up -d  # Start database first
+uv run pytest -v -m integration
+
+# Run feature-specific tests
+uv run pytest app/features/backtesting/tests/ -v              # All backtesting tests
+uv run pytest app/features/forecasting/tests/ -v              # All forecasting tests
+uv run pytest app/features/backtesting/tests/ -v -m integration  # Backtesting integration tests
+```
+
+**Test Coverage:**
+- Unit tests: Fast, isolated tests that mock database dependencies
+- Integration tests: End-to-end tests against real PostgreSQL database
+  - Marked with `@pytest.mark.integration`
+  - Require `docker-compose up -d` before running
+
+### Backend Commands
+
+```bash
+# Type checking
+uv run mypy app/
+uv run pyright app/
+
+# Linting and formatting
+uv run ruff check . --fix
+uv run ruff format .
+
+# Database migrations
+uv run alembic revision --autogenerate -m "description"
+uv run alembic upgrade head
+```
+
+### Frontend Commands
+
+```bash
+cd frontend
+
+# Development server (http://localhost:5173)
+pnpm dev
+
+# Production build
+pnpm build
+
+# Linting
+pnpm lint
+
+# Type checking
+pnpm tsc --noEmit
+
+# Preview production build
+pnpm preview
+```
+
+### Project Structure
+
+```
+app/                    # FastAPI backend
+├── core/               # Config, database, logging, middleware, exceptions
+├── shared/
+│   ├── seeder/         # The Forge - randomized database seeder
+│   └── ...             # Pagination, timestamps, error schemas
+├── features/
+│   ├── data_platform/  # Store, product, calendar, sales tables
+│   ├── ingest/         # Batch upsert endpoints for sales data
+│   ├── featuresets/    # Time-safe feature engineering (lags, rolling, calendar)
+│   ├── forecasting/    # Model training, prediction, persistence
+│   ├── backtesting/    # Time-series CV, metrics, baseline comparisons
+│   ├── registry/       # Model run tracking, artifacts, deployment aliases
+│   ├── rag/            # pgvector embeddings, semantic search, citations
+│   ├── agents/         # PydanticAI agents (experiment, RAG assistant)
+│   ├── dimensions/     # Store/product discovery for LLM tool-calling
+│   ├── analytics/      # KPI aggregations and drilldown analysis
+│   └── jobs/           # Async-ready task orchestration
+└── main.py             # FastAPI entry point
+
+frontend/               # React dashboard (Vite + shadcn/ui)
+├── src/
+│   ├── components/ui/  # shadcn/ui components (26 components)
+│   ├── lib/            # Utilities (cn helper)
+│   ├── App.tsx         # Main app component
+│   └── main.tsx        # Entry point
+├── components.json     # shadcn/ui configuration
+├── vite.config.ts      # Vite + Tailwind + path aliases
+└── package.json        # Dependencies
+
+tests/                  # Test fixtures and helpers
+alembic/                # Database migrations
+examples/
+├── api/                # HTTP client examples
+├── schema/             # Table documentation
+├── queries/            # Example SQL queries
+├── models/             # Baseline model examples (naive, seasonal_naive, moving_average)
+├── backtest/           # Backtesting examples (run_backtest, inspect_splits, metrics_demo)
+├── seed/               # Data seeder configs and examples (YAML scenarios)
+├── compute_features_demo.py  # Feature engineering demo
+└── registry_demo.py    # Model registry workflow demo
+scripts/                # Utility scripts
+```
+
+### Database Schema
+
+The data platform includes 7 tables for retail demand forecasting:
+
+**Dimensions**: `store`, `product`, `calendar`
+**Facts**: `sales_daily`, `price_history`, `promotion`, `inventory_snapshot_daily`
+
+See [examples/schema/README.md](examples/schema/README.md) for detailed schema documentation.
+
+## API Endpoints
+
+### Health Check
+
+- `GET /health` - Returns `{"status": "ok"}` when the API is running
+
+### Ingest
+
+- `POST /ingest/sales-daily` - Batch upsert daily sales records
+
+**Example Request:**
+```bash
+curl -X POST http://localhost:8123/ingest/sales-daily \
+  -H "Content-Type: application/json" \
+  -d '{
+    "records": [
+      {
+        "date": "2024-01-15",
+        "store_code": "S001",
+        "sku": "SKU-001",
+        "quantity": 10,
+        "unit_price": 9.99,
+        "total_amount": 99.90
+      }
+    ]
+  }'
+```
+
+**Features:**
+- Natural key resolution (`store_code` -> `store_id`, `sku` -> `product_id`)
+- Idempotent upsert using PostgreSQL `ON CONFLICT DO UPDATE`
+- Partial success handling (valid rows processed, invalid rows returned with errors)
+- Error codes: `UNKNOWN_STORE`, `UNKNOWN_PRODUCT`, `UNKNOWN_DATE`
+
+See [examples/api/ingest_sales_daily.http](examples/api/ingest_sales_daily.http) for more examples.
+
+### Feature Engineering
+
+- `POST /featuresets/compute` - Compute time-safe features for a series
+- `POST /featuresets/preview` - Preview features with sample rows
+
+**Example Request:**
+```bash
+curl -X POST http://localhost:8123/featuresets/compute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "store_id": 1,
+    "product_id": 1,
+    "cutoff_date": "2024-01-31",
+    "lookback_days": 365,
+    "config": {
+      "name": "retail_forecast_v1",
+      "lag_config": {"lags": [1, 7, 14, 28]},
+      "rolling_config": {"windows": [7, 14], "aggregations": ["mean", "std"]},
+      "calendar_config": {"include_day_of_week": true, "use_cyclical_encoding": true}
+    }
+  }'
+```
+
+**Features:**
+- **Time-safe computation**: All features use only data up to cutoff_date (no future leakage)
+- **Lag features**: Past values at specified lag periods (shift with positive values only)
+- **Rolling features**: Rolling statistics with shift(1) to exclude current observation
+- **Calendar features**: Cyclical encoding (sin/cos) for day of week, month
+- **Group isolation**: Entity-aware groupby prevents cross-series leakage
+
+See [examples/compute_features_demo.py](examples/compute_features_demo.py) for a complete demo.
+
+### Forecasting
+
+- `POST /forecasting/train` - Train a forecasting model for a store/product series
+- `POST /forecasting/predict` - Generate forecasts using a trained model
+
+**Example Training Request:**
+```bash
+curl -X POST http://localhost:8123/forecasting/train \
+  -H "Content-Type: application/json" \
+  -d '{
+    "store_id": 1,
+    "product_id": 1,
+    "train_start_date": "2024-01-01",
+    "train_end_date": "2024-06-30",
+    "config": {
+      "model_type": "seasonal_naive",
+      "season_length": 7
+    }
+  }'
+```
+
+**Example Prediction Request:**
+```bash
+curl -X POST http://localhost:8123/forecasting/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "store_id": 1,
+    "product_id": 1,
+    "horizon": 14,
+    "model_path": "./artifacts/models/store_1_product_1_seasonal_naive_20240630.pkl"
+  }'
+```
+
+**Supported Model Types:**
+- `naive` - Last observed value (simple baseline)
+- `seasonal_naive` - Same period from previous season
+- `moving_average` - Mean of last N observations
+- `lightgbm` - LightGBM regressor (requires `forecast_enable_lightgbm=True`)
+
+See [examples/models/](examples/models/) for baseline model examples.
+
+### Backtesting
+
+- `POST /backtesting/run` - Run time-series cross-validation backtest
+
+**Example Request:**
+```bash
+curl -X POST http://localhost:8123/backtesting/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "store_id": 1,
+    "product_id": 1,
+    "start_date": "2024-01-01",
+    "end_date": "2024-06-30",
+    "config": {
+      "split_config": {
+        "strategy": "expanding",
+        "n_splits": 5,
+        "min_train_size": 30,
+        "gap": 0,
+        "horizon": 14
+      },
+      "model_config_main": {
+        "model_type": "naive"
+      },
+      "include_baselines": true,
+      "store_fold_details": true
+    }
+  }'
+```
+
+**Split Strategies:**
+- `expanding` - Training window grows with each fold (sklearn-like TimeSeriesSplit)
+- `sliding` - Fixed-size training window slides forward
+
+**Gap Parameter:**
+- Simulates operational data latency between training and test periods
+- `gap=7` means 7 days between train end and test start
+
+**Metrics Calculated:**
+- MAE: Mean Absolute Error
+- sMAPE: Symmetric Mean Absolute Percentage Error (0-200 scale)
+- WAPE: Weighted Absolute Percentage Error
+- Bias: Forecast bias (positive = under-forecast)
+- Stability Index: Coefficient of variation across folds
+
+**Baseline Comparisons:**
+When `include_baselines=true`, automatically compares against naive and seasonal_naive models.
+
+See [examples/backtest/](examples/backtest/) for usage examples.
+
+### Model Registry
+
+- `POST /registry/runs` - Create a new model run
+- `GET /registry/runs` - List runs with filtering and pagination
+- `GET /registry/runs/{run_id}` - Get run details
+- `PATCH /registry/runs/{run_id}` - Update run (status, metrics, artifacts)
+- `GET /registry/runs/{run_id}/verify` - Verify artifact integrity
+- `POST /registry/aliases` - Create or update deployment alias
+- `GET /registry/aliases` - List all aliases
+- `GET /registry/aliases/{alias_name}` - Get alias details
+- `DELETE /registry/aliases/{alias_name}` - Delete an alias
+- `GET /registry/compare/{run_id_a}/{run_id_b}` - Compare two runs
+
+**Example Create Run Request:**
+```bash
+curl -X POST http://localhost:8123/registry/runs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_type": "seasonal_naive",
+    "model_config": {"season_length": 7},
+    "data_window_start": "2024-01-01",
+    "data_window_end": "2024-03-31",
+    "store_id": 1,
+    "product_id": 1
+  }'
+```
+
+**Run Lifecycle:**
+- `pending` → `running` → `success` | `failed` → `archived`
+- Aliases can only point to runs with `success` status
+
+**Features:**
+- JSONB storage for model_config, metrics, runtime_info
+- SHA-256 artifact integrity verification
+- Duplicate detection (configurable: allow/deny/detect)
+- Runtime environment capture (Python, numpy, pandas versions)
+- Agent context tracking for autonomous workflows
+
+See [examples/registry_demo.py](examples/registry_demo.py) for a complete workflow demo.
+
+### Dimensions (Discovery)
+
+- `GET /dimensions/stores` - List stores with pagination and filtering
+- `GET /dimensions/stores/{store_id}` - Get store details by ID
+- `GET /dimensions/products` - List products with pagination and filtering
+- `GET /dimensions/products/{product_id}` - Get product details by ID
+
+**Example Request:**
+```bash
+# List stores with filtering
+curl "http://localhost:8123/dimensions/stores?region=North&page=1&page_size=20"
+
+# Search for products
+curl "http://localhost:8123/dimensions/products?search=Cola&category=Beverage"
+```
+
+**Purpose:** Resolve store/product metadata to IDs before calling forecasting endpoints. Optimized for LLM agent tool-calling with rich Field descriptions.
+
+**Features:**
+- 1-indexed pagination (page=1 is first page)
+- Case-insensitive search in code/sku and name fields
+- Filter by region, store_type, category, or brand
+- Optional `sort_by` / `sort_order` on the store and product lists (allow-listed columns; unknown values fall back to the default order)
+
+### Analytics
+
+- `GET /analytics/kpis` - Compute aggregated KPIs for a date range
+- `GET /analytics/drilldowns` - Drill into data by dimension (store, product, category, region, date)
+- `GET /analytics/timeseries` - Period-bucketed sales series (day/week/month/quarter) for revenue-over-time charts
+
+**Example KPI Request:**
+```bash
+curl "http://localhost:8123/analytics/kpis?start_date=2024-01-01&end_date=2024-01-31&store_id=1"
+```
+
+**Example Drilldown Request:**
+```bash
+curl "http://localhost:8123/analytics/drilldowns?dimension=store&start_date=2024-01-01&end_date=2024-01-31&max_items=10"
+```
+
+**Metrics Computed:**
+- `total_revenue`: Sum of sales amount
+- `total_units`: Sum of quantity sold
+- `total_transactions`: Count of unique sales records
+- `avg_unit_price`: Revenue / units
+- `avg_basket_value`: Revenue / transactions
+
+**Drilldown Dimensions:**
+- `store` - Group by store (returns code and ID)
+- `product` - Group by product (returns SKU and ID)
+- `category` - Group by product category
+- `region` - Group by store region
+- `date` - Daily breakdown
+
+### Jobs (Task Orchestration)
+
+- `POST /jobs` - Create and execute a job (train, predict, backtest)
+- `GET /jobs` - List jobs with filtering and pagination
+- `GET /jobs/{job_id}` - Get job status and result
+- `DELETE /jobs/{job_id}` - Cancel a pending job
+
+**Example Train Job:**
+```bash
+curl -X POST http://localhost:8123/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_type": "train",
+    "params": {
+      "model_type": "seasonal_naive",
+      "store_id": 1,
+      "product_id": 1,
+      "start_date": "2024-01-01",
+      "end_date": "2024-06-30",
+      "season_length": 7
+    }
+  }'
+```
+
+**Example Backtest Job:**
+```bash
+curl -X POST http://localhost:8123/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_type": "backtest",
+    "params": {
+      "model_type": "naive",
+      "store_id": 1,
+      "product_id": 1,
+      "start_date": "2024-01-01",
+      "end_date": "2024-06-30",
+      "n_splits": 5,
+      "test_size": 14
+    }
+  }'
+```
+
+**Job Types:**
+- `train` - Train a forecasting model (returns model_path)
+- `predict` - Generate predictions using a trained model
+- `backtest` - Run time-series cross-validation
+
+**Job Lifecycle:**
+- `pending` → `running` → `completed` | `failed`
+- `pending` → `cancelled` (via DELETE)
+
+**Features:**
+- Jobs execute synchronously but use async-ready API contracts (202 Accepted)
+- JSONB storage for flexible params and results
+- Links to model_run for train/backtest jobs
+
+### RAG Knowledge Base
+
+- `POST /rag/index` - Index a document into the knowledge base
+- `POST /rag/retrieve` - Semantic search across indexed documents
+- `GET /rag/sources` - List indexed sources
+- `DELETE /rag/sources/{source_id}` - Delete a source and its chunks
+
+**Embedding Providers:**
+
+The RAG system supports two embedding providers:
+
+1. **OpenAI** (default):
+```bash
+RAG_EMBEDDING_PROVIDER=openai
+OPENAI_API_KEY=sk-your-key
+RAG_EMBEDDING_MODEL=text-embedding-3-small
+RAG_EMBEDDING_DIMENSION=1536
+```
+
+2. **Ollama** (local/LAN):
+```bash
+RAG_EMBEDDING_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+RAG_EMBEDDING_DIMENSION=768
+```
+
+**Example Index Request:**
+```bash
+curl -X POST http://localhost:8123/rag/index \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_type": "markdown",
+    "source_path": "docs/ARCHITECTURE.md"
+  }'
+```
+
+**Example Retrieve Request:**
+```bash
+curl -X POST http://localhost:8123/rag/retrieve \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "How does backtesting work?",
+    "top_k": 5
+  }'
+```
+
+**Features:**
+- pgvector for HNSW similarity search
+- Idempotent indexing via content hash
+- Markdown and OpenAPI chunking strategies
+- Configurable embedding dimensions
+
+### Agentic Layer
+
+- `POST /agents/sessions` - Create a new agent session
+- `GET /agents/sessions/{session_id}` - Get session status and details
+- `POST /agents/sessions/{session_id}/chat` - Send a message to the agent
+- `POST /agents/sessions/{session_id}/approve` - Approve or reject a pending action
+- `DELETE /agents/sessions/{session_id}` - Close a session
+- `WS /agents/stream` - WebSocket streaming endpoint for real-time responses
+
+**Agent Types:**
+
+1. **Experiment Orchestrator** (`agent_type: "experiment"`):
+   - Autonomous model experimentation workflow
+   - Runs backtests and compares configurations
+   - Recommends best model with human-in-the-loop approval
+
+2. **RAG Assistant** (`agent_type: "rag_assistant"`):
+   - Evidence-grounded documentation Q&A
+   - Citation-backed responses with confidence scoring
+   - "Insufficient evidence" detection to prevent hallucination
+
+**Example Create Session Request:**
+```bash
+curl -X POST http://localhost:8123/agents/sessions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_type": "rag_assistant",
+    "initial_context": null
+  }'
+```
+
+**Example Chat Request:**
+```bash
+curl -X POST http://localhost:8123/agents/sessions/{session_id}/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "How does backtesting prevent data leakage?"
+  }'
+```
+
+**Features:**
+- PydanticAI v1.48.0 for structured, type-safe agent orchestration
+- Session management with PostgreSQL JSONB message history
+- Human-in-the-loop approval for sensitive actions (create_alias, archive_run)
+- WebSocket streaming for real-time token delivery
+- Token usage tracking and tool call auditing
+
+**Configuration:**
+```bash
+# Agent LLM Configuration
+# Model format: "provider:model-name" (e.g., anthropic:claude-sonnet-4-5)
+AGENT_DEFAULT_MODEL=anthropic:claude-sonnet-4-5
+AGENT_FALLBACK_MODEL=openai:gpt-4o
+AGENT_TEMPERATURE=0.1
+AGENT_MAX_TOKENS=4096
+
+# API Keys (set based on your chosen provider)
+ANTHROPIC_API_KEY=sk-ant-your-key
+# OPENAI_API_KEY=sk-your-key
+# GOOGLE_API_KEY=your-google-api-key  # For Gemini models
+
+# Execution Configuration
+AGENT_MAX_TOOL_CALLS=10
+AGENT_TIMEOUT_SECONDS=120
+AGENT_RETRY_ATTEMPTS=3
+AGENT_RETRY_DELAY_SECONDS=1.0
+
+# Session Configuration
+AGENT_SESSION_TTL_MINUTES=120
+AGENT_MAX_SESSIONS_PER_USER=5
+
+# Human-in-the-loop Configuration (JSON array format)
+AGENT_REQUIRE_APPROVAL=["create_alias","archive_run"]
+AGENT_APPROVAL_TIMEOUT_MINUTES=60
+
+# Streaming Configuration
+AGENT_ENABLE_STREAMING=true
+```
+
+### Data Seeder (The Forge)
+
+Generate reproducible synthetic test data with realistic time-series patterns.
+
+**CLI Commands:**
+```bash
+# Generate complete dataset
+uv run python scripts/seed_random.py --full-new --seed 42 --confirm
+
+# Delete all data
+uv run python scripts/seed_random.py --delete --confirm
+
+# Append data for new date range
+uv run python scripts/seed_random.py --append --start-date 2025-01-01 --end-date 2025-03-31
+
+# Run pre-built scenario
+uv run python scripts/seed_random.py --full-new --scenario holiday_rush --confirm
+
+# Show current data counts
+uv run python scripts/seed_random.py --status
+
+# Verify data integrity
+uv run python scripts/seed_random.py --verify
+```
+
+**Scenario Presets:**
+
+| Scenario | Description |
+|----------|-------------|
+| `retail_standard` | Normal retail patterns with mild seasonality |
+| `holiday_rush` | Q4 surge with Black Friday/Christmas peaks |
+| `high_variance` | Noisy data with anomalies for robustness testing |
+| `stockout_heavy` | Frequent stockouts (25% probability) |
+| `new_launches` | 100 products with launch ramp patterns |
+| `sparse` | 50% missing combinations, random gaps |
+
+**Features:**
+- Deterministic generation with configurable seeds for reproducibility
+- Realistic time-series patterns (trend, weekly/monthly seasonality, noise, anomalies)
+- Retail effects (promotions, stockouts, price elasticity)
+- YAML configuration support for custom scenarios
+- Safe deletion with scope control (all/facts/dimensions)
+- Dry-run mode for previewing changes
+
+See [examples/seed/README.md](examples/seed/README.md) for detailed configuration options.
+
+### Demo Pipeline
+
+Drives the end-to-end pipeline (`seed → features → train ×3 → backtest → register → alias → agent`) in-process and powers the dashboard Showcase page.
+
+- `POST /demo/run` - Run the full pipeline in-process; returns a `DemoRunResult`. Returns `409 application/problem+json` if a run is already active.
+- `WS /demo/stream` - Stream one `StepEvent` per pipeline step for the live Showcase page.
+
+Only one demo pipeline runs at a time (module-level lock). See [docs/_base/API_CONTRACTS.md](docs/_base/API_CONTRACTS.md) for the full `StepEvent` schema, and the [`/showcase`](http://localhost:5173/showcase) page for the browser view.
+
+### Error Responses (RFC 7807)
+
+All error responses follow RFC 7807 Problem Details format with `Content-Type: application/problem+json`:
+
+```json
+{
+  "type": "/errors/not-found",
+  "title": "Not Found",
+  "status": 404,
+  "detail": "Store not found: 999. Use GET /dimensions/stores to list available stores.",
+  "instance": "/requests/abc123",
+  "code": "NOT_FOUND",
+  "request_id": "abc123"
+}
+```
+
+**Error Types:**
+- `/errors/validation` - Request validation failed (422)
+- `/errors/not-found` - Resource not found (404)
+- `/errors/conflict` - Resource conflict (409)
+- `/errors/database` - Database error (500)
+
+## API Documentation
+
+Once the backend is running:
+
+- Swagger UI: http://localhost:8123/docs
+- ReDoc: http://localhost:8123/redoc
+
+## Frontend Stack
+
+The dashboard is built with modern React tooling:
+
+| Technology | Version | Purpose |
+|------------|---------|---------|
+| React | 19 | UI framework |
+| Vite | 7 | Build tool and dev server |
+| TypeScript | 5.9 | Type safety |
+| Tailwind CSS | 4 | Utility-first styling |
+| shadcn/ui | New York | Component library (26 components) |
+| TanStack Query | 5 | Server state management |
+| TanStack Table | 8 | Data tables |
+| React Router | 7 | Client-side routing |
+| Recharts | 2 | Charts and visualizations |
+
+**Development URLs:**
+- Frontend: http://localhost:5173
+- Backend API: http://localhost:8123
+- API Docs: http://localhost:8123/docs
+
+## License
+
+MIT
+
+
+# ===== File: AGENTS.md =====
+
+# AGENTS.md
+
+> Universal agent brief for **ForecastLabAI** — the shared, cross-tool source of truth read by any AI coding agent (Claude Code, Cursor, GitHub Copilot, Gemini CLI, Aider, Zed, …). Claude Code additionally reads `CLAUDE.md`, which imports this file; do not duplicate this content there.
+
+## Project Overview
+
+ForecastLabAI is a portfolio-grade, **single-host retail demand-forecasting** system that exercises the full lifecycle: data platform → ingest → time-safe feature engineering → forecasting → backtesting → model registry → RAG → agentic layer → React dashboard. It is pre-1.0, runs end-to-end on one machine via `docker compose up`, and ships working code in every vertical slice — not specs.
+
+## Tech Stack
+
+- **Backend** — Python 3.12: FastAPI + SQLAlchemy 2.0 async + Pydantic v2; structlog; Alembic migrations.
+- **Frontend** — TypeScript 5.9 + React 19: Vite 7, Tailwind 4, shadcn/ui (New York), TanStack Query + Table, React Router 7, Recharts.
+- **Database** — PostgreSQL 16 + pgvector (host `:5433` → container `:5432`).
+- **ML** — pandas, numpy, scikit-learn, joblib, LightGBM (opt-in).
+- **Agents / RAG** — PydanticAI, anthropic, openai, tiktoken; Ollama optional for local embeddings.
+- **Package managers** — `uv` (Python), `pnpm` via corepack (JS).
+- **CI/CD** — GitHub Actions + release-please (SemVer; pre-1.0 `feat:` → PATCH bumps).
+
+## Setup
+
+```bash
+cp .env.example .env                           # set OPENAI_API_KEY / ANTHROPIC_API_KEY
+docker compose up -d                           # Postgres+pgvector on :5433
+uv sync --extra dev                            # backend deps (Python 3.12)
+uv run alembic upgrade head                    # apply migrations
+uv run uvicorn app.main:app --reload --port 8123
+cd frontend && corepack enable pnpm && pnpm install && pnpm dev   # UI on :5173
+```
+
+## Build & Test Commands
+
+Use these exact strings.
+
+```bash
+# Backend tests
+uv run pytest -v -m "not integration"          # unit, no DB
+uv run pytest -v -m integration                # integration, requires docker compose up
+
+# Frontend
+cd frontend && pnpm tsc --noEmit && pnpm lint && pnpm test --run
+
+# End-to-end demo (seed → features → train ×3 → backtest → register → alias → agent)
+make demo
+```
+
+## Validation Gates
+
+Run before every commit. All five gate merge in CI — never skip them.
+
+```bash
+uv run ruff check . && uv run ruff format --check .
+uv run mypy app/ && uv run pyright app/        # both --strict
+uv run pytest -v -m "not integration"
+```
+
+## Architecture & Conventions
+
+- **Vertical slices** — every domain lives under `app/features/<slice>/{models,schemas,service,routes,tests}.py`. A slice may NOT import from another slice; cross-cutting code goes through `app/core/` or `app/shared/`. Routers are wired in `app/main.py`.
+- **Errors** — RFC 7807 `application/problem+json` via `app/core/problem_details.py`. No bare `HTTPException` with raw strings; no ad-hoc error shapes.
+- **Validation** — Pydantic v2 at every boundary (HTTP, agent tools, seeder config). ORM uses `Mapped[]` + `mapped_column()` + async sessions.
+- **Config** — read settings via `app/core/config.get_settings()`; never touch `os.environ` in feature code. Use `pathlib.Path`, never `os.path`.
+- **Time-safety** — feature engineering must prevent leakage (`shift(lag)`, `shift(1).rolling()`, entity-aware `groupby`). `app/features/featuresets/tests/test_leakage.py` is the spec.
+- **Migrations** — every schema change ships an Alembic migration; migrations are forward-only once merged.
+- **UI** — frontend work goes through the design skills referenced in `.claude/rules/ui-design.md`; never hand-roll UI when a skill applies.
+
+## Testing Requirements
+
+- Every new module, public function, API endpoint, SQLAlchemy model, and Alembic migration ships with a matching test; every bug fix ships a regression test that would have caught it.
+- Unit tests mock external services (OpenAI / Anthropic / Ollama). Integration tests are marked `@pytest.mark.integration` and run against the real docker-compose Postgres.
+- New endpoints need a route test covering the 2xx happy path plus at least one error path.
+
+## Safety
+
+**Hard rules — never violate:**
+
+- Never commit `.env` or embed secrets in URLs, code, or logs — only `.env.example` is tracked; log key names, never values.
+- Never build SQL with string concatenation — only SQLAlchemy 2.0 parameter binding.
+- Never use `eval` / `exec` / `pickle.loads` on untrusted input, `subprocess(shell=True, …)` with user input, or `verify=False` on httpx / openai clients.
+- Never skip `ruff`, `mypy --strict`, or `pyright --strict` — all gate merge.
+- Never edit a merged Alembic migration — migrations are forward-only; add a new one.
+- Never weaken `app/features/featuresets/tests/test_leakage.py` — it is the leakage spec.
+- Never mock the database in integration tests — they must run against real docker-compose Postgres.
+- Never `git push --force` on `dev` or `main`; never add an AI co-author or "Generated with" commit trailer.
+- Never add a managed-cloud SDK (AWS/GCP/Azure) to the `app/` core path — it violates the single-host vision.
+
+**Stop and ask before:**
+
+- Cutting `dev` → `main`, or pushing any tag (release-please owns tagging).
+- Bumping pydantic-ai / FastAPI / SQLAlchemy major versions.
+- Widening an agent's mutation surface without adding the tool name to `agent_require_approval`.
+
+Agent-tool and Pydantic strict-mode specifics: see `docs/_base/SECURITY.md`.
+
+## Git & PR Conventions
+
+- **Branches** — `<type>/<kebab-slug>` off `dev` (`hotfix/*` off `main`). One branch per issue. See `.claude/rules/branch-naming.md`.
+- **Commits** — `type(scope): description (#issue)`. Type ∈ {feat, fix, docs, refactor, test, chore, release}; scope from the allow-list in `.claude/rules/commit-format.md`; lowercase description, no trailing period; every commit references an open GitHub issue. No AI co-author / "Generated with" trailer (a hook enforces this).
+- **Flow** — branch off `dev` → implement → run the validation gates → PR into `dev` → CI green → merge. Release: PR `dev` → `main`; release-please opens a Release PR; merging it tags `vX.Y.Z`.
+
+## Deep-Dive Docs
+
+Load only what the current task touches.
+
+- Developer guide & stack — `docs/_base/DEV_GUIDE.md`
+- Architecture & boundaries — `docs/_base/ARCHITECTURE.md`
+- API & WebSocket contracts — `docs/_base/API_CONTRACTS.md`
+- Operational runbooks — `docs/_base/RUNBOOKS.md`
+- Security & compliance — `docs/_base/SECURITY.md`
+- Rules & constraints — `docs/_base/RULES.md`
+- Domain model & glossary — `docs/_base/DOMAIN_MODEL.md`
+- Service & dependency map — `docs/_base/REPO_MAP_INDEX.md`
+- CI/CD pipeline contract — `docs/_base/PIPELINE_CONTRACT.md`
+- Project rules — `.claude/rules/*.md`
+
+
+# ===== File: CLAUDE.md =====
+
+# ForecastLabAI — Claude Code Operating Index
+
+> **Read `@AGENTS.md` first.** It is the shared cross-tool brief — stack, setup, build/test
+> commands, validation gates, architecture, conventions, safety, and git flow. This file adds
+> only Claude-specific operating context on top; it does not repeat AGENTS.md content.
+
+@AGENTS.md
+
+## Deep-Dive References
+
+Claude pulls these in on demand — load only what the task touches.
+
+- Developer guide & tech stack:  @docs/_base/DEV_GUIDE.md
+- Architecture & boundaries:     @docs/_base/ARCHITECTURE.md
+- API contracts & interfaces:    @docs/_base/API_CONTRACTS.md
+- Operational runbooks:          @docs/_base/RUNBOOKS.md
+- Security & compliance:         @docs/_base/SECURITY.md
+- Rules & constraints:           @docs/_base/RULES.md
+- Domain model & glossary:       @docs/_base/DOMAIN_MODEL.md
+- Service & dependency map:      @docs/_base/REPO_MAP_INDEX.md
+- Pipeline contract (CI/CD):     @docs/_base/PIPELINE_CONTRACT.md
+
+> Project rules are enforced via `.claude/rules/` (commit-format, branch-naming,
+> security-patterns, product-vision, test-requirements, ui-design, versioning,
+> output-formatting). Read those first — they are authoritative on detail.
+
+## Safety
+
+Full constraint matrix: `docs/_base/RULES.md`. Hard rules and stop-and-ask gates: `@AGENTS.md`
+§ Safety. When a change is ambiguous or hard to reverse, surface the concern before acting.
+
+## Verification
+
+```bash
+uv run ruff check . && uv run mypy app/ && uv run pyright app/ && uv run pytest -v -m "not integration"
+gh issue view <N> --json state                # confirm the referenced issue exists
+wc -l CLAUDE.md                                # must stay ≤ 150
+```
+
+## Workflow
+
+1. Open or pick a GitHub issue (`gh issue list`); branch off `dev` per `branch-naming.md`.
+2. Implement inside the matching `app/features/<slice>/` (or a new slice with a PRP).
+3. Run the validation gates (`@AGENTS.md` § Validation Gates) locally before pushing.
+4. (DB/UI touched) Run integration tests + frontend type-check + dogfood via the webapp-testing skill.
+5. Commit `type(scope): description (#issue)`; push; open a PR into `dev`; merge once CI is green.
+6. Release: PR `dev` → `main`; merge the release-please Release PR to tag `vX.Y.Z`.
+
+## Learnings
+
+- HEURISTIC_MODE generated `docs/_base/` (no `docs/_kB/repo-map/` KB). Run `mapping-repo-context`
+  to upgrade fidelity; `[ASSUMPTION]`-marked sections in `docs/_base/` need verification.
+- `.claude/` is gitignored — skills, rules, and hooks are local-only and never appear in commits or PRs.
+- AGENTS.md is the universal agent brief; CLAUDE.md is the Claude-specific layer that imports it.
+  Keep shared content in AGENTS.md only — never duplicate it here.
+
+
+# ===== File: docs/_base/DEV_GUIDE.md =====
+
+# ForecastLabAI Developer Guide
+> HUMAN-MAINTAINED — do not overwrite via the generating-claudemd skill.
+
+## What This Project Is
+
+ForecastLabAI is a portfolio-grade, single-host retail demand forecasting system that exercises the full lifecycle: data platform → ingest → time-safe features → forecasting → backtesting → model registry → RAG → agentic layer → React dashboard. It is pre-1.0, released on a release-please-driven SemVer train, and runs end-to-end on a developer laptop with nothing but `docker-compose up`, Python 3.12, and Node.
+
+## Tech Stack
+
+See `CLAUDE.md` Stack section and `pyproject.toml` for the authoritative dependency list. The stack favours a single-host, dependency-light footprint: FastAPI + SQLAlchemy 2.0 async + Pydantic v2 for a strictly-typed backend, PostgreSQL 16 with pgvector so the vector store needs no separate service (`docs/ADR/ADR-0003`), and a Vite SPA rather than a server-rendered frontend (`docs/ADR/ADR-0002`). No managed-cloud SDK sits in the core path — that is a deliberate constraint from `.claude/rules/product-vision.md`.
+
+## Local Development Setup
+
+Authoritative quick-start lives in `README.md`. The short version:
+
+```bash
+cp .env.example .env                          # set your OPENAI_API_KEY / ANTHROPIC_API_KEY
+docker compose up -d                          # Postgres+pgvector on :5433
+uv sync --extra dev                            # Python 3.12 deps
+uv run alembic upgrade head                    # migrations
+uv run uvicorn app.main:app --reload --port 8123
+cd frontend && corepack enable pnpm && pnpm install && pnpm dev
+```
+
+Host-specific notes:
+
+- **WSL:** `.venv/bin/*` and `frontend/node_modules/.bin/*` binaries can become corrupt `IntxLNK` blobs after a Windows file-server bridge event — the symptom is `cannot execute binary file`. Rebuild with `rm -rf .venv && uv sync --extra dev` and `rm -rf frontend/node_modules && cd frontend && pnpm install && pnpm rebuild esbuild`.
+- **pnpm 11:** `pnpm dev` can stall on the `depsStatusCheck` preflight reinstalling esbuild. Bypass it with `./node_modules/.bin/vite --host 0.0.0.0`, or add `pnpm.onlyBuiltDependencies: ["esbuild"]` to `frontend/package.json`.
+- **Frontend API base:** `frontend/.env` `VITE_API_BASE_URL` must resolve from the browser's host — point it at `http://localhost:8123` for local work.
+
+See `docs/_base/RUNBOOKS.md` → "Common Incidents" for the full list.
+
+## Running Tests
+
+```bash
+uv run pytest -v -m "not integration"          # unit (fast, no DB)
+docker compose up -d
+uv run pytest -v -m integration                # integration (real Postgres)
+cd frontend && pnpm tsc --noEmit && pnpm lint && pnpm test --run
+```
+
+There is no enforced coverage percentage; the gate is `.claude/rules/test-requirements.md`. Every new module, public function, API endpoint, SQLAlchemy model, and Alembic migration ships with a matching test, and every bug fix ships a regression test that would have caught it. A new vertical slice gets its own `app/features/<slice>/tests/` directory with a `conftest.py` for fixtures and `test_<module>.py` files — unit tests mock external services (OpenAI, Anthropic, Ollama), integration tests are marked `@pytest.mark.integration` and run against the real `docker-compose` Postgres. Never mock the database in an integration test.
+
+## Project Conventions
+
+Authoritative rules live in `.claude/rules/` and are surfaced in `docs/_base/RULES.md`. The non-obvious gotchas worth highlighting here:
+
+- Vertical-slice imports: `app/features/X` may NOT import from `app/features/Y`. Cross-cutting code goes to `app/shared/` or `app/core/`.
+- The seeder is the only sanctioned bulk-mutation path on the DB.
+- All API errors use the RFC 7807 `application/problem+json` envelope via `app/core/problem_details.py` — never raise a bare `HTTPException` with a raw string.
+- Time-safety is load-bearing: `app/features/featuresets/tests/test_leakage.py` is the spec and must never be weakened to make a feature pass.
+- Alembic migrations are forward-only once merged — fix forward with a new migration, never edit a merged one.
+- Read settings via `app/core/config.get_settings()`; never touch `os.environ` directly in feature code.
+- Agent tools that mutate state must be listed in `agent_require_approval` so the human-in-the-loop gate fires.
+- Commits follow `type(scope): description (#issue)` and reference an open issue; branches are `<type>/<kebab-slug>` off `dev`.
+
+## Why We Chose These Technologies
+
+- ADRs live in `docs/ADR/` — see `docs/ADR/ADR-INDEX.md`.
+- **pgvector over a managed vector DB** — keeps the system single-host; one `docker-compose up` brings up Postgres and the vector store together (`docs/ADR/ADR-0003`).
+- **Vite SPA over server-side rendering** — keeps the backend a pure JSON + WebSocket API with no rendering concerns, so the frontend can be developed and deployed independently (`docs/ADR/ADR-0002`).
+- **PydanticAI for the agent layer** — its typed tool-call contracts fit the repo's strict-typing invariant, so LLM tool inputs are validated the same way HTTP request bodies are.
+
+## Common Troubleshooting
+
+See `docs/_base/RUNBOOKS.md` — "Common Incidents" section covers the recurring traps (frontend `Loading...` from misconfigured `VITE_API_BASE_URL`, pnpm 11 `depsStatusCheck`, WSL `.venv` corruption, `.env`-bleed in Settings tests).
+
+## Contacts & Resources
+
+- Maintainer: Gabor Szabo (`@w7-mgfcode`)
+- Issue tracker: GitHub Issues on this repo
+- Release tracker: `CHANGELOG.md` (release-please-managed)
+- Out-of-repo links: none — this is a single-maintainer portfolio repo with no Slack/Notion workspace and no hosted demo URL (the system runs locally only). All coordination happens through GitHub Issues and PRs.
+
+
+# ===== File: docs/_base/ARCHITECTURE.md =====
+
+# ForecastLabAI Architecture
+> Source: heuristic discovery of `README.md`, `app/main.py`, `app/core/config.py`, `docker-compose.yml`, `.github/workflows/`, `.claude/rules/`. Spot-verified against code on 2026-05-12.
+> Last generated: 2026-05-11 · Last verified: 2026-05-12
+
+## System Boundaries
+
+### What This Repo Owns
+- The entire stack: FastAPI backend (`app/`), React 19 SPA (`frontend/`), Alembic migrations (`alembic/`), data seeder (`app/shared/seeder/` + `scripts/seed_random.py`), `.claude/` policy + skills + hooks, docs (`docs/`, `PRPs/` incl. `PRPs/INITIAL/`).
+- 7-table retail data platform (`store`, `product`, `calendar`, `sales_daily`, `price_history`, `promotion`, `inventory_snapshot_daily`) + registry, jobs, RAG sources/chunks, agent sessions.
+- 11 backend vertical slices under `app/features/` + cross-cutting `app/core/` + `app/shared/`.
+
+### What This Repo Depends On
+| Dependency | Interface | Owner | Change Process |
+|------------|-----------|-------|----------------|
+| PostgreSQL 16 + pgvector | `asyncpg` URL `DATABASE_URL` | self (docker-compose) | New extension → migration |
+| OpenAI API | `openai>=1.40` via `app/features/rag` + `app/features/agents` | external | Pin model name in config |
+| Anthropic API | `anthropic>=0.50` via PydanticAI | external | Pin model name in config |
+| Google Gemini (optional) | `google-gla:*` / `google-vertex:*` model IDs | external | Set `GOOGLE_API_KEY` |
+| Ollama (optional) | HTTP at `OLLAMA_BASE_URL` | self/LAN | Set `RAG_EMBEDDING_PROVIDER=ollama` |
+
+### What Depends On This Repo
+| Consumer | Depends On | Break Risk |
+|----------|-----------|------------|
+| `frontend/` React SPA | Backend HTTP API + `/agents/stream` WebSocket | HIGH — same repo, both released together |
+| External demos / portfolio reviewers | `/docs` (Swagger), `/redoc` | LOW |
+
+No other internal repos consume this one — single-deployment system per `.claude/rules/product-vision.md`.
+
+## Resource Hierarchy
+
+```
+ForecastLabAI repo
+├── docker-compose.yml          # single Postgres+pgvector container
+├── app/                        # FastAPI process (uvicorn :8123)
+│   ├── core/                   # config, db engine, logging, middleware, problem-details, health
+│   ├── shared/                 # cross-slice models + seeder ("The Forge")
+│   └── features/<slice>/       # vertical slices (11 of them)
+└── frontend/                   # Vite dev server :5173 (proxies → :8123)
+```
+
+## Component Overview
+
+| Component | Language | Type | Path | Wired in |
+|-----------|----------|------|------|----------|
+| Health | Python | HTTP | `app/core/health.py` | `app/main.py` |
+| Dimensions | Python | HTTP read | `app/features/dimensions/` | `app/main.py` |
+| Analytics | Python | HTTP read | `app/features/analytics/` | `app/main.py` |
+| Jobs | Python | HTTP CRUD | `app/features/jobs/` | `app/main.py` |
+| Ingest | Python | HTTP upsert | `app/features/ingest/` | `app/main.py` |
+| Featuresets | Python | HTTP compute | `app/features/featuresets/` | `app/main.py` |
+| Forecasting | Python | HTTP train/predict | `app/features/forecasting/` | `app/main.py` |
+| Backtesting | Python | HTTP run | `app/features/backtesting/` | `app/main.py` |
+| Registry | Python | HTTP CRUD + JSONB | `app/features/registry/` | `app/main.py` |
+| RAG | Python | HTTP index/retrieve + pgvector | `app/features/rag/` | `app/main.py` |
+| Agents | Python | HTTP + WebSocket | `app/features/agents/` | `app/main.py` |
+| Seeder | Python | HTTP control | `app/features/seeder/` | `app/main.py` |
+| Data platform | Python | ORM only (no router) | `app/features/data_platform/` | imported by services |
+| Frontend | TypeScript | SPA | `frontend/src/` | served by Vite |
+
+## Communication Patterns
+
+| Pattern | Used By | Protocol | Auth |
+|---------|---------|----------|------|
+| Sync HTTP (REST) | Frontend → Backend, demo curl | HTTP/JSON | None (single-tenant; CORS allow-list dev-only) |
+| WebSocket streaming | Frontend chat ↔ `/agents/stream` | WS frames | None |
+| Process → DB | All services → Postgres | `postgresql+asyncpg` | `DATABASE_URL` user/pass |
+| Agent tool calls | PydanticAI → backend services | In-process Python | Pydantic-validated arg schemas |
+| RAG embeddings | RAG service → OpenAI / Ollama | HTTPS | `OPENAI_API_KEY` env or Ollama LAN URL |
+| Agent LLM calls | Agents → Anthropic/OpenAI/Gemini | HTTPS | provider API key env |
+
+## Deployment Flow (Causal Chain)
+
+```
+PR opened on dev  →  ci.yml (lint + typecheck + test + migration-check)  →  reviewer approve  →  merge to dev
+dev → main PR     →  release-please opens Release PR  →  merge Release PR  →  tag vX.Y.Z  →  cd-release.yml (build wheel + upload artifacts to GitHub Release)
+Local install     →  docker-compose up -d  →  alembic upgrade head  →  uvicorn  →  vite
+```
+
+No staging/prod environments configured. Deployment target is the developer laptop or a single host — there is no managed cloud target and no hosted demo URL. `app_env="production"` exists in config (`app/core/config.py:21`) only to select JSON logging and strict CORS; it does not imply a deployed environment.
+
+## Observability Stack
+
+| Signal | Tool | Retention | Surface |
+|--------|------|-----------|---------|
+| Logs | `structlog` (JSON in prod, console in dev) | stdout only — process-local | `app/core/logging.py` |
+| Request ID | `RequestIdMiddleware` (`app/core/middleware.py`) | per-request | echoed in problem-details `request_id` |
+| Errors | RFC 7807 problem+json | per-response | `app/core/problem_details.py` |
+| Metrics | none (verified: no Prometheus / OpenTelemetry / Sentry imports in `app/` or `pyproject.toml`) | — | — |
+| Traces | none (same verification) | — | — |
+| Dashboards | The React app itself surfaces operational state via Jobs/Runs/Health pages | live | `frontend/src/pages/` |
+
+
+# ===== File: docs/_base/API_CONTRACTS.md =====
+
+# ForecastLabAI API Contracts
+> Source: heuristic discovery from `app/main.py` router wiring and per-feature `routes.py`. Full request/response schemas live in the Pydantic models at `app/features/<slice>/schemas.py`. Swagger UI at `http://localhost:8123/docs` is the authoritative live contract.
+
+## HTTP Endpoints
+
+All endpoints serve JSON; error responses use `application/problem+json` (RFC 7807) via `app/core/problem_details.py`. Schemas are Pydantic v2 (`app/features/<slice>/schemas.py`).
+
+| Slice | Method | Path | Purpose |
+|-------|--------|------|---------|
+| health | GET | `/health` | Liveness probe — `{"status":"ok"}` |
+| ingest | POST | `/ingest/sales-daily` | Batch upsert with natural-key resolution, idempotent `ON CONFLICT DO UPDATE` |
+| dimensions | GET | `/dimensions/stores` | List stores (1-indexed pagination, region/store_type filter, case-insensitive search, optional allow-listed `sort_by`/`sort_order`) |
+| dimensions | GET | `/dimensions/stores/{store_id}` | Get store by ID |
+| dimensions | GET | `/dimensions/products` | List products (category/brand filter, sku/name search, optional allow-listed `sort_by`/`sort_order`) |
+| dimensions | GET | `/dimensions/products/{product_id}` | Get product by ID |
+| analytics | GET | `/analytics/kpis` | Aggregated KPIs (revenue, units, transactions, avg unit price, avg basket) |
+| analytics | GET | `/analytics/drilldowns` | Group-by dimension: store / product / category / region / date |
+| analytics | GET | `/analytics/timeseries` | Period-bucketed sales series (`granularity` = day/week/month/quarter) for revenue-over-time charts; reuses `validate_date_range` (inverted/over-730-day ranges 400) |
+| analytics | GET | `/analytics/inventory-status` | Latest `inventory_snapshot_daily` row per `(store, product)` grain (Postgres `DISTINCT ON`); optional `store_id`/`product_id` filters; `200` + empty list on an empty table (never `404`) |
+| featuresets | POST | `/featuresets/compute` | Compute time-safe features (lag/rolling/calendar, leakage-prevented) |
+| featuresets | POST | `/featuresets/preview` | Preview features with sample rows |
+| forecasting | POST | `/forecasting/train` | Train a model (naive / seasonal_naive / moving_average / lightgbm) |
+| forecasting | POST | `/forecasting/predict` | Generate horizon predictions from a trained model |
+| backtesting | POST | `/backtesting/run` | Time-series CV (rolling/expanding splits, MAE/sMAPE/WAPE/bias/stability) |
+| registry | POST | `/registry/runs` | Create model run (pending) |
+| registry | GET | `/registry/runs` | List with filters + pagination + optional allow-listed `sort_by`/`sort_order` (created_at/model_type/status/store_id/product_id; unknown → default `created_at desc`) |
+| registry | GET | `/registry/runs/{run_id}` | Run details + JSONB metrics + runtime_info |
+| registry | PATCH | `/registry/runs/{run_id}` | Update status / metrics / artifact_uri |
+| registry | GET | `/registry/runs/{run_id}/verify` | SHA-256 artifact integrity check |
+| registry | POST | `/registry/aliases` | Create/update alias (only on `success` runs) |
+| registry | GET | `/registry/aliases` | List aliases |
+| registry | GET | `/registry/aliases/{alias_name}` | Get alias |
+| registry | DELETE | `/registry/aliases/{alias_name}` | Delete alias |
+| registry | GET | `/registry/compare/{run_id_a}/{run_id_b}` | Diff two runs |
+| jobs | POST | `/jobs` | Submit `train` / `predict` / `backtest` (returns 202-style job_id) |
+| jobs | GET | `/jobs` | List with filters + optional allow-listed `sort_by`/`sort_order` (created_at/completed_at/job_type/status; unknown → default `created_at desc`) |
+| jobs | GET | `/jobs/{job_id}` | Status + result JSON |
+| jobs | DELETE | `/jobs/{job_id}` | Cancel pending |
+| rag | POST | `/rag/index` | Index a markdown/openapi document; idempotent via content hash |
+| rag | POST | `/rag/retrieve` | Semantic search (HNSW), top-k with similarity threshold |
+| rag | GET | `/rag/sources` | List indexed sources |
+| rag | DELETE | `/rag/sources/{source_id}` | Delete source + cascaded chunks |
+| agents | POST | `/agents/sessions` | Create session (`agent_type`: `experiment` or `rag_assistant`) |
+| agents | GET | `/agents/sessions/{session_id}` | Status + message history (Postgres JSONB) |
+| agents | POST | `/agents/sessions/{session_id}/chat` | Send user message; returns full response |
+| agents | POST | `/agents/sessions/{session_id}/approve` | Approve/reject a pending tool call (HITL gate) |
+| agents | DELETE | `/agents/sessions/{session_id}` | Close session |
+| agents | WS | `/agents/stream` | Token-by-token streaming + tool-call events |
+| seeder | (see `app/features/seeder/routes.py`) | `/seeder/*` | Trigger scenarios, status, customization |
+| demo | POST | `/demo/run` | Run the end-to-end demo pipeline in-process; returns a `DemoRunResult`. `409 application/problem+json` if a run is already active |
+| demo | WS | `/demo/stream` | Stream one `StepEvent` per pipeline step for the live Showcase page |
+| config | GET | `/config/ai` | Effective AI-model config (agent LLM + RAG embeddings); API keys masked, never raw |
+| config | PATCH | `/config/ai` | Persist + apply AI-model changes live (no restart). `409` if an embedding-dimension change would orphan indexed RAG chunks (resend with `force=true`) |
+| config | GET | `/config/providers/health` | Per-provider connectivity — Ollama probed live, cloud providers by API-key presence |
+| config | GET | `/config/ollama/models` | Models pulled on the configured Ollama host. `502` if the host is unreachable |
+
+## WebSocket Events (`/agents/stream`)
+
+Verified against `app/features/agents/websocket.py` and `app/features/agents/schemas.py:229` (`StreamEvent`):
+
+- **Client → server (per message):** `{"session_id": str, "message": str}` — both fields required; missing fields return a recoverable `error` event. The connection stays open for multiple messages within one session; each message gets a fresh DB session.
+- **Server → client (every frame):** `{"event_type": <one of below>, "data": {...}, "timestamp": <iso8601 UTC>}` (Pydantic-serialized `StreamEvent`).
+- **`event_type` values (Literal in `StreamEvent`):**
+  - `text_delta` — `data: {"delta": str}` (`TextDeltaEvent`)
+  - `tool_call_start` — `data: {"tool_name": str, "tool_call_id": str, "arguments": dict}` (`ToolCallStartEvent`)
+  - `tool_call_end` — `data: {"tool_name": str, "tool_call_id": str, "result": Any, "duration_ms": float}` (`ToolCallEndEvent`)
+  - `approval_required` — emitted when a tool in `agent_require_approval` is pending; the chat REST `/agents/sessions/{id}/approve` endpoint releases it
+  - `complete` — `data: {"message": str, "tokens_used": int, "tool_calls_count": int}` (`CompleteEvent`)
+  - `error` — `data: {"error": str, "error_type": str, "recoverable": bool}` (`ErrorEvent`). On `recoverable: false` (e.g., `session_not_found`, `session_expired`), the client should close.
+
+## WebSocket Events (`/demo/stream`)
+
+Drives the end-to-end demo pipeline for the dashboard Showcase page. Verified against `app/features/demo/routes.py` and `app/features/demo/schemas.py` (`StepEvent`).
+
+- **Client → server (one start frame):** `{"seed": int, "reset": bool, "skip_seed": bool}` — all fields optional (`DemoRunRequest` supplies defaults `seed=42`, `reset=false`, `skip_seed=true`). The pipeline runs once, then the server closes.
+- **Server → client (every frame):** Pydantic-serialized `StepEvent` — `{"event_type", "step_name", "step_index", "total_steps", "status", "detail", "duration_ms", "data", "timestamp"}`.
+- **`event_type` values (Literal in `StepEvent`):**
+  - `step_start` — a step began; `status` is `null`.
+  - `step_complete` — a step finished; `status ∈ {pass, fail, skip, warn}`, `data` carries structured payload (backtest `per_model` WAPE + `winner`; register `run_id` + `alias`).
+  - `pipeline_complete` — final event; `data` carries `winner_model_type`, `winner_wape`, `winning_run_id`, `alias`, `wall_clock_s`.
+  - `error` — bad start frame or a concurrent run already in progress; one event, then the server closes.
+- Concurrency: a module-level `asyncio.Lock` allows one pipeline at a time. A second `POST /demo/run` returns `409`; a second `WS /demo/stream` receives one `error` event.
+
+## Async Events / Queues
+
+None. Job execution is synchronous-with-async-shaped-API (per `app/features/jobs/`). No Kafka / SQS / pub-sub. Per `.claude/rules/product-vision.md`, **not a streaming system**.
+
+## External Integrations
+
+| Integration | Direction | Auth | Rate Limit | Fallback |
+|-------------|-----------|------|------------|----------|
+| OpenAI (embeddings + agent LLM) | egress HTTPS | `OPENAI_API_KEY` | provider-side | switch `RAG_EMBEDDING_PROVIDER=ollama`; switch agent model |
+| Anthropic (agent LLM) | egress HTTPS | `ANTHROPIC_API_KEY` | provider-side | `AGENT_FALLBACK_MODEL` |
+| Google Gemini (agent LLM, optional) | egress HTTPS | `GOOGLE_API_KEY` | provider-side | switch model |
+| Ollama (local embeddings, optional) | egress HTTP LAN | none | local | switch back to OpenAI |
+
+## Schema Change Policy
+
+- Pre-1.0: API contracts under `/dimensions`, `/analytics`, `/ingest`, `/forecasting`, `/backtesting`, `/registry`, `/rag`, `/agents`, `/jobs` MAY change in MINOR releases. Pin the version. (See `.claude/rules/versioning.md`.)
+- Every DB-touching change ships with an Alembic migration. Forward-only after merge.
+- Pydantic v2 schema additions: prefer additive; breaking field renames go behind a `feat!:` or call out in PR description.
+- New endpoints must register in `app/main.py` and have a route test in the slice's `tests/test_routes.py` (per `.claude/rules/test-requirements.md`).
+
+
+# ===== File: docs/_base/RUNBOOKS.md =====
+
+# ForecastLabAI Runbooks
+> Source: heuristic discovery from `docker-compose.yml`, `app/main.py`, `app/core/config.py`, `HANDOFF.md`, `.claude/rules/`. Operational scope is intentionally small — this is a single-host portfolio system.
+
+## Common Incidents
+
+### Frontend shows "Loading..." everywhere
+**Symptoms:** Pages mount but every TanStack Query hook stays in pending state.
+**Likely causes:**
+1. `frontend/.env` `VITE_API_BASE_URL` points at a LAN host the browser can't reach.
+2. Backend not running on `:8123`.
+3. CORS rejected the origin.
+**Diagnosis:**
+```bash
+curl -s http://localhost:8123/health         # backend reachable?
+grep VITE_API_BASE_URL frontend/.env         # what URL is the SPA calling?
+```
+**Resolution:**
+1. Edit `frontend/.env` → `VITE_API_BASE_URL=http://localhost:8123`.
+2. Restart Vite: `cd frontend && ./node_modules/.bin/vite --host 0.0.0.0`.
+3. If CORS error in browser console, add the origin to `app/main.py` `allow_origins` (dev-only LAN regex already covers `10.x` / `192.168.x` / `172.16-31.x`).
+
+### Database connection refused
+**Symptoms:** `asyncpg.exceptions.CannotConnectNowError` or `ConnectionRefusedError` on first request.
+**Diagnosis:**
+```bash
+docker compose ps                            # postgres container running?
+docker compose logs postgres | tail -50
+```
+**Resolution:**
+```bash
+docker compose up -d                         # bring it up
+uv run alembic upgrade head                  # apply migrations
+uv run python scripts/check_db.py            # confirm connectivity
+```
+
+### Tests pass locally but fail in CI on a fresh DB
+**Symptoms:** Integration tests pass on the dev host (which has stale seeded data) and fail in CI.
+**Diagnosis:** Integration tests must be idempotent — they may not assume pre-existing rows.
+**Resolution:**
+```bash
+docker compose down -v && docker compose up -d
+uv run alembic upgrade head
+uv run pytest -v -m integration
+```
+
+### `pnpm dev` re-runs install and errors on esbuild
+**Symptoms:** pnpm 11 `depsStatusCheck` reinstalls and blocks the esbuild postinstall script.
+**Workaround:** `./node_modules/.bin/vite --host 0.0.0.0` directly. Permanent fix: add `pnpm.onlyBuiltDependencies: ["esbuild"]` to `frontend/package.json`.
+
+### Settings tests fail because they pick up the local `.env`
+**Symptoms:** `app/core/tests/test_config.py::test_settings_has_defaults` and a few `agents/tests/test_config_validation.py` cases fail when `.env` exists.
+**Root cause:** `Settings()` reads `.env` via `SettingsConfigDict(env_file=".env")`.
+**Fix:** Use `Settings(_env_file=None)` in those tests to bypass `.env`.
+
+### `.venv` or `frontend/node_modules` binaries become corrupt (WSL only)
+**Symptoms:** `python` / `tsc` are reported as `IntxLNK` data blobs; `uv run` / `tsc --noEmit` fails with `cannot execute binary file`.
+**Resolution:**
+```bash
+rm -rf .venv && uv sync --extra dev
+rm -rf frontend/node_modules && corepack enable pnpm && cd frontend && pnpm install && pnpm rebuild esbuild
+```
+
+### `make demo` fails at step X
+**Symptoms:** `scripts/run_demo.py` prints `❌ Step N/11: <name> -- ...` and exits 1 (step failure) or 2 (precondition).
+**Diagnosis flow:**
+1. **Precheck failed (exit 2)** — backend isn't reachable on the URL the script is hitting.
+   ```bash
+   curl -s http://localhost:8123/health   # should print {"status":"ok"}
+   docker compose ps                       # confirm Postgres is up on :5433
+   ```
+   Fix: start uvicorn (`uv run uvicorn app.main:app --port 8123`) and/or `docker compose up -d`. The Makefile targets `demo` and `demo-clean` invoke `docker compose up -d` for you; `demo-quick` does not.
+2. **Seed step failed** — production-guard or scenario mismatch. The script POSTs `demo_minimal` to `/seeder/generate`; check `app_env != "production"` (or set `seeder_allow_production=true` if you really mean it). The scenario must exist in `app/shared/seeder/config.py:ScenarioPreset` (added by PRP-15 / issue #128).
+3. **Features step failed** — schema drift on `ComputeFeaturesRequest`. The script sends a minimal `FeatureSetConfig` with `name="demo_featureset"` + lag/rolling/calendar configs; if a recent change tightened a `Field(strict=...)` constraint, the failure surfaces here.
+4. **Train step failed (one of three)** — the script trains naive / seasonal_naive / moving_average in parallel via `asyncio.gather`. Check the failing model's RFC 7807 body (echoed in the script output); the `request_id` correlates with the uvicorn logs.
+5. **Backtest produced NaN WAPE** — `demo_minimal` is tuned to avoid the SPARSE-style NaN trap (moderate `noise_sigma=0.10`, no sparsity). If you customized the scenario and now hit NaN, follow the `app/shared/seeder/tests/test_phase1_regression.py` pattern.
+6. **Register step failed** — most likely `pending → success` instead of the mandatory `pending → running → success` transition, or `alias_name` doesn't match the registry pattern (`^[a-z0-9][a-z0-9\-_]*$`). The script uses `demo-production` which is compliant; only worry if you forked the script.
+7. **Agent step showed ⏭️ but you expected ✅** — `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` not set in the environment the backend reads. Verify with `grep -E '^(OPENAI|ANTHROPIC)_API_KEY=' .env` (name only — never paste the value).
+
+**Wall-clock soft-warn:**
+- `⚠️ Result: GREEN (over budget ...)` — the run succeeded but exceeded the 180 s budget. Not a failure; expected on slower hardware. The integration test (`tests/test_e2e_demo.py`) follows the same soft-warn semantics.
+
+**Capture artifacts for a postmortem:**
+```bash
+# Nightly CI uploads .ci-logs/uvicorn.log on failure (e2e-nightly.yml).
+# Locally, capture both streams:
+uv run python scripts/run_demo.py --seed 42 --quiet 2>&1 | tee demo.log
+```
+
+### Showcase page (`/showcase`) pipeline fails at step X
+**Symptoms:** The dashboard Showcase page (`/showcase`) — or `POST /demo/run` — shows a step card flip to ❌, the run stops, and the summary banner is red.
+**Diagnosis flow (matches `app/features/demo/pipeline.py` step names):**
+1. **`status` step fails** — `skip_seed=true` (the default) ran against an empty database. Seed first: tick **Re-seed first** on the page, or `POST /seeder/generate` the `demo_minimal` scenario, or run `make demo` once.
+2. **`register` step fails with `HTTP 500 -- Database Error`** — the registry's `_find_duplicate` hit multiple pre-existing `model_run` rows with the same config hash (accumulated by prior `make demo` / `run_demo.py` runs). Not a demo-slice bug — the demo correctly surfaces the registry's 500. Fix by clearing stale runs or running against a fresh database.
+3. **`agent` step shows ⏭️** — no API key matches the configured `agent_default_model` provider, or the provider rejected the key. Expected; not a failure. The pipeline still goes green.
+4. **Page shows an `error` banner ("Pipeline could not start")** — either the start frame was malformed, or another run is already in progress (`409`). Only one demo pipeline runs at a time (module-level `asyncio.Lock`). Wait for the active run to finish.
+**Notes:** the `POST /demo/run` body and `WS /demo/stream` events are documented in `docs/_base/API_CONTRACTS.md`. The pipeline mirrors `scripts/run_demo.py`; the per-step diagnosis for `make demo` above applies to the same steps.
+
+### release-please skipped the bump after a dev → main merge
+**Symptoms:** `dev → main` PR is merged, `CD Release` workflow on `main` completes in ~10s, **no Release PR** is opened. release-please log shows `No user facing commits found since <sha> - skipping`.
+**Root cause:** `gh pr merge --merge` uses the **PR title** as the merge-commit subject. If that subject is a valid conventional commit of a non-bumping type (`chore`, `docs`, `refactor`, `test`, `ci`), release-please reads it at face value, classifies the whole merge as non-bumping, and stops. Prior dev→main merges done via the GitHub web UI used the default `Merge pull request #N from <branch>` subject — non-conventional — so release-please traversed to the underlying commits and bumped correctly.
+**Diagnosis:**
+```bash
+git log origin/main -1 --format='%s'         # if this matches type(scope): ..., that's the trap
+gh run view <cd-release-run-id> --log | grep -E "(Considering|No user facing)"
+```
+**Prevention (any one of):**
+- Merge dev → main via the **GitHub web UI** (uses default non-conventional subject).
+- Force a non-conventional subject from the CLI: `gh pr merge <N> --merge --subject "Merge pull request #<N> from w7-mgfcode/dev"`.
+- Title the dev → main PR with a `feat:` or `fix:` type so the subject bumps regardless.
+**Recovery (after the trap fires):**
+1. Open an issue tracking the release (`release: cut vX.Y.Z for ...`).
+2. Branch off `dev`: `git switch -c feat/release-trigger-X-Y-Z`.
+3. `git commit --allow-empty -m "feat(release): trigger vX.Y.Z release for <slice> (#<issue>)"`.
+4. PR to `main`, **wait for all four `main` status checks to go green** (Lint & Format, Type Check, Test, Migration Check — enforced at the branch-protection layer since #108), then admin-merge — the empty `feat:` becomes the merge subject and release-please bumps PATCH (pre-1.0 config). Reference example: PRs #99 → #100 → #101 for v0.2.8. Plan ~3-5 min between push and the merge button becoming available.
+
+## Break-Glass Procedures
+
+There is no "production" — break-glass is N/A. The closest equivalent is the seeder:
+
+### Reset to a known-good seeded state
+```bash
+uv run python scripts/seed_random.py --delete --confirm
+uv run python scripts/seed_random.py --full-new --seed 42 --confirm
+uv run python scripts/seed_random.py --verify
+```
+
+## Secret Rotation
+
+There are no managed secrets — keys live in the developer's `.env`. Rotation = edit `.env`, restart `uvicorn`. Never commit `.env`. `.env.example` is the canonical schema; new env vars must land there first.
+
+## Release / Rollback
+
+### Cut a release
+```bash
+# from dev, ensure CI green
+gh pr create --base main --head dev --title "release: ..."
+# merge PR via the GitHub web UI (or with an explicit non-conventional --subject)
+#   → release-please opens "chore(main): release X.Y.Z" PR on main
+# merge that PR → release-please tags vX.Y.Z and cd-release.yml uploads wheel
+```
+
+> ⚠️ **Do NOT** merge with `gh pr merge --merge` if the PR title is a non-bumping conventional commit (`chore(...)`, `docs(...)`, etc.) — the merge-commit subject becomes the PR title verbatim and release-please will skip the bump. See the "release-please skipped the bump after a dev → main merge" incident above.
+
+### Rollback a release
+```bash
+# undo a tag is destructive; prefer cutting a new patch release with the fix
+git revert <bad-commit-sha>
+gh pr create --base dev --head fix/<slug>
+# proceed through normal release flow → vX.Y.(Z+1)
+```
+
+Never `git push --force` on `dev` or `main` (see `.claude/rules/security-patterns.md`).
+
+## Logs & Debugging
+
+- Backend logs: stdout from `uvicorn` (JSON in `production`, console in `development`). Each request carries an `X-Request-ID` header echoed in error bodies (`request_id` field) — grep logs by that ID.
+- Frontend network errors: open browser devtools → Network tab → check `/health`, then the failing endpoint's status + RFC 7807 body.
+- Agent issues: check `app/features/agents/models.py` `agent_session` table — `message_history` JSONB has the full transcript, including tool calls and pending approvals.
+
+
+# ===== File: docs/_base/SECURITY.md =====
+
+# ForecastLabAI Security
+> Source: `.claude/rules/security-patterns.md` (authoritative), `app/core/config.py`, `app/main.py`, `.github/workflows/`. [ASSUMPTION] compliance scope is **none** (portfolio repo).
+
+## Threat Model (Scope)
+
+ForecastLabAI is a **single-tenant, single-host** portfolio demo. There is no auth, no RBAC, no multi-tenancy. The threat surface is:
+
+1. Untrusted query input flowing through SQLAlchemy → could enable SQLi without parameter binding.
+2. LLM-controlled tool calls (PydanticAI agents) → could mutate registry/aliases without HITL approval.
+3. RAG retrieval echoing untrusted document content → potential prompt-injection vector into agent context.
+4. External provider API keys in `.env` → could leak via logs or commit.
+5. Frontend CORS misconfiguration → could expose dev-only endpoints to attacker-controlled origins.
+
+## Hard Rules (from `.claude/rules/security-patterns.md`)
+
+These are enforced on every PR. Violations must be fixed before merge.
+
+- **Forbidden:** `eval` / `exec` / `compile` on user input; `subprocess(shell=True, …user_input)`; raw SQL concat; `pickle.loads` on untrusted data; `verify=False` on httpx/openai clients; hardcoded secrets; credentials in git URLs; logging full prompts/responses; path traversal via `..`.
+- **Required:** Pydantic v2 validation at every boundary; SQLAlchemy 2.0 parameter binding; `pathlib.Path.resolve()` for file ops; `yaml.safe_load`; RFC 7807 error shape; structured logging without secret values.
+
+## Secrets Management
+
+| Item | Storage | Loaded By | Rotation |
+|------|---------|-----------|----------|
+| `OPENAI_API_KEY` | `.env` (not committed) | `app.core.config.Settings` | Manual; edit `.env`, restart uvicorn |
+| `ANTHROPIC_API_KEY` | `.env` | `Settings` | Manual |
+| `GOOGLE_API_KEY` | `.env` (optional) | `Settings` | Manual |
+| `DATABASE_URL` | `.env` or default localhost | `Settings` | N/A (local docker-compose) |
+
+Two-file model (mandatory):
+- `.env.example` — committed schema with placeholders, every new var added here first.
+- `.env` — real values, **NEVER** committed (`.gitignore`d).
+
+Never log decrypted values, even at DEBUG. Log key NAMES only (`openai_api_key_set=bool(s.openai_api_key)`).
+
+## Input Validation
+
+- Every FastAPI endpoint validates input via Pydantic v2 — no raw `Body(Any)`.
+- Every agent tool input validated by Pydantic before execution (`app/features/agents/tools/`).
+- LLM **responses** are not trusted: structured outputs parsed via Pydantic; freeform text never executed.
+- Allow-lists over deny-lists (e.g., `model_type ∈ {naive, seasonal_naive, moving_average, lightgbm}`; embedding provider ∈ `{openai, ollama}`; model identifier provider ∈ `{anthropic, openai, google-gla, google-vertex}`).
+
+### Pydantic v2 strict mode on FastAPI request bodies
+
+FastAPI's `_compat/v2.py:175` calls `TypeAdapter.validate_python` (not `validate_json`) on the parsed JSON dict. With `ConfigDict(strict=True)`, Pydantic refuses to coerce ISO-string values into Python types that JSON has no native representation for, so every HTTP caller would 422 (e.g., `{"type":"date_type","loc":["body","cutoff_date"],"msg":"Input should be a valid date"}`).
+
+**Policy:**
+- KEEP `model_config = ConfigDict(strict=True)` on request bodies — it catches subtle coercion bugs on JSON-native types (e.g., `"5"` → 5 on an ID field, `1.0` → 1 on an int).
+- ADD field-level `Field(strict=False, ...)` on every field whose type has no native JSON representation:
+  - `datetime.date`, `datetime.datetime`, `datetime.time`
+  - `uuid.UUID`
+  - `decimal.Decimal`
+- Every request-body test suite MUST include at least one case that exercises the JSON path — call `Model.model_validate({"field": "iso-string", ...})` (matches FastAPI's `validate_python` path) — so this regression class is caught at unit-test time, not at HTTP-boundary discovery time.
+
+Reference: PR #115 (issue #109) introduced this pattern on `ComputeFeaturesRequest.cutoff_date` and `PreviewFeaturesRequest.cutoff_date`. Issue #117 extended it repo-wide to `TrainRequest`.
+
+**Enforced by:** `app/core/tests/test_strict_mode_policy.py` — AST-walker invariant test that fails CI when any field on a `ConfigDict(strict=True)` request model under `app/features/**/schemas.py` is typed `date | datetime | time | UUID | Decimal` without the matching `Field(strict=False, ...)` override. Mirrors the load-bearing `app/features/featuresets/tests/test_leakage.py` precedent (see `PRPs/PRP-14-strict-mode-policy-linter.md`, issue #120).
+
+## Network Security
+
+- Backend binds `0.0.0.0:8123` by default (`api_host` / `api_port` in `Settings`, `app/core/config.py:32-33`; the `# noqa: S104` is intentional for single-host LAN demo). Fine on a personal LAN; would need a reverse proxy + TLS for any public exposure.
+- CORS allow-list in `app/main.py`: dev permits `localhost`/`127.0.0.1`/private LAN ranges via regex; **production sets explicit origins via empty list + no regex** — review before any non-dev deploy.
+- No TLS at the app layer; rely on `docker-compose` private network for DB. Postgres password is the dev default `forecastlab/forecastlab` — change if exposing the host.
+
+## LLM / Agent Security
+
+- Token budget cap per session (`agent_max_tokens=4096` default).
+- Tool-call cap per session (`agent_max_tool_calls=10` default).
+- Timeout wrap around `agent.run()` / `agent.run_stream()` (`agent_timeout_seconds=120`).
+- HITL approval required for mutating tools — `agent_require_approval=["create_alias","archive_run"]`. Never widen the agent's mutation surface without adding the new tool name to that list.
+- Never log full prompts/responses at INFO; DEBUG only with explicit operator opt-in.
+
+## External Integrations Security
+
+| Integration | Auth | Data Sent | Note |
+|-------------|------|-----------|------|
+| OpenAI embeddings | API key | Document chunks (markdown / openapi) | No PII in indexed corpus — corpus is project's own docs |
+| OpenAI / Anthropic / Gemini agent LLM | API key | User chat messages + tool descriptions + tool results | Chat messages may contain user-supplied text |
+| Ollama embeddings | none (LAN) | Document chunks | Local; preferred for keeping data off external services |
+
+## CI / Workflow Security
+
+| Workflow | Pinning | Notes |
+|----------|---------|-------|
+| `ci.yml` | `actions/checkout@v6`, `astral-sh/setup-uv@v7` | First-party `actions/*` may use major-version per rule |
+| `cd-release.yml` | `actions/checkout@v6`, `actions/upload-artifact@v7` (first-party, major-pin OK) **+** `googleapis/release-please-action@v5`, `astral-sh/setup-uv@v7` (**third-party, major-pinned**) | ⚠️ The two third-party actions violate `security-patterns.md` ("Pin third-party GitHub Actions by full 40-char SHA"). Open issue to SHA-pin both, with the `# vX.Y.Z` comment trailer per rule. |
+| `dependency-check.yml`, `phase-snapshot.yml`, `schema-validation.yml` | Same first-party `actions/*` + `astral-sh/setup-uv@v7` pattern as the others | Same third-party major-pin gap on `astral-sh/setup-uv@v7` — covered by the same SHA-pin issue |
+
+Dependabot watches `.github/workflows/` weekly (`.github/dependabot.yml`) — keep its PRs current.
+
+## Scanning & Compliance
+
+| Check | Tool | Frequency | Blocks Merge? |
+|-------|------|-----------|---------------|
+| Lint + format | ruff | every PR | Yes |
+| Type check | mypy --strict + pyright --strict | every PR | Yes |
+| Unit tests | pytest | every PR | Yes |
+| Integration tests | pytest -m integration against Postgres service | every PR | Yes |
+| Migration apply check | alembic upgrade head on fresh DB | every PR | Yes |
+| Dependency audit | `.github/workflows/dependency-check.yml` | Weekly cron (Sun 00:00 UTC) + manual dispatch | No (out-of-band; not a per-PR gate) — but `fail_on_vulnerabilities` input defaults `true` |
+| Secrets detection | partial — `detect-private-key` hook in `.pre-commit-config.yaml` catches private SSH/TLS keys; no broader gitleaks/trufflehog scanner is wired in | every commit (pre-commit) | No — local hook only, not a CI gate |
+
+## Compliance Constraints
+
+| Framework | Applies | Note |
+|-----------|---------|------|
+| PCI-DSS | No | No card data |
+| SOC 2 | No | Portfolio repo |
+| GDPR / PII | No | Seeded synthetic data only |
+| HIPAA | No | No health data |
+
+[ASSUMPTION] confirmed via Phase 2 question. Re-evaluate if scope changes.
+
+
+# ===== File: docs/_base/RULES.md =====
+
+# ForecastLabAI Rules
+> Generated by: w7_generating-claudemd skill
+> Source of truth: `.claude/rules/` directory (commit-format, branch-naming, security-patterns, product-vision, test-requirements, ui-design, versioning, output-formatting). This file consolidates the constraint matrix; the rule files are authoritative on detail.
+> Last reviewed: 2026-05-11
+
+## Change Authority Matrix
+
+| Change Type | Who Can Approve | Gate Required |
+|-------------|-----------------|---------------|
+| Code merged to `dev` | Maintainer | CI green (ruff + mypy + pyright + pytest + migration-check) |
+| `dev` → `main` PR | Maintainer | CI green, release-please opens Release PR |
+| Release tag (`vX.Y.Z`) | Maintainer merges the Release PR | release-please-action creates tag automatically |
+| New external service in `app/` core path | Vision check (`.claude/rules/product-vision.md`) | PRP + ADR required (this is a single-host system) |
+| New Alembic migration | Maintainer | Must apply + roll back on a fresh DB (CI `migration-check` enforces) |
+| New API endpoint | Maintainer | Route test + happy path + 1 error path (per `test-requirements.md`) |
+| New PydanticAI tool that mutates state | Maintainer | Add tool name to `agent_require_approval` config |
+| Touching `app/features/featuresets/tests/test_leakage.py` | Maintainer + reviewer | Tests are the leakage spec — never weaken to make a feature pass |
+| `git push --force` on `dev` / `main` | **Nobody** | Forbidden by `security-patterns.md` |
+
+## Hard Rules — Treat as Invariants
+
+**Never violate, never suggest violating.**
+
+- NEVER skip `mypy --strict` or `pyright --strict` — both gate merge.
+- NEVER skip `ruff check` or `ruff format --check`.
+- NEVER commit `.env`, secrets, API keys, credentials in URLs, or `.env`-derived values in logs.
+- NEVER concatenate user input into SQL — only SQLAlchemy parameter binding.
+- NEVER use `eval` / `exec` / `subprocess(shell=True, …user_input)` / `pickle.loads` on untrusted data.
+- NEVER set `verify=False` on `httpx.AsyncClient` / `openai.AsyncClient`.
+- NEVER edit a merged Alembic migration — create a new one (migrations are forward-only after merge).
+- NEVER add an AI co-author trailer to a commit (`Co-Authored-By: Claude …`, `🤖 Generated with …`).
+- NEVER weaken `app/features/featuresets/tests/test_leakage.py` to make a feature pass — the test is the spec.
+- NEVER widen agent mutation surface without adding the tool to `agent_require_approval`.
+- NEVER `git push --force` on `dev` or `main`.
+- NEVER add a managed-cloud SDK (AWS/GCP/Azure) to `app/` core — violates single-host vision.
+- NEVER mock the database in integration tests — they must run against the real `docker-compose` Postgres (`-m integration`).
+
+## Conventions (enforced by `.claude/rules/`)
+
+- **Commits:** `type(scope): description (#issue)`. Type ∈ `{feat, fix, docs, refactor, test, chore, release}`. Scope from allow-list (`api`, `ui`, `data`, `ingest`, `features`, `forecast`, `backtest`, `registry`, `rag`, `agents`, `dimensions`, `analytics`, `jobs`, `db`, `ci`, `docs`, `repo`, `release`). Comma-pairs allowed for cross-cutting (`feat(api,ui): …`). Every commit references an open GitHub issue. Hook `.claude/hooks/check-commit-format.sh` enforces.
+- **Branches:** `<type>/<kebab-slug>` off `dev` (off `main` for `hotfix`). Slug ≤ 50 chars, no issue number. One branch per issue.
+- **Architecture:** Every domain under `app/features/<slice>/{models,schemas,service,routes,tests}.py`. Cross-slice imports through `app/shared/` or `app/core/` only.
+- **Errors:** RFC 7807 `application/problem+json` via `app/core/problem_details.py`. No bare 500s, no ad-hoc error shapes.
+- **Output formatting (for skills/reports):** see `.claude/rules/output-formatting.md` — emoji status indicators, box-drawing separators, capped at 40 lines.
+- **UI:** Use the skills in `.claude/rules/ui-design.md` (stitch-design, frontend-design, webapp-testing). Never hand-roll UI when a skill applies.
+
+## Forbidden Patterns
+
+- `--force` push on `dev` or `main`.
+- Raw SQL string interpolation.
+- `os.environ[...]` in feature code (use `app.core.config.get_settings()`).
+- `os.path` instead of `pathlib.Path` (ruff `PTH` enforces).
+- Capitalized commit descriptions or trailing periods.
+- Editing a merged migration file.
+- Mocking the DB in tests marked `@pytest.mark.integration`.
+- Adding managed-cloud SDKs to `app/` core path.
+- New "wipe everything" operations (the system has no destructive bulk-delete by design).
+
+## Compliance Constraints
+
+[ASSUMPTION] No compliance frameworks in scope — portfolio repo, no regulated data. See `docs/_base/SECURITY.md` for the table.
+
+## Escalation Path
+
+| Situation | Contact | Channel |
+|-----------|---------|---------|
+| Unsure about a change | Maintainer (Gabor Szabo) | GitHub PR review |
+| Security concern | Maintainer | Open a private GitHub Security Advisory |
+| Architecture / vision change | Maintainer | New `PRPs/INITIAL/INITIAL-*.md` + `PRPs/PRP-*.md` per `product-vision.md` |
+| Break-glass required | N/A — no production environment | Use `scripts/seed_random.py --delete --confirm` to reset local state |
+
+
+# ===== File: docs/_base/DOMAIN_MODEL.md =====
+
+# ForecastLabAI Domain Model
+> Source: heuristic discovery from `app/features/data_platform/models.py`, `app/features/registry/models.py`, `app/features/rag/models.py`, `app/features/agents/models.py`, `app/features/forecasting/models.py`, `app/features/jobs/models.py`, `app/shared/seeder/`. Body spot-verified against the SQLAlchemy models on 2026-05-12.
+
+## Bounded Contexts
+
+| Context | Owns | Anti-Corruption Layer |
+|---------|------|-----------------------|
+| Data Platform | `store`, `product`, `calendar`, `sales_daily`, `price_history`, `promotion`, `inventory_snapshot_daily` | Ingest layer's natural-key resolution (`store_code` → `store_id`, `sku` → `product_id`) |
+| Featuresets | Computed feature matrices (in-memory; not persisted) | Time-cutoff parameter — never reads beyond `cutoff_date` |
+| Forecasting | Trained model artifacts on disk (joblib `.pkl`) | Model interface in `examples/models/model_interface.md`; artifact_uri returned to caller |
+| Backtesting | Fold results, metrics (returned in response; persisted via Registry) | `SplitConfig` (expanding/sliding, gap, horizon) — `app/features/backtesting/splitter.py` |
+| Registry | `model_run`, `run_alias`, `model_artifact` | SHA-256 hash on artifact_uri; status state machine |
+| RAG | `rag_source`, `rag_chunk` (with pgvector embedding column) | Content hash for idempotent indexing; embedding dimension fixed per provider |
+| Agents | `agent_session` (JSONB message_history) | Pydantic-validated tool args; HITL approval queue |
+| Jobs | `job` (JSONB params + result) | Discriminated-union `job_type` (`train`/`predict`/`backtest`) |
+| Analytics | None persisted — pure read-aggregates | SQL GROUP BY over `sales_daily` joined to dimensions |
+| Seeder ("The Forge") | Generates synthetic rows in Data Platform tables | `Scenario` preset + `DimensionConfig`/`FactsConfig` dataclasses; `dataclasses.replace` for field-precise overrides |
+
+## Core Aggregates
+
+### `model_run` (Registry)
+- **Root:** `ModelRun(run_id: UUID, status: RunStatus)`
+- **Status state machine:** `pending` → `running` → `success` | `failed` → `archived`
+- **JSONB fields:** `model_config`, `metrics`, `runtime_info` (Python/numpy/pandas versions captured at training)
+- **Invariants:**
+  - An alias may point only to a `success` run.
+  - Artifact_uri SHA-256 hash must verify before any consumer trusts it (`GET /registry/runs/{id}/verify`).
+  - `runtime_info` is immutable after `success`.
+
+### `agent_session` (Agents)
+- **Root:** `AgentSession(session_id: UUID, status: SessionStatus)`
+- **Status:** `active` / `awaiting_approval` / `expired` / `closed` (`SessionStatus` enum, `app/features/agents/models.py:24`). Transitions: `ACTIVE → AWAITING_APPROVAL` (sensitive action pending), `AWAITING_APPROVAL → ACTIVE` (on approval/rejection), `ACTIVE → EXPIRED` (on timeout), `ACTIVE → CLOSED` (on explicit close).
+- **Invariants:**
+  - `message_history` JSONB is append-only within a session.
+  - Tools in `agent_require_approval` block until `POST /agents/sessions/{id}/approve` returns.
+  - Token budget cap (`agent_max_tokens`) and tool-call cap (`agent_max_tool_calls`) per session.
+
+### `sales_daily` (Data Platform)
+- **Root:** composite `(store_id, product_id, date)`
+- **Invariants:**
+  - `quantity >= 0`, `unit_price >= 0`, `total_amount = quantity * unit_price` (approx; rounding tolerated).
+  - `store_id`, `product_id`, `date` must reference existing dimension rows.
+  - Idempotent upsert via `ON CONFLICT (store_id, product_id, date) DO UPDATE` (`app/features/ingest/service.py`).
+
+## Key Invariants — NEVER violate
+
+1. **Time safety in features.** `app/features/featuresets/` uses only data at or before `cutoff_date`. Lags via `shift(positive)`, rolling via `shift(1).rolling(...)`, all `groupby` entity-aware. The test `app/features/featuresets/tests/test_leakage.py` is the spec — it MUST keep passing.
+2. **Forward-only migrations.** Once an Alembic migration is merged, never edit it. Add a new migration to fix or evolve.
+3. **HITL approval gates the agent's mutation surface.** Every tool that writes to the registry (`create_alias`, `archive_run`, …) must be in `agent_require_approval`. Widening the surface without updating that list is a security regression.
+4. **Single-host deployable.** No managed cloud service in the core path. `docker-compose up` must continue to be the only prerequisite besides Python + Node.
+5. **Pre-1.0 contracts may move.** Pin the version you build against. After `v1.0.0`, full SemVer applies.
+6. **Seeder is idempotent + scoped.** Never introduce a "wipe everything" path that isn't behind `--confirm` + scope flag.
+
+## Ubiquitous Language — use exactly these terms
+
+| Term | Means | NOT |
+|------|-------|-----|
+| `store` | Retail location (dimension); composite-key parent of sales | branch, outlet |
+| `product` | SKU (dimension); composite-key parent of sales | item, article |
+| `sales_daily` | One row per `(store_id, product_id, date)` | order, transaction (those would be finer-grain) |
+| `run` | A model training instance tracked in the registry | experiment, job |
+| `alias` | A pointer to a `success` run (e.g., `production`, `champion`) | tag, label |
+| `session` (agent) | One conversation between user and PydanticAI agent | thread, chat |
+| `fold` | One train+test split inside a backtest | iteration |
+| `baseline` | A naive / seasonal_naive / moving_average model included for comparison | benchmark, control |
+| `lag` | Past value at offset `k` (`shift(k)`) | window |
+| `rolling` | Statistic over a trailing window with `shift(1)` to avoid leakage | moving average (only for the MA model name) |
+| `chunk` (RAG) | A windowed segment of a source document with its own embedding | section, paragraph |
+| `days_since_launch` | Continuous integer offset from `product.launch_date` to a sales-daily row, used as a lifecycle feature (`days_since_launch_lag{N}`) | lifecycle_stage (Phase 2 dropped the categorical) |
+| `replenishment event` | One row in `replenishment_event` representing inbound stock at `(store, product, date)`; feature cadence is derived from event spacing | inbound order, restock (those would be different grains) |
+| `promotion (kind)` | One row in `promotion` with `kind ∈ {pct_off, bogo, bundle, markdown}`; features are one-hot per kind via `PromotionConfig.kinds_to_track` | discount, sale (kind is the discriminator, not "promotion" in the colloquial sense) |
+| `scenario` (seeder) | A YAML or in-code preset (`retail_standard`, `holiday_rush`, …) that wires `DimensionConfig` + `FactsConfig` | template, profile |
+
+## Event Taxonomy
+
+None. There is no async event bus by design (`product-vision.md`: not a streaming system). All workflows are request/response or in-process tool-call.
+
+## Entity Relationship Summary
+
+```
+store ─────┐
+           ├──► sales_daily ◄──── price_history
+product ───┤                 ◄──── promotion
+           ├──► inventory_snapshot_daily
+calendar ──┘
+
+model_run ──owns──► artifact (on disk; SHA-256 verified)
+model_run ◄─points-to── run_alias
+
+rag_source ──owns──► rag_chunk (with pgvector embedding)
+
+agent_session ──owns──► message_history (JSONB) ──may-contain──► tool_call (pending approval)
+
+job ──may-reference──► model_run (for train/backtest jobs)
+```
+
+## Glossary (cross-cutting)
+
+| Term | Definition | Context |
+|------|------------|---------|
+| HITL | Human-in-the-loop — agent pauses for `/approve` call | Agents |
+| RFC 7807 | `application/problem+json` error envelope | API |
+| HNSW | Hierarchical Navigable Small World — pgvector index type | RAG |
+| SMAPE | Symmetric Mean Absolute Percentage Error (0–200 scale) | Backtesting metrics |
+| WAPE | Weighted Absolute Percentage Error | Backtesting metrics |
+| PRP | Project Requirements Plan — the doc that gates a vertical-slice implementation | Workflow |
+| INITIAL-N | Discovery-phase doc that precedes a PRP | Workflow |
+| "The Forge" | Internal name for the seeder (`app/shared/seeder/`) | Seeder |
+
+
+# ===== File: docs/_base/REPO_MAP_INDEX.md =====
+
+# Repo Map Index
+> LLM: Read this index first. Load individual docs ONLY when the current task touches
+> that domain. Do NOT pre-load all docs.
+>
+> Last updated: 2026-05-11 | Generator: w7_generating-claudemd skill (heuristic mode) | Docs: 8
+
+## System at a Glance
+
+ForecastLabAI is a portfolio-grade, single-host retail-demand-forecasting system. One developer maintains it; one `docker-compose up` brings it up. The backend is FastAPI + SQLAlchemy 2.0 async against PostgreSQL 16 + pgvector; the frontend is React 19 + Vite + Tailwind 4 + shadcn/ui. Eleven vertical slices under `app/features/` cover the full lifecycle (data platform → ingest → features → forecasting → backtesting → registry → RAG → agents → dashboard surfaces). Pre-1.0; release-please drives SemVer; merges flow `dev` → `main`.
+
+## Document Index
+
+> NOTE: `docs/_kB/repo-map/` does NOT exist in this repo. Run the `mapping-repo-context` skill to populate it; once present, this index can be regenerated against the KB. The table below points at the **actual** discovery surface today.
+
+| File | What it answers | Load when... |
+|------|-----------------|--------------|
+| [`README.md`](../../README.md) | Canonical quick-start, feature list, endpoint reference, frontend stack | Onboarding, demoing, sanity-checking an endpoint shape |
+| [`CLAUDE.md`](../../CLAUDE.md) | Operating index, commands, conventions, safety | Start of every Claude session |
+| [`CHANGELOG.md`](../../CHANGELOG.md) | release-please-managed release notes | Investigating when behavior changed |
+| [`pyproject.toml`](../../pyproject.toml) | Dependencies, ruff/mypy/pyright/pytest config | Tooling questions, version bumps |
+| [`docker-compose.yml`](../../docker-compose.yml) | Local Postgres+pgvector definition | Debugging DB connectivity, ports |
+| [`Makefile`](../../Makefile) | `make demo` / `demo-quick` / `demo-clean` entry points (PRP-15) | Running the end-to-end demo pipeline |
+| [`scripts/run_demo.py`](../../scripts/run_demo.py) | End-to-end pipeline driver — seed → features → train ×3 → backtest → register → alias → agent | First-run demonstrability, integration debugging |
+| [`app/features/demo/`](../../app/features/demo/) | In-process e2e demo slice — `POST /demo/run` + `WS /demo/stream` drive the pipeline via `ASGITransport` (no cross-slice imports) | Showcase page, in-product demo |
+| [`frontend/src/pages/showcase.tsx`](../../frontend/src/pages/showcase.tsx) | The Showcase page — streams the live pipeline into the dashboard as status cards | Demoing the system in-browser |
+| [`frontend/src/pages/knowledge.tsx`](../../frontend/src/pages/knowledge.tsx) | The Knowledge page — indexed RAG corpus, live semantic search, and live system state | Surfacing what the agents can draw on |
+| [`frontend/src/pages/guide.tsx`](../../frontend/src/pages/guide.tsx) | The Agent Guide page — agent tools, approval gate, live session limits, example prompts | Explaining how to use the chat agents |
+| [`frontend/src/pages/explorer/store-detail.tsx`](../../frontend/src/pages/explorer/store-detail.tsx) | The store detail page — entity profile, date-scoped KPIs, revenue-over-time chart, top-products drilldown | Investigating a single store |
+| [`frontend/src/pages/explorer/product-detail.tsx`](../../frontend/src/pages/explorer/product-detail.tsx) | The product detail page — profile, KPIs, revenue + lifecycle-demand curves, top-stores drilldown | Investigating a single product |
+| [`frontend/src/pages/explorer/run-detail.tsx`](../../frontend/src/pages/explorer/run-detail.tsx) | The model-run detail page — profile, JSON config/metrics/runtime info, store/product cross-links, artifact integrity verify, compare link | Investigating a single model run |
+| [`frontend/src/pages/explorer/job-detail.tsx`](../../frontend/src/pages/explorer/job-detail.tsx) | The job detail page — profile, params/result JSON, error details, linked run, cancel action, live polling | Investigating a single job |
+| [`frontend/src/pages/explorer/run-compare.tsx`](../../frontend/src/pages/explorer/run-compare.tsx) | The run-comparison page — two run pickers, side-by-side profile, config_diff, metrics_diff with delta indicators; deep-linkable via `?a=&b=` | Comparing two model runs |
+| [`frontend/src/pages/visualize/demand.tsx`](../../frontend/src/pages/visualize/demand.tsx) | The Demand Planner page — completed `predict` jobs rolled into a multi-SKU table (tomorrow/next-week/next-month demand + inventory requirement), lead-time selector, single-SKU drill-in | Answering "how much will this SKU sell, and do I have enough stock?" |
+| [`alembic/versions/`](../../alembic/versions/) | Six migrations through `d6e0f2g3h456_create_agent_session_table.py` | DB-schema questions, migration drift |
+| [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) | Phase-by-phase architecture narrative | High-level component reasoning |
+| [`docs/PHASE-index.md`](../PHASE-index.md) | Index of all 11 phase docs | Locating per-phase deep-dive |
+| [`docs/PHASE/*.md`](../PHASE/) | Per-phase implementation reference | Slice-specific deep dives |
+| [`docs/ADR/ADR-INDEX.md`](../ADR/ADR-INDEX.md) | Architectural decision records | Why a tech choice was made |
+| [`docs/DAILY-FLOW.md`](../DAILY-FLOW.md) | Developer day-in-the-life loop | Onboarding a contributor |
+| [`docs/GIT-GITHUB-GUIDE.md`](../GIT-GITHUB-GUIDE.md) | Branch/PR/release workflow | Anything git/PR-related |
+| [`docs/PHASE-FLOW.md`](../PHASE-FLOW.md) | INITIAL → PRP → code pipeline | Authoring new feature requests |
+| [`docs/validation/*.md`](../validation/) | Tooling standards (ruff, mypy, pyright, pytest, logging) | Configuring/justifying CI gates |
+| [`docs/github/`](../github/) | CI/CD workflow reference + diagrams | Pipeline troubleshooting |
+| [`docs/rag-ollama-setup.md`](../rag-ollama-setup.md) | Local-embedding setup | Switching off OpenAI embeddings |
+| [`docs/DATA-SEEDER.md`](../DATA-SEEDER.md) | "The Forge" seeder operating guide | Generating / refreshing local data |
+| [`PRPs/PRP-*.md`](../../PRPs/) | Per-phase project requirements plans (PRP-0 through PRP-13) | Implementing or extending a phase |
+| [`INITIAL-*.md`](../../PRPs/INITIAL/) | Pre-PRP discovery docs | Tracing a feature back to its origin |
+| [`.claude/rules/*.md`](../../.claude/rules/) | Project rules (commit-format, branch-naming, security-patterns, product-vision, test-requirements, ui-design, versioning, output-formatting) | Any behavioral decision Claude makes |
+| [`.claude/skills/`](../../.claude/skills/) | Slash-command skills (audit-rules-drift, commit-format-check, issue-to-subtasks, repo-visibility-audit, w7_generating-claudemd, …) | Picking the right workflow |
+| [`.claude/hooks/check-commit-format.sh`](../../.claude/hooks/check-commit-format.sh) | Pre-commit enforcement of `type(scope): description (#issue)` | Debugging blocked commits |
+| [`HANDOFF.md`](../../HANDOFF.md) | Latest session handoff | Resuming context across sessions |
+| [`.handoffs/`](../../.handoffs/) | Archived handoffs | Historical session context |
+| [`docs/_base/ARCHITECTURE.md`](ARCHITECTURE.md) | System boundaries, components, comm patterns | Architectural changes, blast radius |
+| [`docs/_base/API_CONTRACTS.md`](API_CONTRACTS.md) | HTTP + WebSocket endpoint surface | API changes, integration |
+| [`docs/_base/RUNBOOKS.md`](RUNBOOKS.md) | Common incidents + resolutions | Debugging, recovery |
+| [`docs/_base/SECURITY.md`](SECURITY.md) | Threat model, secrets, scanning | Security review, audit |
+| [`docs/_base/RULES.md`](RULES.md) | Change authority + invariants | Any sensitive change |
+| [`docs/_base/DOMAIN_MODEL.md`](DOMAIN_MODEL.md) | Aggregates, invariants, ubiquitous language | Naming, modeling, new entity |
+| [`docs/_base/DEV_GUIDE.md`](DEV_GUIDE.md) | Human-maintained onboarding (stub) | Onboarding (after a human fills it in) |
+| [`docs/_base/PIPELINE_CONTRACT.md`](PIPELINE_CONTRACT.md) | CI/CD stages, merge gates, release flow | CI changes, release planning |
+
+## Dependency Hotspots (high blast-radius targets)
+
+| Component | Why it's hot | Risk |
+|-----------|--------------|------|
+| `app/core/database.py` | Every slice's `service.py` opens a session through it | CRITICAL — breakage cascades |
+| `app/core/problem_details.py` | Every error path serializes through it | HIGH — affects all error responses |
+| `app/main.py` | Wires every router; central CORS + middleware | HIGH — wiring regression blocks the API |
+| `app/features/data_platform/models.py` | Every fact table FK lands here | HIGH — migration drift breaks many tests |
+| `app/features/featuresets/tests/test_leakage.py` | Load-bearing spec | HIGH — weakening it lets leakage land |
+| `app/features/agents/service.py` + `tools/*` | HITL gates + tool wiring | HIGH — security boundary |
+| `alembic/versions/` | Forward-only; CI `migration-check` enforces | HIGH — edit-after-merge corrupts deploys |
+
+## Tech Stack Snapshot
+
+| Category | Technology | Status |
+|----------|------------|--------|
+| Backend language | Python 3.12 | Pinned |
+| Backend framework | FastAPI ≥ 0.115 + Pydantic v2 + SQLAlchemy 2.0 async | Pinned |
+| ML / data | pandas ≥ 3, numpy ≥ 2.4, scikit-learn ≥ 1.6, joblib, LightGBM (opt-in) | Pinned |
+| Agents | PydanticAI ≥ 1.80, anthropic ≥ 0.50, openai ≥ 1.40 | Pinned |
+| RAG | pgvector ≥ 0.3, tiktoken ≥ 0.7, Ollama (optional) | Pinned |
+| Frontend | React 19, Vite 7, TypeScript 5.9, Tailwind 4, shadcn/ui (New York) | Pinned |
+| Primary DB | PostgreSQL 16 + pgvector (`pgvector/pgvector:pg16`) | Pinned |
+| Package manager | uv (Python), pnpm via corepack (JS) | Pinned |
+| IaC | none — `docker-compose` single-host | By design (`product-vision.md`) |
+| Orchestration | none — single uvicorn process | By design |
+| CI/CD | GitHub Actions + release-please | Pinned |
+
+## Index Update History (last 5 generations)
+
+| Date | Change | Who |
+|------|--------|-----|
+| 2026-05-11 | Initial generation (heuristic mode — `docs/_kB/repo-map/` absent) | w7_generating-claudemd skill |
+
+
+# ===== File: docs/_base/PIPELINE_CONTRACT.md =====
+
+# Pipeline Contract
+> Generated by: w7_generating-claudemd skill
+> Source: `.github/workflows/ci.yml`, `.github/workflows/cd-release.yml`, `.github/workflows/dependency-check.yml`, `.github/workflows/phase-snapshot.yml`, `.github/workflows/schema-validation.yml`, `release-please-config.json`, `.release-please-manifest.json`, `.claude/rules/versioning.md`.
+> Last reviewed: 2026-05-11
+
+## Required Stages — `ci.yml` (runs on push to `main`/`dev`/`release-please--*` and on PRs to `main`/`dev`)
+
+| Stage | Job | Blocking | On Fail | Runs On |
+|-------|-----|----------|---------|---------|
+| Lint + format | `lint` (ruff check + ruff format --check) | YES | Block merge | Every PR push, every branch push |
+| Type check (mypy --strict) | `typecheck` | YES | Block merge | Every PR push |
+| Type check (pyright --strict) | `typecheck` | YES | Block merge | Every PR push |
+| Tests (unit + integration) | `test` against Postgres+pgvector service | YES | Block merge | Every PR push |
+| Migration check (upgrade fresh DB) | `migration-check` against Postgres service | YES | Block merge | Every PR push |
+
+`concurrency.cancel-in-progress: true` on the workflow group — stale runs canceled on new push.
+
+**NEVER** merge if any of those five jobs is red. **NEVER** add a `--no-verify` / `[skip ci]` path for production merges.
+
+## Release Pipeline — `cd-release.yml` (runs on push to `main`)
+
+| Stage | Job | Blocking | Notes |
+|-------|-----|----------|-------|
+| Release-please open/update Release PR | `release-please` | N/A | Only effect on most pushes |
+| Build Python wheel + sdist | `build-package` (gated `if: release_created == 'true'`) | YES on release commits | `uv build`, then upload to GitHub Release tag |
+| Upload `dist/` as workflow artifact (90-day retention) | inside `build-package` | YES | `actions/upload-artifact@v7` |
+
+A "release commit" only occurs when a maintainer merges the open Release PR — which is the only moment release-please tags `vX.Y.Z` and runs the build/upload chain. Pre-1.0 bumps: `feat:` → PATCH, `feat!:` / `BREAKING CHANGE:` → MINOR (`bump-minor-pre-major: true`, `bump-patch-for-minor-pre-major: true`). See `.claude/rules/versioning.md`.
+
+## Other Workflows
+
+| Workflow | Trigger | Purpose | Blocking? |
+|----------|---------|---------|-----------|
+| `dependency-check.yml` | Weekly cron (Sun 00:00 UTC) + `workflow_dispatch` (input `fail_on_vulnerabilities` default `true`) | Python vulnerability scan | No — runs out-of-band, not on PR; failure does not block merges directly |
+| `phase-snapshot.yml` | Push to `phase-*` branches | Full validation snapshot (incl. Postgres+pgvector test DB) for phase-tracking branches | No — only fires on `phase-*` branches, informational |
+| `schema-validation.yml` | Push / PR with paths under `alembic/**`, `app/**/models.py`, `app/core/database.py` | Schema/migration validation against fresh Postgres+pgvector | Conditional — only triggers on schema-touching changes; should be GREEN before merge when it runs |
+
+## Merge Conditions (ALL must be true)
+
+Branch protection (verified via `gh api repos/w7-mgfcode/ForecastLabAI/branches/{dev,main}/protection` on 2026-05-14):
+
+- [ ] **`dev`** — required status checks (strict, must be up-to-date): `Lint & Format`, `Type Check`, `Test`, `Migration Check`; `required_approving_review_count: 1`; `dismiss_stale_reviews: true`; `allow_force_pushes: false`; `allow_deletions: false`.
+- [ ] **`main`** — required status checks (strict, must be up-to-date): `Lint & Format`, `Type Check`, `Test`, `Migration Check`; `required_approving_review_count: 1`; `dismiss_stale_reviews: false`; `allow_force_pushes: false`; `allow_deletions: false`. Mirrors the four `dev` gates so the release boundary (`dev` → `main`) cannot land with broken CI (issue #108).
+- [ ] Conventional Commit message validated by `.claude/hooks/check-commit-format.sh` locally.
+- [ ] No unresolved review comments.
+- [ ] Branch up-to-date with `dev` (for `dev` merges) or `main` (for `dev → main` PRs).
+
+> Note: `enforce_admins: false` on both branches — admin merge is possible (see "release-please skipped the bump after a dev → main merge" runbook), but should be reserved for the empty-`feat:`-trigger workaround. **With the `main` status-checks added (#108), an admin-merge of the empty-`feat:` trigger still has to wait for the same four CI jobs to complete on the trigger PR before merging — plan for ~3-5 min wall-clock between push and merge.**
+
+## Failure Gates
+
+| Condition | Action |
+|-----------|--------|
+| Any blocking CI job red | Block merge |
+| Alembic migration fails to apply on fresh DB | Block merge (caught by `migration-check`) |
+| `mypy --strict` or `pyright --strict` error | Block merge |
+| `ruff check` fails | Block merge |
+| `ruff format --check` fails | Block merge (run `ruff format .` locally) |
+| Integration tests fail with stale local Postgres | Run `docker compose down -v && docker compose up -d && uv run alembic upgrade head` and retry |
+
+## Secret Usage Model
+
+- App secrets (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, etc.) live in `.env` locally; never committed (`.env.example` is the schema).
+- CI secrets: `RELEASE_PAT` (optional — used to trigger CI on release-please PRs). `GITHUB_TOKEN` is always available. Stored in GitHub repo secrets; never in workflow YAML.
+- No agent / pipeline ever rotates a secret automatically.
+
+## Artifact Contract
+
+| Artifact | Produced By | Consumed By | TTL | Naming |
+|----------|-------------|-------------|-----|--------|
+| `dist/*.whl` + `dist/*.tar.gz` | `build-package` job | GitHub Release attachments + workflow artifact | 90 days (workflow artifact); permanent on Release | release-please-pinned `vX.Y.Z` |
+| GitHub Release | release-please-action | Humans (download) | Permanent | `vX.Y.Z` |
+| Test report (stdout) | `test` job | CI logs | 90 days (GitHub Actions default) | per run |
+
+## Environment Promotion Rules
+
+```
+feat|fix|chore|docs|refactor|test/<slug>   →  PR to dev               →  merge after CI green
+dev                                         →  PR to main              →  CI green → merge
+main                                        →  release-please opens Release PR
+Release PR on main                          →  merge                   →  tag vX.Y.Z + Release + wheel upload
+hotfix/<slug>                               →  branch off main → PR to main directly (hotfix flow per branch-naming.md)
+```
+
+**NEVER** push directly to `main`. **NEVER** `git push --force` `dev` or `main`.
+
+## Pipeline Configuration Standards
+
+```yaml
+# From ci.yml — pattern to keep when adding new workflows
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"   # do not drift from pyproject.toml requires-python
+  UV_VERSION: "0.5"
+```
+
+## Rollback Procedure
+
+There is no live deployment to roll back. To recover from a bad release:
+
+1. `git revert <bad-commit-sha>` on `dev`.
+2. PR `dev` → `main`.
+3. Merge the Release PR opened by release-please → new patch tag (`vX.Y.(Z+1)`).
+4. (Optional) Mark the bad GitHub Release as a pre-release or add a notice.
+
+Never delete or move a published tag.

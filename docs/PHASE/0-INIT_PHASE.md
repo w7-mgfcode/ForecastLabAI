@@ -575,7 +575,7 @@ Phase 0 provides the foundation for:
 ## References
 
 - [PRP-0: Project Foundation](../../PRPs/PRP-0-project-foundation.md)
-- [INITIAL-0: Foundation Requirements](../../INITIAL-0.md)
+- [INITIAL-0: Foundation Requirements](../../PRPs/INITIAL/INITIAL-0.md)
 - [Architecture Overview](../ARCHITECTURE.md)
 - [Logging Standard](../validation/logging-standard.md)
 - [Type Checking Standards](../validation/mypy-standard.md)

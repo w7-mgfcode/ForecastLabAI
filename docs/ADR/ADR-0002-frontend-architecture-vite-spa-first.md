@@ -56,5 +56,5 @@ Path aliases (`@/`) configured in both `tsconfig.json` and `vite.config.ts`.
 API proxy configured to forward `/api/*` requests to `http://localhost:8123`.
 
 ## Links
-- INITIAL: `INITIAL-11A.md` (Frontend Setup), `INITIAL-11B.md` (Architecture), `INITIAL-11C.md` (Pages)
+- INITIAL: `PRPs/INITIAL/INITIAL-11A.md` (Frontend Setup), `PRPs/INITIAL/INITIAL-11B.md` (Architecture), `PRPs/INITIAL/INITIAL-11C.md` (Pages)
 - PRP: `PRPs/PRP-11A-frontend-setup.md`

@@ -30,6 +30,7 @@ ForecastLabAI is a portfolio-grade, single-host retail-demand-forecasting system
 | [`frontend/src/pages/explorer/run-detail.tsx`](../../frontend/src/pages/explorer/run-detail.tsx) | The model-run detail page — profile, JSON config/metrics/runtime info, store/product cross-links, artifact integrity verify, compare link | Investigating a single model run |
 | [`frontend/src/pages/explorer/job-detail.tsx`](../../frontend/src/pages/explorer/job-detail.tsx) | The job detail page — profile, params/result JSON, error details, linked run, cancel action, live polling | Investigating a single job |
 | [`frontend/src/pages/explorer/run-compare.tsx`](../../frontend/src/pages/explorer/run-compare.tsx) | The run-comparison page — two run pickers, side-by-side profile, config_diff, metrics_diff with delta indicators; deep-linkable via `?a=&b=` | Comparing two model runs |
+| [`frontend/src/pages/visualize/demand.tsx`](../../frontend/src/pages/visualize/demand.tsx) | The Demand Planner page — completed `predict` jobs rolled into a multi-SKU table (tomorrow/next-week/next-month demand + inventory requirement), lead-time selector, single-SKU drill-in | Answering "how much will this SKU sell, and do I have enough stock?" |
 | [`alembic/versions/`](../../alembic/versions/) | Six migrations through `d6e0f2g3h456_create_agent_session_table.py` | DB-schema questions, migration drift |
 | [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) | Phase-by-phase architecture narrative | High-level component reasoning |
 | [`docs/PHASE-index.md`](../PHASE-index.md) | Index of all 11 phase docs | Locating per-phase deep-dive |
@@ -43,7 +44,7 @@ ForecastLabAI is a portfolio-grade, single-host retail-demand-forecasting system
 | [`docs/rag-ollama-setup.md`](../rag-ollama-setup.md) | Local-embedding setup | Switching off OpenAI embeddings |
 | [`docs/DATA-SEEDER.md`](../DATA-SEEDER.md) | "The Forge" seeder operating guide | Generating / refreshing local data |
 | [`PRPs/PRP-*.md`](../../PRPs/) | Per-phase project requirements plans (PRP-0 through PRP-13) | Implementing or extending a phase |
-| [`INITIAL-*.md`](../../) (repo root) | Pre-PRP discovery docs | Tracing a feature back to its origin |
+| [`INITIAL-*.md`](../../PRPs/INITIAL/) | Pre-PRP discovery docs | Tracing a feature back to its origin |
 | [`.claude/rules/*.md`](../../.claude/rules/) | Project rules (commit-format, branch-naming, security-patterns, product-vision, test-requirements, ui-design, versioning, output-formatting) | Any behavioral decision Claude makes |
 | [`.claude/skills/`](../../.claude/skills/) | Slash-command skills (audit-rules-drift, commit-format-check, issue-to-subtasks, repo-visibility-audit, w7_generating-claudemd, …) | Picking the right workflow |
 | [`.claude/hooks/check-commit-format.sh`](../../.claude/hooks/check-commit-format.sh) | Pre-commit enforcement of `type(scope): description (#issue)` | Debugging blocked commits |

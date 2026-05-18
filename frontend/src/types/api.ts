@@ -97,6 +97,57 @@ export interface TimeSeriesResponse {
   category: string | null
 }
 
+// One forecast point from a completed `predict` job's result.forecasts array.
+// lower_bound / upper_bound are present only for models that emit intervals.
+export interface ForecastPoint {
+  date: string // ISO date
+  forecast: number
+  lower_bound?: number | null
+  upper_bound?: number | null
+}
+
+// One item of GET /analytics/inventory-status — the latest inventory snapshot
+// for one (store, product) grain.
+export interface InventoryStatusItem {
+  store_id: number
+  product_id: number
+  date: string // ISO date (latest snapshot)
+  on_hand_qty: number
+  on_order_qty: number
+  is_stockout: boolean
+}
+
+// Response from GET /analytics/inventory-status (one item per grain).
+export interface InventoryStatusResponse {
+  items: InventoryStatusItem[]
+  total_items: number
+  store_id: number | null
+  product_id: number | null
+}
+
+// Client-derived view-model row for the Demand Planner table (camelCase — NOT
+// a wire contract). One per completed `predict` job. `onHand`/`onOrder`/
+// `inventoryRequirement` are null when no inventory snapshot exists for the grain.
+export interface DemandRow {
+  jobId: string
+  runId: string | null
+  storeId: number
+  productId: number
+  sku: string
+  productName: string
+  modelType: string
+  horizon: number
+  tomorrow: number
+  nextWeek: number
+  nextMonth: number
+  nextMonthPartial: boolean
+  onHand: number | null
+  onOrder: number | null
+  isStockout: boolean
+  inventoryRequirement: number | null
+  forecasts: ForecastPoint[]
+}
+
 // One day of a product's lifecycle demand curve.
 export interface LifecyclePoint {
   date: string // ISO date

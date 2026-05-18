@@ -16,6 +16,7 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 | analytics | GET | `/analytics/kpis` | Aggregated KPIs (revenue, units, transactions, avg unit price, avg basket) |
 | analytics | GET | `/analytics/drilldowns` | Group-by dimension: store / product / category / region / date |
 | analytics | GET | `/analytics/timeseries` | Period-bucketed sales series (`granularity` = day/week/month/quarter) for revenue-over-time charts; reuses `validate_date_range` (inverted/over-730-day ranges 400) |
+| analytics | GET | `/analytics/inventory-status` | Latest `inventory_snapshot_daily` row per `(store, product)` grain (Postgres `DISTINCT ON`); optional `store_id`/`product_id` filters; `200` + empty list on an empty table (never `404`) |
 | featuresets | POST | `/featuresets/compute` | Compute time-safe features (lag/rolling/calendar, leakage-prevented) |
 | featuresets | POST | `/featuresets/preview` | Preview features with sample rows |
 | forecasting | POST | `/forecasting/train` | Train a model (naive / seasonal_naive / moving_average / lightgbm) |

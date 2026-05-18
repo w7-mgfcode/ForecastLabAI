@@ -18,13 +18,20 @@ from app.features.analytics.schemas import (
     DrilldownDimension,
     DrilldownItem,
     DrilldownResponse,
+    InventoryStatusItem,
+    InventoryStatusResponse,
     KPIMetrics,
     KPIResponse,
     TimeGranularity,
     TimeSeriesPoint,
     TimeSeriesResponse,
 )
-from app.features.data_platform.models import Product, SalesDaily, Store
+from app.features.data_platform.models import (
+    InventorySnapshotDaily,
+    Product,
+    SalesDaily,
+    Store,
+)
 
 logger = get_logger(__name__)
 
@@ -385,4 +392,59 @@ class AnalyticsService:
             store_id=store_id,
             product_id=product_id,
             category=category,
+        )
+
+    async def compute_inventory_status(
+        self,
+        db: AsyncSession,
+        store_id: int | None = None,
+        product_id: int | None = None,
+    ) -> InventoryStatusResponse:
+        """Return the latest inventory snapshot per (store, product) grain.
+
+        Uses Postgres ``DISTINCT ON`` — the DISTINCT ON columns
+        (store_id, product_id) lead the ORDER BY, followed by ``date DESC``,
+        so the first row kept per grain is the most recent snapshot.
+
+        Args:
+            db: Database session.
+            store_id: Filter by store ID (optional).
+            product_id: Filter by product ID (optional).
+
+        Returns:
+            Latest snapshot per grain. An empty list when no snapshots exist.
+        """
+        stmt = (
+            select(InventorySnapshotDaily)
+            .order_by(
+                InventorySnapshotDaily.store_id,
+                InventorySnapshotDaily.product_id,
+                InventorySnapshotDaily.date.desc(),
+            )
+            .distinct(
+                InventorySnapshotDaily.store_id,
+                InventorySnapshotDaily.product_id,
+            )
+        )
+
+        if store_id is not None:
+            stmt = stmt.where(InventorySnapshotDaily.store_id == store_id)
+        if product_id is not None:
+            stmt = stmt.where(InventorySnapshotDaily.product_id == product_id)
+
+        rows = (await db.execute(stmt)).scalars().all()
+        items = [InventoryStatusItem.model_validate(row) for row in rows]
+
+        logger.info(
+            "analytics.inventory_status_computed",
+            count=len(items),
+            store_id=store_id,
+            product_id=product_id,
+        )
+
+        return InventoryStatusResponse(
+            items=items,
+            total_items=len(items),
+            store_id=store_id,
+            product_id=product_id,
         )
