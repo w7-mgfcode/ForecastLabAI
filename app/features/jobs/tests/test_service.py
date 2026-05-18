@@ -93,7 +93,15 @@ def _make_response(*, with_baselines: bool = True, nan_stability: bool = False) 
 
 def test_shape_backtest_result_includes_fold_metrics() -> None:
     """fold_metrics is populated, one entry per fold, with 1-based fold numbers."""
-    result = _shape_backtest_result(_make_response(), "seasonal_naive")
+    response = _make_response()
+    result = _shape_backtest_result(response, "seasonal_naive")
+
+    # top-level fields are passed through unchanged
+    assert result["backtest_id"] == response.backtest_id
+    assert result["model_type"] == "seasonal_naive"
+    assert result["duration_ms"] == response.duration_ms
+
+    # per-fold metrics are present and correctly shaped
     assert result["n_splits"] == 2
     assert [f["fold"] for f in result["fold_metrics"]] == [1, 2]
     assert result["fold_metrics"][0]["mae"] == 10.0
@@ -127,6 +135,20 @@ def test_shape_backtest_result_coerces_nan_stability() -> None:
     """NaN metrics are coerced to 0.0 — Postgres jsonb rejects non-finite floats."""
     result = _shape_backtest_result(_make_response(nan_stability=True), "seasonal_naive")
     assert result["aggregated_metrics"]["stability_index"] == 0.0
+
+
+def test_shape_backtest_result_defaults_missing_metric_to_zero() -> None:
+    """A metric absent from the response defaults to 0.0 instead of being dropped.
+
+    Guards against silent drift if the backtesting service stops emitting one of
+    the _BACKTEST_METRICS keys.
+    """
+    response = _make_response()
+    del response.main_model_results.aggregated_metrics["bias"]
+    result = _shape_backtest_result(response, "seasonal_naive")
+    # the *_mean key is still present in the contract, just zeroed
+    assert result["aggregated_metrics"]["bias_mean"] == 0.0
+    assert "bias_mean" in result["aggregated_metrics"]
 
 
 def test_finite_coerces_non_finite_values() -> None:

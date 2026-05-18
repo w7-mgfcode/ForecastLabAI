@@ -35,6 +35,17 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# The metrics the /visualize/backtest dashboard reads. The job result is a
+# fixed contract with the frontend (BacktestResult in backtest.tsx), so this
+# set is enumerated here rather than derived from the response — but a missing
+# key is logged (see _shape_backtest_result) so any drift is loud, not silent.
+_BACKTEST_METRICS: tuple[str, ...] = ("mae", "smape", "wape", "bias")
+
+# Metric whose fold-to-fold stability surfaces as the headline `stability_index`.
+# WAPE is the demo's primary model-selection metric, so its stability is the
+# most meaningful single number; change this constant to pick a different one.
+_STABILITY_METRIC: str = "wape"
+
 
 def _finite(value: float) -> float:
     """Coerce NaN/inf to 0.0 so a job result stays JSON/JSONB-safe.
@@ -53,6 +64,10 @@ def _shape_backtest_result(response: BacktestResponse, model_type: str) -> dict[
     This shapes it into exactly what ``/visualize/backtest`` expects:
     ``aggregated_metrics`` with ``*_mean`` keys plus ``stability_index``,
     ``fold_metrics``, and (when baselines ran) ``baseline_comparison``.
+
+    The metric set is ``_BACKTEST_METRICS``; ``stability_index`` is the stability
+    of ``_STABILITY_METRIC`` (WAPE). A metric absent from the response is logged
+    and defaulted to ``0.0`` rather than failing silently.
     """
     main = response.main_model_results
     agg = main.aggregated_metrics
@@ -60,28 +75,34 @@ def _shape_backtest_result(response: BacktestResponse, model_type: str) -> dict[
     # keyed "<metric>_stability".
     stability = main.metric_std
 
+    missing = [m for m in _BACKTEST_METRICS if m not in agg]
+    if missing:
+        logger.warning(
+            "jobs.backtest_metrics_missing",
+            missing=missing,
+            available=sorted(agg),
+        )
+
     fold_metrics = [
         {
             "fold": fold.fold_index + 1,
-            "mae": _finite(fold.metrics.get("mae", 0.0)),
-            "smape": _finite(fold.metrics.get("smape", 0.0)),
-            "wape": _finite(fold.metrics.get("wape", 0.0)),
-            "bias": _finite(fold.metrics.get("bias", 0.0)),
+            **{m: _finite(fold.metrics.get(m, 0.0)) for m in _BACKTEST_METRICS},
         }
         for fold in main.fold_results
     ]
+
+    aggregated_metrics: dict[str, float] = {
+        f"{m}_mean": _finite(agg.get(m, 0.0)) for m in _BACKTEST_METRICS
+    }
+    aggregated_metrics["stability_index"] = _finite(
+        stability.get(f"{_STABILITY_METRIC}_stability", 0.0)
+    )
 
     result: dict[str, Any] = {
         "backtest_id": response.backtest_id,
         "model_type": model_type,
         "n_splits": len(main.fold_results),
-        "aggregated_metrics": {
-            "mae_mean": _finite(agg.get("mae", 0.0)),
-            "smape_mean": _finite(agg.get("smape", 0.0)),
-            "wape_mean": _finite(agg.get("wape", 0.0)),
-            "bias_mean": _finite(agg.get("bias", 0.0)),
-            "stability_index": _finite(stability.get("wape_stability", 0.0)),
-        },
+        "aggregated_metrics": aggregated_metrics,
         "fold_metrics": fold_metrics,
         "duration_ms": response.duration_ms,
     }
