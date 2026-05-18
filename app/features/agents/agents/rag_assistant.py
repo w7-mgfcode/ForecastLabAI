@@ -19,6 +19,7 @@ from app.features.agents.agents.base import (
     SAFETY_INSTRUCTIONS,
     SYSTEM_PROMPT_HEADER,
     build_agent_model,
+    get_agent_retries,
     get_model_identifier,
     get_model_settings,
     validate_api_key_for_model,
@@ -80,6 +81,7 @@ def create_rag_assistant_agent() -> Agent[AgentDeps, RAGAnswer]:
     validate_api_key_for_model(identifier)  # Fail-fast validation
     model = build_agent_model(identifier)  # str for cloud, Model object for ollama
 
+    retries = get_agent_retries()
     agent: Agent[AgentDeps, RAGAnswer] = Agent(
         model=model,
         deps_type=AgentDeps,
@@ -88,6 +90,10 @@ def create_rag_assistant_agent() -> Agent[AgentDeps, RAGAnswer]:
         # weaker/local models fail to satisfy (issue #173).
         output_type=PromptedOutput(RAGAnswer),
         system_prompt=RAG_SYSTEM_PROMPT,
+        # Apply the configured agent_retry_attempts. Without this PydanticAI
+        # defaults to 1, and weaker models fail structured-output validation.
+        output_retries=retries,
+        tool_retries=retries,
         **get_model_settings(),
     )
 
