@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.2.10](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.9...v0.2.10) (2026-05-18)
+
+
+### Features
+
+* release v0.2.10 — demo showcase page + e2e pipeline ([#134](https://github.com/w7-mgfcode/ForecastLabAI/issues/134)) ([2ea68ae](https://github.com/w7-mgfcode/ForecastLabAI/commit/2ea68ae1b875e48013fe7f09e9850ef648e0f616))
+
+## [0.2.9](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.8...v0.2.9) (2026-05-14)
+
+
+### Features
+
+* **api,docs:** codify pydantic strict-mode policy as pytest invariant ([#120](https://github.com/w7-mgfcode/ForecastLabAI/issues/120)) ([#121](https://github.com/w7-mgfcode/ForecastLabAI/issues/121)) ([89b197d](https://github.com/w7-mgfcode/ForecastLabAI/commit/89b197dcac4176d1b9585886a3e5b9e4de30ce3f))
+* **features,docs:** land phase 2 e2e integration and docs ([#109](https://github.com/w7-mgfcode/ForecastLabAI/issues/109)) ([#115](https://github.com/w7-mgfcode/ForecastLabAI/issues/115)) ([56de87c](https://github.com/w7-mgfcode/ForecastLabAI/commit/56de87c26dc5e0f1e1e7262cf4d09545b42643d7))
+* **features:** implement lifecycle compute method ([#109](https://github.com/w7-mgfcode/ForecastLabAI/issues/109)) ([#111](https://github.com/w7-mgfcode/ForecastLabAI/issues/111)) ([902d82a](https://github.com/w7-mgfcode/ForecastLabAI/commit/902d82acb4ccfb0c141f815ea42b427735c99223))
+* **features:** implement promotion compute method ([#109](https://github.com/w7-mgfcode/ForecastLabAI/issues/109)) ([#112](https://github.com/w7-mgfcode/ForecastLabAI/issues/112)) ([52f6497](https://github.com/w7-mgfcode/ForecastLabAI/commit/52f6497ea585a5df06d287896cbb52bcceada1e4))
+* **features:** implement replenishment compute method ([#109](https://github.com/w7-mgfcode/ForecastLabAI/issues/109)) ([#114](https://github.com/w7-mgfcode/ForecastLabAI/issues/114)) ([b39c940](https://github.com/w7-mgfcode/ForecastLabAI/commit/b39c940d801296a4a3316d1544aa1cb2e1a65ca9))
+* **features:** lower ReplenishmentConfig count_window_days floor to 3 ([#113](https://github.com/w7-mgfcode/ForecastLabAI/issues/113)) ([#122](https://github.com/w7-mgfcode/ForecastLabAI/issues/122)) ([42c9fb8](https://github.com/w7-mgfcode/ForecastLabAI/commit/42c9fb86004e93c4a52461a08281dc0d00122698))
+* **features:** plumb product attrs through FeatureDataLoader ([#116](https://github.com/w7-mgfcode/ForecastLabAI/issues/116)) ([#118](https://github.com/w7-mgfcode/ForecastLabAI/issues/118)) ([0e41fb3](https://github.com/w7-mgfcode/ForecastLabAI/commit/0e41fb3a41482009038a61cb0c0046d20730ed0d))
+* **features:** pydantic configs + PRP set for phase 2 feature wiring ([#109](https://github.com/w7-mgfcode/ForecastLabAI/issues/109)) ([#110](https://github.com/w7-mgfcode/ForecastLabAI/issues/110)) ([f8978c5](https://github.com/w7-mgfcode/ForecastLabAI/commit/f8978c5046189775077ee2840d6c3afd4b985988))
+* **release:** cut v0.2.9 with phase 2 e2e + strict-mode + main protection ([#108](https://github.com/w7-mgfcode/ForecastLabAI/issues/108)) ([e71ae39](https://github.com/w7-mgfcode/ForecastLabAI/commit/e71ae395a64b750e5cdca6a2ce9ba27deb909fad))
+
+
+### Bug Fixes
+
+* **api,agents:** bypass .env in 4 Settings tests ([#104](https://github.com/w7-mgfcode/ForecastLabAI/issues/104)) ([#105](https://github.com/w7-mgfcode/ForecastLabAI/issues/105)) ([dd3a9a7](https://github.com/w7-mgfcode/ForecastLabAI/commit/dd3a9a75c442ede9591e2cf6886cc666cbc7c1b1))
+* **forecast,features:** apply strict-mode JSON date policy to request bodies ([#117](https://github.com/w7-mgfcode/ForecastLabAI/issues/117)) ([#119](https://github.com/w7-mgfcode/ForecastLabAI/issues/119)) ([ba7c1c1](https://github.com/w7-mgfcode/ForecastLabAI/commit/ba7c1c1edf2da7eef6b0a67d77ab6868c7ab32e2))
+
+
+### Documentation
+
+* **docs:** document release-please merge-subject trap ([#102](https://github.com/w7-mgfcode/ForecastLabAI/issues/102)) ([#103](https://github.com/w7-mgfcode/ForecastLabAI/issues/103)) ([9990e57](https://github.com/w7-mgfcode/ForecastLabAI/commit/9990e57a632e7b8a80db752638fc7029147a8363))
+* **docs:** verify and remove [unverified] tags in docs/_base ([#106](https://github.com/w7-mgfcode/ForecastLabAI/issues/106)) ([#107](https://github.com/w7-mgfcode/ForecastLabAI/issues/107)) ([7774fbb](https://github.com/w7-mgfcode/ForecastLabAI/commit/7774fbb31c5a0a2539868648264a0ad5196e186b))
+
 ## [0.2.8](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.7...v0.2.8) (2026-05-12)
 
 
