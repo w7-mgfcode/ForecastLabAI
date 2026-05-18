@@ -19,6 +19,10 @@ ForecastLabAI is a portfolio-grade, single-host retail-demand-forecasting system
 | [`CHANGELOG.md`](../../CHANGELOG.md) | release-please-managed release notes | Investigating when behavior changed |
 | [`pyproject.toml`](../../pyproject.toml) | Dependencies, ruff/mypy/pyright/pytest config | Tooling questions, version bumps |
 | [`docker-compose.yml`](../../docker-compose.yml) | Local Postgres+pgvector definition | Debugging DB connectivity, ports |
+| [`Makefile`](../../Makefile) | `make demo` / `demo-quick` / `demo-clean` entry points (PRP-15) | Running the end-to-end demo pipeline |
+| [`scripts/run_demo.py`](../../scripts/run_demo.py) | End-to-end pipeline driver — seed → features → train ×3 → backtest → register → alias → agent | First-run demonstrability, integration debugging |
+| [`app/features/demo/`](../../app/features/demo/) | In-process e2e demo slice — `POST /demo/run` + `WS /demo/stream` drive the pipeline via `ASGITransport` (no cross-slice imports) | Showcase page, in-product demo |
+| [`frontend/src/pages/showcase.tsx`](../../frontend/src/pages/showcase.tsx) | The Showcase page — streams the live pipeline into the dashboard as status cards | Demoing the system in-browser |
 | [`alembic/versions/`](../../alembic/versions/) | Six migrations through `d6e0f2g3h456_create_agent_session_table.py` | DB-schema questions, migration drift |
 | [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) | Phase-by-phase architecture narrative | High-level component reasoning |
 | [`docs/PHASE-index.md`](../PHASE-index.md) | Index of all 11 phase docs | Locating per-phase deep-dive |

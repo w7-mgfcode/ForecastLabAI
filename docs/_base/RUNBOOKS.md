@@ -60,6 +60,41 @@ rm -rf .venv && uv sync --extra dev
 rm -rf frontend/node_modules && corepack enable pnpm && cd frontend && pnpm install && pnpm rebuild esbuild
 ```
 
+### `make demo` fails at step X
+**Symptoms:** `scripts/run_demo.py` prints `❌ Step N/11: <name> -- ...` and exits 1 (step failure) or 2 (precondition).
+**Diagnosis flow:**
+1. **Precheck failed (exit 2)** — backend isn't reachable on the URL the script is hitting.
+   ```bash
+   curl -s http://localhost:8123/health   # should print {"status":"ok"}
+   docker compose ps                       # confirm Postgres is up on :5433
+   ```
+   Fix: start uvicorn (`uv run uvicorn app.main:app --port 8123`) and/or `docker compose up -d`. The Makefile targets `demo` and `demo-clean` invoke `docker compose up -d` for you; `demo-quick` does not.
+2. **Seed step failed** — production-guard or scenario mismatch. The script POSTs `demo_minimal` to `/seeder/generate`; check `app_env != "production"` (or set `seeder_allow_production=true` if you really mean it). The scenario must exist in `app/shared/seeder/config.py:ScenarioPreset` (added by PRP-15 / issue #128).
+3. **Features step failed** — schema drift on `ComputeFeaturesRequest`. The script sends a minimal `FeatureSetConfig` with `name="demo_featureset"` + lag/rolling/calendar configs; if a recent change tightened a `Field(strict=...)` constraint, the failure surfaces here.
+4. **Train step failed (one of three)** — the script trains naive / seasonal_naive / moving_average in parallel via `asyncio.gather`. Check the failing model's RFC 7807 body (echoed in the script output); the `request_id` correlates with the uvicorn logs.
+5. **Backtest produced NaN WAPE** — `demo_minimal` is tuned to avoid the SPARSE-style NaN trap (moderate `noise_sigma=0.10`, no sparsity). If you customized the scenario and now hit NaN, follow the `app/shared/seeder/tests/test_phase1_regression.py` pattern.
+6. **Register step failed** — most likely `pending → success` instead of the mandatory `pending → running → success` transition, or `alias_name` doesn't match the registry pattern (`^[a-z0-9][a-z0-9\-_]*$`). The script uses `demo-production` which is compliant; only worry if you forked the script.
+7. **Agent step showed ⏭️ but you expected ✅** — `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` not set in the environment the backend reads. Verify with `grep -E '^(OPENAI|ANTHROPIC)_API_KEY=' .env` (name only — never paste the value).
+
+**Wall-clock soft-warn:**
+- `⚠️ Result: GREEN (over budget ...)` — the run succeeded but exceeded the 180 s budget. Not a failure; expected on slower hardware. The integration test (`tests/test_e2e_demo.py`) follows the same soft-warn semantics.
+
+**Capture artifacts for a postmortem:**
+```bash
+# Nightly CI uploads .ci-logs/uvicorn.log on failure (e2e-nightly.yml).
+# Locally, capture both streams:
+uv run python scripts/run_demo.py --seed 42 --quiet 2>&1 | tee demo.log
+```
+
+### Showcase page (`/showcase`) pipeline fails at step X
+**Symptoms:** The dashboard Showcase page (`/showcase`) — or `POST /demo/run` — shows a step card flip to ❌, the run stops, and the summary banner is red.
+**Diagnosis flow (matches `app/features/demo/pipeline.py` step names):**
+1. **`status` step fails** — `skip_seed=true` (the default) ran against an empty database. Seed first: tick **Re-seed first** on the page, or `POST /seeder/generate` the `demo_minimal` scenario, or run `make demo` once.
+2. **`register` step fails with `HTTP 500 -- Database Error`** — the registry's `_find_duplicate` hit multiple pre-existing `model_run` rows with the same config hash (accumulated by prior `make demo` / `run_demo.py` runs). Not a demo-slice bug — the demo correctly surfaces the registry's 500. Fix by clearing stale runs or running against a fresh database.
+3. **`agent` step shows ⏭️** — no API key matches the configured `agent_default_model` provider, or the provider rejected the key. Expected; not a failure. The pipeline still goes green.
+4. **Page shows an `error` banner ("Pipeline could not start")** — either the start frame was malformed, or another run is already in progress (`409`). Only one demo pipeline runs at a time (module-level `asyncio.Lock`). Wait for the active run to finish.
+**Notes:** the `POST /demo/run` body and `WS /demo/stream` events are documented in `docs/_base/API_CONTRACTS.md`. The pipeline mirrors `scripts/run_demo.py`; the per-step diagnosis for `make demo` above applies to the same steps.
+
 ### release-please skipped the bump after a dev → main merge
 **Symptoms:** `dev → main` PR is merged, `CD Release` workflow on `main` completes in ~10s, **no Release PR** is opened. release-please log shows `No user facing commits found since <sha> - skipping`.
 **Root cause:** `gh pr merge --merge` uses the **PR title** as the merge-commit subject. If that subject is a valid conventional commit of a non-bumping type (`chore`, `docs`, `refactor`, `test`, `ci`), release-please reads it at face value, classifies the whole merge as non-bumping, and stops. Prior dev→main merges done via the GitHub web UI used the default `Merge pull request #N from <branch>` subject — non-conventional — so release-please traversed to the underlying commits and bumped correctly.

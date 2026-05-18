@@ -162,6 +162,25 @@ gh run watch <RUN_ID>
 
 ---
 
+## First-Run Smoke (Demo Pipeline)
+
+A munkafolyamat első indításához (vagy egy hosszabb szünet után) érdemes
+a teljes end-to-end pipeline-ot egy paranccsal lefuttatni:
+
+```bash
+make demo        # seed → features → train ×3 → backtest → register → alias → agent
+make demo-quick  # ugyanaz, --skip-seed (gyors iteráció friss DB-vel)
+make demo-clean  # destruktív: DB törlés után újra-seed
+```
+
+A `make demo` ≤ 180 s alatt zárul a referencia laptopon, és az utolsó
+sor egy gröp-barát összegzés:
+`runs=3 winner=<model_type> alias=demo-production wall_clock=<t>s`.
+
+A részleteket lásd: `scripts/run_demo.py` (PRP-15).
+
+---
+
 ## Következő Phases (INITIAL-9 → INITIAL-11)
 
 A projekt a moduláris három-fázisú roadmap szerint halad:

@@ -392,6 +392,7 @@ class DataSeeder:
             stockout_dates=stockout_dates,
             dates=dates,
             lifecycle=lifecycle_gen,
+            inventory_records=inventory_records,
         )
 
         # Merge markdown outputs into the main lists, then normalize so
