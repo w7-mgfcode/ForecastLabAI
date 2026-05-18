@@ -4,12 +4,15 @@
 
 ## Type of Change
 
-- [ ] Bug fix (non-breaking change that fixes an issue)
-- [ ] New feature (non-breaking change that adds functionality)
-- [ ] Breaking change (fix or feature that would cause existing functionality to change)
-- [ ] Refactoring (no functional changes)
-- [ ] Documentation update
-- [ ] CI/CD changes
+<!-- Matches the commit-format type field (.claude/rules/commit-format.md) -->
+
+- [ ] `feat` — new feature
+- [ ] `fix` — bug fix
+- [ ] `feat!` / `fix!` — breaking change (or `BREAKING CHANGE:` in the body)
+- [ ] `refactor` — code restructure, no behavior change
+- [ ] `docs` — documentation only
+- [ ] `test` — test-only change
+- [ ] `chore` / `ci` — tooling, CI, or repo hygiene (no version bump)
 
 ## Checklist
 
