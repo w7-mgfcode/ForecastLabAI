@@ -66,5 +66,5 @@
 |-----------|---------|---------|
 | Unsure about a change | Maintainer (Gabor Szabo) | GitHub PR review |
 | Security concern | Maintainer | Open a private GitHub Security Advisory |
-| Architecture / vision change | Maintainer | New `INITIAL-*.md` + `PRPs/PRP-*.md` per `product-vision.md` |
+| Architecture / vision change | Maintainer | New `PRPs/INITIAL/INITIAL-*.md` + `PRPs/PRP-*.md` per `product-vision.md` |
 | Break-glass required | N/A — no production environment | Use `scripts/seed_random.py --delete --confirm` to reset local state |

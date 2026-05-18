@@ -44,7 +44,7 @@ ForecastLabAI is a portfolio-grade, single-host retail-demand-forecasting system
 | [`docs/rag-ollama-setup.md`](../rag-ollama-setup.md) | Local-embedding setup | Switching off OpenAI embeddings |
 | [`docs/DATA-SEEDER.md`](../DATA-SEEDER.md) | "The Forge" seeder operating guide | Generating / refreshing local data |
 | [`PRPs/PRP-*.md`](../../PRPs/) | Per-phase project requirements plans (PRP-0 through PRP-13) | Implementing or extending a phase |
-| [`INITIAL-*.md`](../../) (repo root) | Pre-PRP discovery docs | Tracing a feature back to its origin |
+| [`INITIAL-*.md`](../../PRPs/INITIAL/) | Pre-PRP discovery docs | Tracing a feature back to its origin |
 | [`.claude/rules/*.md`](../../.claude/rules/) | Project rules (commit-format, branch-naming, security-patterns, product-vision, test-requirements, ui-design, versioning, output-formatting) | Any behavioral decision Claude makes |
 | [`.claude/skills/`](../../.claude/skills/) | Slash-command skills (audit-rules-drift, commit-format-check, issue-to-subtasks, repo-visibility-audit, w7_generating-claudemd, …) | Picking the right workflow |
 | [`.claude/hooks/check-commit-format.sh`](../../.claude/hooks/check-commit-format.sh) | Pre-commit enforcement of `type(scope): description (#issue)` | Debugging blocked commits |

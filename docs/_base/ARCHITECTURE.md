@@ -5,7 +5,7 @@
 ## System Boundaries
 
 ### What This Repo Owns
-- The entire stack: FastAPI backend (`app/`), React 19 SPA (`frontend/`), Alembic migrations (`alembic/`), data seeder (`app/shared/seeder/` + `scripts/seed_random.py`), `.claude/` policy + skills + hooks, docs (`docs/`, `PRPs/`, `INITIAL-*.md`).
+- The entire stack: FastAPI backend (`app/`), React 19 SPA (`frontend/`), Alembic migrations (`alembic/`), data seeder (`app/shared/seeder/` + `scripts/seed_random.py`), `.claude/` policy + skills + hooks, docs (`docs/`, `PRPs/` incl. `PRPs/INITIAL/`).
 - 7-table retail data platform (`store`, `product`, `calendar`, `sales_daily`, `price_history`, `promotion`, `inventory_snapshot_daily`) + registry, jobs, RAG sources/chunks, agent sessions.
 - 11 backend vertical slices under `app/features/` + cross-cutting `app/core/` + `app/shared/`.
 

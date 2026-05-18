@@ -42,5 +42,5 @@ Use **PostgreSQL + pgvector** as the only vector store for embeddings and simila
   - Version chunking strategy and keep embeddings metadata explicit.
 
 ## Links
-- INITIAL: `INITIAL-9.md` (RAG + Agentic)
+- INITIAL: `PRPs/INITIAL/INITIAL-9.md` (RAG + Agentic)
 - PRP: (to be created) `docs/PRP/PRP-rag-pgvector.md`

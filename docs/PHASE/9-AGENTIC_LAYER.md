@@ -2,7 +2,7 @@
 
 **Date Completed**: 2026-02-01
 **PRP**: [PRP-10-agentic-layer.md](../../PRPs/PRP-10-agentic-layer.md)
-**INITIAL**: [INITIAL-10.md](../../INITIAL-10.md)
+**INITIAL**: [INITIAL-10.md](../../PRPs/INITIAL/INITIAL-10.md)
 **PR**: [#56](https://github.com/w7-mgfcode/ForecastLabAI/pull/56) (Open)
 
 ---
@@ -611,7 +611,7 @@ examples/
 - [PydanticAI Documentation](https://ai.pydantic.dev/)
 - [PydanticAI GitHub](https://github.com/pydantic/pydantic-ai)
 - [Anthropic Claude API](https://docs.anthropic.com/en/api)
-- [INITIAL-10.md](../../INITIAL-10.md) - Agentic Layer specification
+- [INITIAL-10.md](../../PRPs/INITIAL/INITIAL-10.md) - Agentic Layer specification
 - [PRP-10-agentic-layer.md](../../PRPs/PRP-10-agentic-layer.md) - Implementation plan
 - [PR #56](https://github.com/w7-mgfcode/ForecastLabAI/pull/56) - Implementation PR
 
