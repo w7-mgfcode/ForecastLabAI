@@ -1,11 +1,13 @@
 """Unit tests for agent service."""
 
 import json
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic_ai import Agent
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import (
     ModelMessage,
@@ -14,7 +16,6 @@ from pydantic_ai.messages import (
     TextPart,
     UserPromptPart,
 )
-from pydantic_ai.tool_manager import _parallel_execution_mode_ctx_var
 
 from app.features.agents.deps import AgentDeps
 from app.features.agents.models import AgentSession, AgentType, SessionStatus
@@ -343,7 +344,10 @@ class TestAgentServiceChat:
         """chat() must run the agent under sequential tool execution.
 
         Regression for issue #172: every tool shares the single AgentDeps.db
-        AsyncSession, so concurrent tool calls raised InvalidRequestError.
+        AsyncSession, so concurrent tool calls raised SQLAlchemy's
+        InvalidRequestError. The service must enter PydanticAI's public
+        ``Agent.parallel_tool_call_execution_mode("sequential")`` context
+        around the agent run.
         """
         service = AgentService()
         mock_db = AsyncMock()
@@ -352,30 +356,27 @@ class TestAgentServiceChat:
         mock_result.scalar_one_or_none.return_value = sample_active_session
         mock_db.execute.return_value = mock_result
 
-        observed: dict[str, str] = {}
-
-        async def _run(*_args: Any, **_kwargs: Any) -> MagicMock:
-            # Capture the execution mode active while the agent runs.
-            observed["mode"] = _parallel_execution_mode_ctx_var.get()
-            result = MagicMock()
-            result.output = sample_experiment_report
-            usage = MagicMock()
-            usage.total_tokens = 1
-            result.usage.return_value = usage
-            result.all_messages.return_value = []
-            return result
+        run_result = MagicMock()
+        run_result.output = sample_experiment_report
+        usage = MagicMock()
+        usage.total_tokens = 1
+        run_result.usage.return_value = usage
+        run_result.all_messages.return_value = []
 
         mock_agent = MagicMock()
-        mock_agent.run = _run
+        mock_agent.run = AsyncMock(return_value=run_result)
 
-        with patch.object(service, "_get_agent", return_value=mock_agent):
+        with (
+            patch.object(service, "_get_agent", return_value=mock_agent),
+            patch.object(Agent, "parallel_tool_call_execution_mode") as mock_mode,
+        ):
             await service.chat(
                 db=mock_db,
                 session_id=sample_active_session.session_id,
                 message="Run a backtest",
             )
 
-        assert observed["mode"] == "sequential"
+        mock_mode.assert_called_once_with("sequential")
 
 
 class TestAgentServiceStreamChat:
@@ -428,6 +429,60 @@ class TestAgentServiceStreamChat:
         assert events[0].data["recoverable"] is True
         assert events[0].data["error_type"] == "model_behavior_error"
         assert "exceeded max retries" not in events[0].data["error"]
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_runs_tools_sequentially(
+        self,
+        sample_active_session: AgentSession,
+    ) -> None:
+        """stream_chat() must also run the agent under sequential tool execution.
+
+        Mirrors test_chat_runs_tools_sequentially for the streaming path so a
+        future change to only one code path cannot silently reintroduce the
+        concurrent-session bug from issue #172.
+        """
+        service = AgentService()
+        mock_db = AsyncMock()
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        class _StubStream:
+            """Minimal async-context-manager stand-in for agent.run_stream(...)."""
+
+            async def __aenter__(self) -> MagicMock:
+                stream = MagicMock()
+
+                async def _stream_text() -> AsyncIterator[str]:
+                    yield "hello"
+
+                stream.stream_text = _stream_text
+                stream.get_output = AsyncMock(return_value=None)
+                usage = MagicMock()
+                usage.total_tokens = 1
+                stream.usage.return_value = usage
+                stream.all_messages.return_value = []
+                return stream
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        mock_agent = MagicMock()
+        mock_agent.run_stream = MagicMock(return_value=_StubStream())
+
+        with (
+            patch.object(service, "_get_agent", return_value=mock_agent),
+            patch.object(Agent, "parallel_tool_call_execution_mode") as mock_mode,
+        ):
+            async for _event in service.stream_chat(
+                db=mock_db,
+                session_id=sample_active_session.session_id,
+                message="Run a backtest",
+            ):
+                pass
+
+        mock_mode.assert_called_once_with("sequential")
 
 
 class TestAgentServiceApproval:

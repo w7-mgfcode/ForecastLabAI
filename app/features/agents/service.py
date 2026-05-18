@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
@@ -56,6 +57,22 @@ class NoApprovalPendingError(ValueError):
     """No approval action pending for this session."""
 
     pass
+
+
+def _sequential_tool_execution() -> AbstractContextManager[None]:
+    """Run an agent turn's tool calls one at a time, never concurrently.
+
+    Every tool in a run shares the single ``AgentDeps.db`` ``AsyncSession``,
+    and SQLAlchemy forbids concurrent operations on one session. PydanticAI's
+    default parallel tool execution therefore raises ``InvalidRequestError``
+    whenever a model emits more than one DB-touching tool call in a turn
+    (issue #172).
+
+    Both :meth:`AgentService.chat` and :meth:`AgentService.stream_chat` wrap
+    their agent run in this context, so the execution-mode policy lives in
+    exactly one place.
+    """
+    return Agent.parallel_tool_call_execution_mode("sequential")
 
 
 class AgentService:
@@ -250,10 +267,7 @@ class AgentService:
         )
 
         try:
-            # Tool calls must run sequentially: every tool shares the single
-            # AgentDeps.db AsyncSession, and SQLAlchemy forbids concurrent
-            # operations on one session (issue #172).
-            with Agent.parallel_tool_call_execution_mode("sequential"):
+            with _sequential_tool_execution():
                 result = await asyncio.wait_for(
                     agent.run(
                         message,
@@ -444,9 +458,7 @@ class AgentService:
 
         # Stream the response
         try:
-            # Tool calls must run sequentially — see the matching note in chat()
-            # and issue #172 (shared AgentDeps.db AsyncSession).
-            with Agent.parallel_tool_call_execution_mode("sequential"):
+            with _sequential_tool_execution():
                 async with asyncio.timeout(self.settings.agent_timeout_seconds):
                     async with agent.run_stream(
                         message,
