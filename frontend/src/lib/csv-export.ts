@@ -6,7 +6,13 @@ export interface CsvColumn<T> {
 
 /** Quote a single CSV field per RFC 4180 (wrap + double internal quotes). */
 function quoteField(value: unknown): string {
-  const str = value === null || value === undefined ? '' : String(value)
+  let str = value === null || value === undefined ? '' : String(value)
+  // CSV formula injection: a spreadsheet executes a cell whose value begins
+  // with =, +, -, @, or a control char (tab / CR). Prefix a single quote so
+  // the value is rendered as literal text instead of an evaluated formula.
+  if (/^[=+\-@\t\r]/.test(str)) {
+    str = `'${str}`
+  }
   if (/[",\r\n]/.test(str)) {
     return `"${str.replace(/"/g, '""')}"`
   }

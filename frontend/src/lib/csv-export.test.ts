@@ -53,4 +53,17 @@ describe('toCsv', () => {
     ]
     expect(toCsv([{ a: null, b: undefined }], nullableColumns)).toBe('A,B\r\n,')
   })
+
+  it('neutralizes CSV formula injection by prefixing a quote', () => {
+    interface AttackRow {
+      val: string
+    }
+    const attackColumns: CsvColumn<AttackRow>[] = [{ key: 'val', header: 'Val' }]
+    expect(toCsv([{ val: '=SUM(A1:A2)' }], attackColumns)).toBe("Val\r\n'=SUM(A1:A2)")
+    expect(toCsv([{ val: '+1+1' }], attackColumns)).toBe("Val\r\n'+1+1")
+    expect(toCsv([{ val: '-2+3' }], attackColumns)).toBe("Val\r\n'-2+3")
+    expect(toCsv([{ val: '@cmd' }], attackColumns)).toBe("Val\r\n'@cmd")
+    // A neutralized value that also needs RFC 4180 quoting is still wrapped.
+    expect(toCsv([{ val: '=1,2' }], attackColumns)).toBe('Val\r\n"\'=1,2"')
+  })
 })
