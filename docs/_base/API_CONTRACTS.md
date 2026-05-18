@@ -22,7 +22,7 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 | forecasting | POST | `/forecasting/predict` | Generate horizon predictions from a trained model |
 | backtesting | POST | `/backtesting/run` | Time-series CV (rolling/expanding splits, MAE/sMAPE/WAPE/bias/stability) |
 | registry | POST | `/registry/runs` | Create model run (pending) |
-| registry | GET | `/registry/runs` | List with filters + pagination |
+| registry | GET | `/registry/runs` | List with filters + pagination + optional allow-listed `sort_by`/`sort_order` (created_at/model_type/status/store_id/product_id; unknown → default `created_at desc`) |
 | registry | GET | `/registry/runs/{run_id}` | Run details + JSONB metrics + runtime_info |
 | registry | PATCH | `/registry/runs/{run_id}` | Update status / metrics / artifact_uri |
 | registry | GET | `/registry/runs/{run_id}/verify` | SHA-256 artifact integrity check |
@@ -32,7 +32,7 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 | registry | DELETE | `/registry/aliases/{alias_name}` | Delete alias |
 | registry | GET | `/registry/compare/{run_id_a}/{run_id_b}` | Diff two runs |
 | jobs | POST | `/jobs` | Submit `train` / `predict` / `backtest` (returns 202-style job_id) |
-| jobs | GET | `/jobs` | List with filters |
+| jobs | GET | `/jobs` | List with filters + optional allow-listed `sort_by`/`sort_order` (created_at/completed_at/job_type/status; unknown → default `created_at desc`) |
 | jobs | GET | `/jobs/{job_id}` | Status + result JSON |
 | jobs | DELETE | `/jobs/{job_id}` | Cancel pending |
 | rag | POST | `/rag/index` | Index a markdown/openapi document; idempotent via content hash |
