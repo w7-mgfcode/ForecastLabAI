@@ -7,6 +7,8 @@ interface UseJobsParams {
   pageSize: number
   jobType?: JobType
   status?: JobStatus
+  sortBy?: string
+  sortOrder?: 'asc' | 'desc'
   enabled?: boolean
 }
 
@@ -15,10 +17,12 @@ export function useJobs({
   pageSize,
   jobType,
   status,
+  sortBy,
+  sortOrder,
   enabled = true,
 }: UseJobsParams) {
   return useQuery({
-    queryKey: ['jobs', { page, pageSize, jobType, status }],
+    queryKey: ['jobs', { page, pageSize, jobType, status, sortBy, sortOrder }],
     queryFn: () =>
       api<JobListResponse>('/jobs', {
         params: {
@@ -26,6 +30,8 @@ export function useJobs({
           page_size: pageSize,
           job_type: jobType,
           status,
+          sort_by: sortBy,
+          sort_order: sortOrder,
         },
       }),
     placeholderData: keepPreviousData,

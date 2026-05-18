@@ -12,6 +12,11 @@ export const ROUTES = {
     // intentionally NOT in NAV_ITEMS.
     STORE_DETAIL: '/explorer/stores/:storeId',
     PRODUCT_DETAIL: '/explorer/products/:productId',
+    RUN_DETAIL: '/explorer/runs/:runId',
+    JOB_DETAIL: '/explorer/jobs/:jobId',
+    // Static — must out-rank RUN_DETAIL's :runId segment (React Router v6
+    // ranks by specificity, so registration order does not matter).
+    RUN_COMPARE: '/explorer/runs/compare',
   },
   VISUALIZE: {
     FORECAST: '/visualize/forecast',

@@ -165,6 +165,17 @@ export interface RunCompareResponse {
   metrics_diff: Record<string, { a: number | null; b: number | null; diff: number | null }>
 }
 
+// Response from GET /registry/runs/{run_id}/verify (SHA-256 integrity check).
+// On a checksum mismatch the endpoint returns HTTP 200 with verified:false + error.
+export interface ArtifactVerifyResponse {
+  verified: boolean
+  run_id: string
+  artifact_uri: string
+  stored_hash?: string
+  computed_hash?: string
+  error?: string
+}
+
 // === Jobs ===
 export type JobType = 'train' | 'predict' | 'backtest'
 export type JobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
