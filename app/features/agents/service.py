@@ -19,7 +19,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
 import structlog
-from pydantic import ValidationError
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
@@ -240,7 +239,7 @@ class AgentService:
         )
 
         # Run agent with message history
-        message_history = self._deserialize_messages(session.message_history)
+        message_history = self._deserialize_messages(session.message_history, session_id)
 
         logger.info(
             "agents.chat_started",
@@ -431,7 +430,7 @@ class AgentService:
             request_id=request_id,
         )
 
-        message_history = self._deserialize_messages(session.message_history)
+        message_history = self._deserialize_messages(session.message_history, session_id)
 
         logger.info(
             "agents.stream_chat_started",
@@ -766,6 +765,7 @@ class AgentService:
     def _deserialize_messages(
         self,
         data: list[dict[str, Any]],
+        session_id: str,
     ) -> list[ModelMessage]:
         """Reconstruct PydanticAI ModelMessage objects from stored dicts.
 
@@ -775,6 +775,8 @@ class AgentService:
 
         Args:
             data: List of serialized message dictionaries.
+            session_id: Owning session, logged so a failure can be correlated
+                with the specific stored record.
 
         Returns:
             List of ModelMessage objects. Returns an empty list if the stored
@@ -785,11 +787,16 @@ class AgentService:
             return []
         try:
             return ModelMessagesTypeAdapter.validate_python(data)
-        except ValidationError as e:
+        except Exception:
+            # Degrade to an empty history on ANY deserialization failure, not
+            # just ValidationError: a malformed stored record (wrong shape,
+            # type errors) must never crash an otherwise-valid agent run.
+            # exc_info preserves the full exception type, message, and traceback.
             logger.warning(
                 "agents.message_history_deserialize_failed",
-                error=str(e),
+                session_id=session_id,
                 message_count=len(data),
+                exc_info=True,
             )
             return []
 

@@ -565,7 +565,7 @@ class TestAgentServiceMessageSerialization:
     def test_deserialize_empty_messages(self) -> None:
         """Should handle empty message data."""
         service = AgentService()
-        result = service._deserialize_messages([])
+        result = service._deserialize_messages([], "test-session")
         assert result == []
 
     def test_serialize_deserialize_roundtrip(self) -> None:
@@ -585,7 +585,7 @@ class TestAgentServiceMessageSerialization:
         # Serialized form must survive a JSONB write (pure JSON types only).
         json.dumps(serialized)
 
-        restored = service._deserialize_messages(serialized)
+        restored = service._deserialize_messages(serialized, "test-session")
 
         assert [type(m).__name__ for m in restored] == ["ModelRequest", "ModelResponse"]
         # The attribute whose absence on a dict caused the original crash.
@@ -595,7 +595,18 @@ class TestAgentServiceMessageSerialization:
         """Unparseable (pre-#166) stored history degrades to empty, not a crash."""
         service = AgentService()
         legacy: list[dict[str, Any]] = [{"type": "ModelRequest", "data": "<str dump>"}]
-        result = service._deserialize_messages(legacy)
+        result = service._deserialize_messages(legacy, "test-session")
+        assert result == []
+
+    def test_deserialize_non_validation_error_returns_empty(self) -> None:
+        """Any deserialization failure degrades to empty, not only ValidationError."""
+        service = AgentService()
+        data: list[dict[str, Any]] = [{"kind": "request", "parts": []}]
+        with patch(
+            "app.features.agents.service.ModelMessagesTypeAdapter.validate_python",
+            side_effect=TypeError("unexpected adapter failure"),
+        ):
+            result = service._deserialize_messages(data, "test-session")
         assert result == []
 
 
