@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.14](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.13...v0.2.14) (2026-05-18)
+
+
+### Features
+
+* release v0.2.14 — UI interactivity, AI admin console, agent reliability fixes ([1ffd482](https://github.com/w7-mgfcode/ForecastLabAI/commit/1ffd482e208b2a2b480449229f1bf052613d011b))
+* **ui:** Visualize Demand Planner page + interactive Forecast/Backtest pages (PRP-22) ([#196](https://github.com/w7-mgfcode/ForecastLabAI/issues/196)) ([4d7592f](https://github.com/w7-mgfcode/ForecastLabAI/commit/4d7592fc07c8be222f4946b426aa2adf1c0c7625))
+
+
+### Documentation
+
+* add AGENTS.md and llms.txt agent-memory layer ([#199](https://github.com/w7-mgfcode/ForecastLabAI/issues/199)) ([#200](https://github.com/w7-mgfcode/ForecastLabAI/issues/200)) ([cffb419](https://github.com/w7-mgfcode/ForecastLabAI/commit/cffb4192c043fdd5f18b8a1d6e980b4945016406))
+* relocate INITIAL planning docs to PRPs/INITIAL and track optional-features ([#197](https://github.com/w7-mgfcode/ForecastLabAI/issues/197)) ([#198](https://github.com/w7-mgfcode/ForecastLabAI/issues/198)) ([f415682](https://github.com/w7-mgfcode/ForecastLabAI/commit/f41568225a1954857258816e2ce284ebbff4efe9))
+
 ## [0.2.13](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.12...v0.2.13) (2026-05-18)
 
 
