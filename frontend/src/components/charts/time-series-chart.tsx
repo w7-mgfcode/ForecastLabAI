@@ -1,4 +1,4 @@
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Legend } from 'recharts'
+import { Area, CartesianGrid, ComposedChart, Legend, Line, XAxis, YAxis } from 'recharts'
 import {
   ChartConfig,
   ChartContainer,
@@ -11,7 +11,9 @@ interface TimeSeriesDataPoint {
   date: string
   actual?: number
   predicted?: number
-  [key: string]: string | number | undefined
+  // `null` is allowed so a forecast point's optional lower/upper bounds (which
+  // arrive as `null` for models that emit no interval) can be passed through.
+  [key: string]: string | number | null | undefined
 }
 
 interface TimeSeriesChartProps {
@@ -23,6 +25,12 @@ interface TimeSeriesChartProps {
   xAxisKey?: string
   showActual?: boolean
   showPredicted?: boolean
+  /** Row key for the lower bound of the optional prediction-interval band. */
+  lowerKey?: string
+  /** Row key for the upper bound of the optional prediction-interval band. */
+  upperKey?: string
+  /** Render a shaded band between lowerKey/upperKey. Default false (opt-in). */
+  showInterval?: boolean
   height?: number
   className?: string
 }
@@ -36,6 +44,9 @@ export function TimeSeriesChart({
   xAxisKey = 'date',
   showActual = true,
   showPredicted = true,
+  lowerKey,
+  upperKey,
+  showInterval = false,
   height = 300,
   className,
 }: TimeSeriesChartProps) {
@@ -60,7 +71,7 @@ export function TimeSeriesChart({
       </CardHeader>
       <CardContent>
         <ChartContainer config={chartConfig} className={`h-[${height}px] w-full`}>
-          <LineChart data={data} accessibilityLayer>
+          <ComposedChart data={data} accessibilityLayer>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis
               dataKey={xAxisKey}
@@ -75,6 +86,26 @@ export function TimeSeriesChart({
             <YAxis tickLine={false} axisLine={false} />
             <ChartTooltip content={<ChartTooltipContent />} />
             <Legend />
+            {/* Prediction-interval band — drawn first so the forecast line sits
+                on top. A function dataKey returns the [lower, upper] tuple
+                recharts renders as a range area. */}
+            {showInterval && lowerKey && upperKey && (
+              <Area
+                type="monotone"
+                dataKey={(entry: TimeSeriesDataPoint) => {
+                  const lower = entry[lowerKey]
+                  const upper = entry[upperKey]
+                  return typeof lower === 'number' && typeof upper === 'number'
+                    ? [lower, upper]
+                    : null
+                }}
+                name="Prediction interval"
+                fill="var(--chart-2)"
+                fillOpacity={0.15}
+                stroke="none"
+                isAnimationActive={false}
+              />
+            )}
             {showActual && (
               <Line
                 type="monotone"
@@ -96,7 +127,7 @@ export function TimeSeriesChart({
                 name="Predicted"
               />
             )}
-          </LineChart>
+          </ComposedChart>
         </ChartContainer>
       </CardContent>
     </Card>
