@@ -1,11 +1,19 @@
 """Unit tests for agent service."""
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 
 from app.features.agents.deps import AgentDeps
 from app.features.agents.models import AgentSession, AgentType, SessionStatus
@@ -560,13 +568,35 @@ class TestAgentServiceMessageSerialization:
         result = service._deserialize_messages([])
         assert result == []
 
-    def test_deserialize_returns_raw_data(self) -> None:
-        """Should return raw data for PydanticAI compatibility."""
+    def test_serialize_deserialize_roundtrip(self) -> None:
+        """Messages should round-trip back into real ModelMessage objects.
+
+        Regression for issue #166: _deserialize_messages used to return raw
+        dicts, which crashed PydanticAI 1.96 when it accessed `conversation_id`
+        on the history items.
+        """
         service = AgentService()
-        data: list[dict[str, Any]] = [{"kind": "request", "parts": []}]
-        result = service._deserialize_messages(data)
-        # _deserialize_messages returns raw dicts for PydanticAI
-        assert len(result) == 1
+        messages: list[ModelMessage] = [
+            ModelRequest(parts=[UserPromptPart(content="run a backtest")]),
+            ModelResponse(parts=[TextPart(content="done")]),
+        ]
+
+        serialized = service._serialize_messages(messages)
+        # Serialized form must survive a JSONB write (pure JSON types only).
+        json.dumps(serialized)
+
+        restored = service._deserialize_messages(serialized)
+
+        assert [type(m).__name__ for m in restored] == ["ModelRequest", "ModelResponse"]
+        # The attribute whose absence on a dict caused the original crash.
+        assert restored[0].conversation_id is None
+
+    def test_deserialize_legacy_format_returns_empty(self) -> None:
+        """Unparseable (pre-#166) stored history degrades to empty, not a crash."""
+        service = AgentService()
+        legacy: list[dict[str, Any]] = [{"type": "ModelRequest", "data": "<str dump>"}]
+        result = service._deserialize_messages(legacy)
+        assert result == []
 
 
 class TestAgentServicePendingActionFormat:

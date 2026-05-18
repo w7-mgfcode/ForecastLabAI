@@ -19,9 +19,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
 import structlog
+from pydantic import ValidationError
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UnexpectedModelBehavior
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -745,75 +746,52 @@ class AgentService:
         self,
         messages: list[ModelMessage],
     ) -> list[dict[str, Any]]:
-        """Serialize PydanticAI messages for storage.
+        """Serialize PydanticAI messages to JSON-safe dicts for JSONB storage.
 
-        PydanticAI messages (ModelRequest, ModelResponse) are dataclasses,
-        so we use dataclasses.asdict() for serialization.
+        Uses PydanticAI's own ``ModelMessagesTypeAdapter`` so the output can be
+        round-tripped back into real ``ModelMessage`` objects by
+        :meth:`_deserialize_messages`.
 
         Args:
-            messages: List of ModelMessage objects.
+            messages: List of ModelMessage objects (e.g. ``result.all_messages()``).
 
         Returns:
-            List of serializable dictionaries.
+            List of JSON-serializable dictionaries.
         """
-        import dataclasses
-        from datetime import datetime
-
-        def json_safe(obj: object) -> object:
-            """Convert non-JSON-serializable objects to JSON-safe types."""
-            if isinstance(obj, datetime):
-                return obj.isoformat()
-            if isinstance(obj, dict):
-                return {k: json_safe(v) for k, v in obj.items()}
-            if isinstance(obj, list):
-                return [json_safe(item) for item in obj]
-            # Primitive JSON types pass through
-            if isinstance(obj, (str, int, float, bool, type(None))):
-                return obj
-            # Fallback: convert unknown types to string representation
-            return str(obj)
-
-        serialized: list[dict[str, Any]] = []
-        for msg in messages:
-            if dataclasses.is_dataclass(msg) and not isinstance(msg, type):
-                # Convert dataclass to dict, handling nested types
-                try:
-                    msg_dict = dataclasses.asdict(msg)
-                    # Convert datetime objects to ISO strings
-                    # Cast is safe: json_safe preserves dict structure
-                    msg_dict = cast(dict[str, Any], json_safe(msg_dict))
-                    # Add kind discriminator for deserialization
-                    if hasattr(msg, "kind"):
-                        msg_dict["kind"] = msg.kind
-                    serialized.append(msg_dict)
-                except (TypeError, ValueError):
-                    # Fallback for types that can't be converted
-                    serialized.append({"type": type(msg).__name__, "data": str(msg)})
-            else:
-                # Fallback for non-dataclass types
-                serialized.append({"type": type(msg).__name__, "data": str(msg)})
-        return serialized
+        return cast(
+            list[dict[str, Any]],
+            ModelMessagesTypeAdapter.dump_python(messages, mode="json"),
+        )
 
     def _deserialize_messages(
         self,
         data: list[dict[str, Any]],
     ) -> list[ModelMessage]:
-        """Deserialize messages from storage.
+        """Reconstruct PydanticAI ModelMessage objects from stored dicts.
+
+        PydanticAI's ``run()`` / ``run_stream()`` require ``message_history`` to
+        be real ``ModelMessage`` instances — passing raw dicts fails when the
+        framework accesses fields such as ``conversation_id``.
 
         Args:
             data: List of serialized message dictionaries.
 
         Returns:
-            List of ModelMessage objects.
-
-        Note:
-            PydanticAI handles message reconstruction internally.
-            We return the raw data for now - the agent.run() method
-            accepts message history in various formats.
+            List of ModelMessage objects. Returns an empty list if the stored
+            data cannot be validated (e.g. it predates this serialization
+            format) — a lost history is recoverable; a crash is not.
         """
-        # PydanticAI's run() method can accept message history as dicts
-        # Cast to list[ModelMessage] for type checking
-        return data  # type: ignore[return-value]
+        if not data:
+            return []
+        try:
+            return ModelMessagesTypeAdapter.validate_python(data)
+        except ValidationError as e:
+            logger.warning(
+                "agents.message_history_deserialize_failed",
+                error=str(e),
+                message_count=len(data),
+            )
+            return []
 
     def _format_pending_action(
         self,
