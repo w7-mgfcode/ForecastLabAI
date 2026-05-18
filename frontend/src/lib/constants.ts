@@ -21,6 +21,7 @@ export const ROUTES = {
   VISUALIZE: {
     FORECAST: '/visualize/forecast',
     BACKTEST: '/visualize/backtest',
+    DEMAND: '/visualize/demand',
   },
   KNOWLEDGE: '/knowledge',
   CHAT: '/chat',
@@ -45,6 +46,7 @@ export const NAV_ITEMS = [
   {
     label: 'Visualize',
     items: [
+      { label: 'Demand Planner', href: ROUTES.VISUALIZE.DEMAND },
       { label: 'Forecast', href: ROUTES.VISUALIZE.FORECAST },
       { label: 'Backtest Results', href: ROUTES.VISUALIZE.BACKTEST },
     ],

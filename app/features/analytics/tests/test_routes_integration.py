@@ -10,8 +10,15 @@ from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import delete
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.features.data_platform.models import Product, SalesDaily, Store
+from app.features.data_platform.models import (
+    InventorySnapshotDaily,
+    Product,
+    SalesDaily,
+    Store,
+)
 
 # Sum of quantities 1..120 = 7260; revenue = 9.99 * 7260.
 _EXPECTED_UNITS = 7260
@@ -178,3 +185,77 @@ class TestAnalyticsSmokeIntegration:
         data = response.json()
         assert data["dimension"] == "date"
         assert len(data["items"]) >= 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestAnalyticsInventoryStatusIntegration:
+    """Integration tests for GET /analytics/inventory-status."""
+
+    async def test_inventory_status_returns_latest_per_grain(
+        self,
+        client: AsyncClient,
+        sample_store: Store,
+        sample_product: Product,
+        sample_inventory: list[InventorySnapshotDaily],
+    ) -> None:
+        """One item per grain, each carrying the latest snapshot for the grain."""
+        response = await client.get(
+            "/analytics/inventory-status",
+            params={"store_id": sample_store.id},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        # sample_inventory creates two grains under this store.
+        assert data["total_items"] == 2
+        assert len(data["items"]) == 2
+        assert data["store_id"] == sample_store.id
+
+        # Grain 1 must return the newer (2024-01-20) snapshot, not the older one.
+        grain1 = next(i for i in data["items"] if i["product_id"] == sample_product.id)
+        assert grain1["date"] == "2024-01-20"
+        assert grain1["on_hand_qty"] == 12
+        assert grain1["on_order_qty"] == 30
+        assert grain1["is_stockout"] is False
+
+        # Grain 2 is the stockout snapshot.
+        stockout = next(i for i in data["items"] if i["product_id"] != sample_product.id)
+        assert stockout["on_hand_qty"] == 0
+        assert stockout["is_stockout"] is True
+
+    async def test_inventory_status_product_filter_narrows(
+        self,
+        client: AsyncClient,
+        sample_store: Store,
+        sample_product: Product,
+        sample_inventory: list[InventorySnapshotDaily],
+    ) -> None:
+        """The product_id filter narrows the result to a single grain."""
+        response = await client.get(
+            "/analytics/inventory-status",
+            params={"store_id": sample_store.id, "product_id": sample_product.id},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_items"] == 1
+        assert data["product_id"] == sample_product.id
+        assert data["items"][0]["product_id"] == sample_product.id
+        assert data["items"][0]["on_hand_qty"] == 12
+
+    async def test_inventory_status_empty_returns_200(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+    ) -> None:
+        """An empty inventory table yields HTTP 200 with an empty list, not a 404."""
+        await db_session.execute(delete(InventorySnapshotDaily))
+        await db_session.commit()
+
+        response = await client.get("/analytics/inventory-status")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["items"] == []
+        assert data["total_items"] == 0

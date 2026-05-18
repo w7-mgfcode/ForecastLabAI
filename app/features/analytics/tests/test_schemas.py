@@ -10,6 +10,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.features.analytics.schemas import (
+    InventoryStatusItem,
+    InventoryStatusResponse,
     KPIMetrics,
     TimeGranularity,
     TimeSeriesPoint,
@@ -75,3 +77,57 @@ def test_time_series_response_rejects_negative_total_points() -> None:
             start_date=date(2024, 1, 1),
             end_date=date(2024, 1, 1),
         )
+
+
+def test_inventory_status_item_construct() -> None:
+    """An InventoryStatusItem carries the grain, snapshot date and quantities."""
+    item = InventoryStatusItem(
+        store_id=1,
+        product_id=2,
+        date=date(2024, 1, 20),
+        on_hand_qty=12,
+        on_order_qty=30,
+        is_stockout=False,
+    )
+    assert item.store_id == 1
+    assert item.product_id == 2
+    assert item.date == date(2024, 1, 20)
+    assert item.on_hand_qty == 12
+    assert item.on_order_qty == 30
+    assert item.is_stockout is False
+
+
+def test_inventory_status_item_rejects_negative_qty() -> None:
+    """on_hand_qty / on_order_qty have a ge=0 constraint."""
+    with pytest.raises(ValidationError):
+        InventoryStatusItem(
+            store_id=1,
+            product_id=2,
+            date=date(2024, 1, 20),
+            on_hand_qty=-1,
+            on_order_qty=0,
+            is_stockout=False,
+        )
+
+
+def test_inventory_status_response_construct() -> None:
+    """An InventoryStatusResponse aggregates items; filters default to None."""
+    item = InventoryStatusItem(
+        store_id=1,
+        product_id=2,
+        date=date(2024, 1, 20),
+        on_hand_qty=0,
+        on_order_qty=0,
+        is_stockout=True,
+    )
+    response = InventoryStatusResponse(items=[item], total_items=1)
+    assert response.total_items == 1
+    assert response.items[0].is_stockout is True
+    assert response.store_id is None
+    assert response.product_id is None
+
+
+def test_inventory_status_response_rejects_negative_total() -> None:
+    """total_items has a ge=0 constraint."""
+    with pytest.raises(ValidationError):
+        InventoryStatusResponse(items=[], total_items=-1)

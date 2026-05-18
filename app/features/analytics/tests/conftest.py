@@ -19,7 +19,13 @@ from app.features.analytics.schemas import (
     KPIMetrics,
     KPIResponse,
 )
-from app.features.data_platform.models import Calendar, Product, SalesDaily, Store
+from app.features.data_platform.models import (
+    Calendar,
+    InventorySnapshotDaily,
+    Product,
+    SalesDaily,
+    Store,
+)
 from app.main import app
 
 
@@ -116,7 +122,10 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
         finally:
-            # Clean up test data (delete in FK-safe order).
+            # Clean up test data (delete in FK-safe order). InventorySnapshotDaily
+            # FK-references store/product/calendar, so it must be cleared before
+            # the Store/Product/Calendar deletes below.
+            await session.execute(delete(InventorySnapshotDaily))
             await session.execute(delete(SalesDaily))
             await session.execute(delete(Product).where(Product.sku.like("TEST-%")))
             await session.execute(delete(Store).where(Store.code.like("TEST-%")))
@@ -234,3 +243,69 @@ async def sample_sales_120(
     for sale in sales_records:
         await db_session.refresh(sale)
     return sales_records
+
+
+@pytest.fixture
+async def sample_inventory(
+    db_session: AsyncSession,
+    sample_store: Store,
+    sample_product: Product,
+    sample_calendar_120: list[Calendar],
+) -> list[InventorySnapshotDaily]:
+    """Create inventory snapshots for two grains.
+
+    Grain 1 (sample_store, sample_product): two snapshots on different dates,
+    so a test can prove the latest (2024-01-20) wins over the older one
+    (2024-01-10). Grain 2 (sample_store, a second TEST- product): a single
+    stockout snapshot. The second product is TEST-prefixed so the db_session
+    cleanup removes it.
+    """
+    unique_id = uuid.uuid4().hex[:8]
+    product2 = Product(
+        sku=f"TEST-{unique_id}",
+        name="Test Product 2",
+        category="Test Category",
+        brand="Test Brand",
+        base_price=Decimal("29.99"),
+        base_cost=Decimal("14.99"),
+    )
+    db_session.add(product2)
+    await db_session.commit()
+    await db_session.refresh(product2)
+
+    snapshots = [
+        # Grain 1 — older snapshot (must be superseded by the newer one).
+        InventorySnapshotDaily(
+            date=date(2024, 1, 10),
+            store_id=sample_store.id,
+            product_id=sample_product.id,
+            on_hand_qty=50,
+            on_order_qty=10,
+            is_stockout=False,
+        ),
+        # Grain 1 — newer snapshot (latest-per-grain must return this one).
+        InventorySnapshotDaily(
+            date=date(2024, 1, 20),
+            store_id=sample_store.id,
+            product_id=sample_product.id,
+            on_hand_qty=12,
+            on_order_qty=30,
+            is_stockout=False,
+        ),
+        # Grain 2 — single stockout snapshot.
+        InventorySnapshotDaily(
+            date=date(2024, 1, 15),
+            store_id=sample_store.id,
+            product_id=product2.id,
+            on_hand_qty=0,
+            on_order_qty=0,
+            is_stockout=True,
+        ),
+    ]
+    for snapshot in snapshots:
+        db_session.add(snapshot)
+
+    await db_session.commit()
+    for snapshot in snapshots:
+        await db_session.refresh(snapshot)
+    return snapshots
