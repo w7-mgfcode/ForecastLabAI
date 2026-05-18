@@ -2,7 +2,7 @@
 
 **Date Started**: 2026-02-01
 **PRP**: [PRP-11A-frontend-setup.md](../../PRPs/PRP-11A-frontend-setup.md)
-**INITIAL**: INITIAL-11A.md (Setup), INITIAL-11B.md (Architecture), INITIAL-11C.md (Pages)
+**INITIAL**: PRPs/INITIAL/INITIAL-11A.md (Setup), PRPs/INITIAL/INITIAL-11B.md (Architecture), PRPs/INITIAL/INITIAL-11C.md (Pages)
 **ADR**: [ADR-0002-frontend-architecture-vite-spa-first.md](../ADR/ADR-0002-frontend-architecture-vite-spa-first.md)
 
 ---
