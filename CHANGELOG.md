@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.10](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.9...v0.2.10) (2026-05-18)
+
+
+### Features
+
+* release v0.2.10 — demo showcase page + e2e pipeline ([#134](https://github.com/w7-mgfcode/ForecastLabAI/issues/134)) ([2ea68ae](https://github.com/w7-mgfcode/ForecastLabAI/commit/2ea68ae1b875e48013fe7f09e9850ef648e0f616))
+
 ## [0.2.9](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.8...v0.2.9) (2026-05-14)
 
 
