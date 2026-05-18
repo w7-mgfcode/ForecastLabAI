@@ -26,10 +26,11 @@ export default function ForecastPage() {
     }
   }
 
-  // Extract forecast data from job result
-  const forecastData = job?.result?.predictions as Array<{
+  // Extract forecast data from job result.
+  // A completed `predict` job stores result.forecasts (each point: date + forecast).
+  const forecastData = job?.result?.forecasts as Array<{
     date: string
-    predicted: number
+    forecast: number
   }> | undefined
 
   return (
@@ -109,6 +110,7 @@ export default function ForecastPage() {
               title="Forecast Results"
               description={`${forecastData.length} day forecast`}
               data={forecastData}
+              predictedKey="forecast"
               showActual={false}
               showPredicted={true}
             />
