@@ -8,6 +8,10 @@ export const ROUTES = {
     PRODUCTS: '/explorer/products',
     RUNS: '/explorer/runs',
     JOBS: '/explorer/jobs',
+    // Click-through detail routes (dynamic segments) — reached from table rows,
+    // intentionally NOT in NAV_ITEMS.
+    STORE_DETAIL: '/explorer/stores/:storeId',
+    PRODUCT_DETAIL: '/explorer/products/:productId',
   },
   VISUALIZE: {
     FORECAST: '/visualize/forecast',

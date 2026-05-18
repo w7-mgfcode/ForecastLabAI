@@ -1,12 +1,15 @@
 import { useState } from 'react'
 import { format } from 'date-fns'
 import { ColumnDef, PaginationState } from '@tanstack/react-table'
+import { Download } from 'lucide-react'
 import { useRuns } from '@/hooks/use-runs'
 import { DataTable } from '@/components/data-table/data-table'
 import { DataTableToolbar } from '@/components/data-table/data-table-toolbar'
 import { StatusBadge } from '@/components/common/status-badge'
 import { getStatusVariant } from '@/lib/status-utils'
 import { ErrorDisplay } from '@/components/common/error-display'
+import { Button } from '@/components/ui/button'
+import { toCsv, downloadCsv, type CsvColumn } from '@/lib/csv-export'
 import type { ModelRun, RunStatus } from '@/types/api'
 import { DEFAULT_PAGE_SIZE } from '@/lib/constants'
 
@@ -65,6 +68,17 @@ const columns: ColumnDef<ModelRun>[] = [
   },
 ]
 
+const csvColumns: CsvColumn<ModelRun>[] = [
+  { key: 'run_id', header: 'Run ID' },
+  { key: 'status', header: 'Status' },
+  { key: 'model_type', header: 'Model Type' },
+  { key: 'store_id', header: 'Store' },
+  { key: 'product_id', header: 'Product' },
+  { key: 'data_window_start', header: 'Data Window Start' },
+  { key: 'data_window_end', header: 'Data Window End' },
+  { key: 'created_at', header: 'Created' },
+]
+
 export default function RunsExplorerPage() {
   const [pagination, setPagination] = useState<PaginationState>({
     pageIndex: 0,
@@ -87,6 +101,10 @@ export default function RunsExplorerPage() {
   const handleReset = () => {
     setFilters({})
     setPagination({ pageIndex: 0, pageSize: DEFAULT_PAGE_SIZE })
+  }
+
+  const handleExport = () => {
+    downloadCsv('model-runs.csv', toCsv(data?.runs ?? [], csvColumns))
   }
 
   const hasActiveFilters = Object.values(filters).some(Boolean)
@@ -136,12 +154,20 @@ export default function RunsExplorerPage() {
         hasActiveFilters={hasActiveFilters}
       />
 
+      <div className="flex justify-end">
+        <Button variant="outline" size="sm" className="h-8" onClick={handleExport}>
+          <Download className="mr-2 h-4 w-4" />
+          Export CSV
+        </Button>
+      </div>
+
       <DataTable
         columns={columns}
         data={data?.runs ?? []}
         pageCount={pageCount}
         pagination={pagination}
         onPaginationChange={setPagination}
+        enableColumnVisibility
         isLoading={isLoading}
         emptyMessage="No model runs found."
       />

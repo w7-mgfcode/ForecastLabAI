@@ -16,6 +16,8 @@ from app.features.analytics.schemas import (
     DrilldownDimension,
     DrilldownResponse,
     KPIResponse,
+    TimeGranularity,
+    TimeSeriesResponse,
 )
 from app.features.analytics.service import AnalyticsService
 
@@ -246,4 +248,97 @@ async def get_drilldowns(
         store_id=store_id,
         product_id=product_id,
         max_items=max_items,
+    )
+
+
+# =============================================================================
+# Time Series Endpoints
+# =============================================================================
+
+
+@router.get(
+    "/timeseries",
+    response_model=TimeSeriesResponse,
+    summary="Compute a period-bucketed sales time series",
+    description="""
+Aggregate sales into a time series bucketed by day, week, month, or quarter.
+
+**Purpose**: Drive revenue-over-time charts. Unlike `/drilldowns?dimension=date`,
+this endpoint orders points by period (not revenue), supports week/month/quarter
+bucketing, and is not capped at 100 items.
+
+**Metrics per period**: same `KPIMetrics` shape as `/analytics/kpis` —
+`total_revenue`, `total_units`, `total_transactions`, `avg_unit_price`,
+`avg_basket_value`.
+
+**Filtering Options**:
+- `store_id`: scope the series to a single store
+- `product_id`: scope the series to a single product
+- `category`: scope the series to a product category (exact match)
+
+**Date Range**:
+- Both `start_date` and `end_date` are inclusive
+- Maximum range: 730 days (2 years)
+
+**Example Use Cases**:
+1. Daily revenue trend: `GET /analytics/timeseries?start_date=2024-01-01&end_date=2024-03-31&granularity=day`
+2. Weekly trend for a store: `GET /analytics/timeseries?store_id=5&start_date=2024-01-01&end_date=2024-12-31&granularity=week`
+""",
+)
+async def get_timeseries(
+    start_date: date = Query(
+        ...,
+        description="Start of analysis period (inclusive). Format: YYYY-MM-DD.",
+    ),
+    end_date: date = Query(
+        ...,
+        description="End of analysis period (inclusive). Format: YYYY-MM-DD.",
+    ),
+    granularity: TimeGranularity = Query(
+        TimeGranularity.DAY,
+        description="Bucket size: day, week, month, or quarter.",
+    ),
+    store_id: int | None = Query(
+        None,
+        description="Filter by store ID. Use GET /dimensions/stores to find valid IDs.",
+    ),
+    product_id: int | None = Query(
+        None,
+        description="Filter by product ID. Use GET /dimensions/products to find valid IDs.",
+    ),
+    category: str | None = Query(
+        None,
+        description="Filter by product category name (exact match).",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> TimeSeriesResponse:
+    """Compute a period-bucketed sales time series with optional filters.
+
+    Args:
+        start_date: Start of analysis period (inclusive).
+        end_date: End of analysis period (inclusive).
+        granularity: Bucket size (day, week, month, quarter).
+        store_id: Filter by store ID (optional).
+        product_id: Filter by product ID (optional).
+        category: Filter by category (optional).
+        db: Database session.
+
+    Returns:
+        Time series response with points in ascending period order.
+
+    Raises:
+        HTTPException: If date range is invalid.
+    """
+    # Validate date range before processing
+    validate_date_range(start_date, end_date)
+
+    service = AnalyticsService()
+    return await service.compute_timeseries(
+        db=db,
+        start_date=start_date,
+        end_date=end_date,
+        granularity=granularity,
+        store_id=store_id,
+        product_id=product_id,
+        category=category,
     )

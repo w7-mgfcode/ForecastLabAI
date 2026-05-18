@@ -7,7 +7,8 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, cast
 
-from sqlalchemy import ColumnElement, func, select
+from sqlalchemy import ColumnElement, Date, func, select
+from sqlalchemy import cast as sa_cast
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
@@ -19,6 +20,9 @@ from app.features.analytics.schemas import (
     DrilldownResponse,
     KPIMetrics,
     KPIResponse,
+    TimeGranularity,
+    TimeSeriesPoint,
+    TimeSeriesResponse,
 )
 from app.features.data_platform.models import Product, SalesDaily, Store
 
@@ -281,4 +285,104 @@ class AnalyticsService:
             end_date=end_date,
             store_id=store_id,
             product_id=product_id,
+        )
+
+    async def compute_timeseries(
+        self,
+        db: AsyncSession,
+        start_date: date,
+        end_date: date,
+        granularity: TimeGranularity = TimeGranularity.DAY,
+        store_id: int | None = None,
+        product_id: int | None = None,
+        category: str | None = None,
+    ) -> TimeSeriesResponse:
+        """Compute a period-bucketed sales time series.
+
+        Args:
+            db: Database session.
+            start_date: Start of analysis period (inclusive).
+            end_date: End of analysis period (inclusive).
+            granularity: Bucket size (day, week, month, quarter).
+            store_id: Filter by store ID (optional).
+            product_id: Filter by product ID (optional).
+            category: Filter by category (optional).
+
+        Returns:
+            Time series response with points in ascending period order.
+        """
+        # Bucket expression: DAY uses the raw date column; coarser
+        # granularities truncate via date_trunc and cast back to a DATE so
+        # the resulting period validates as a `datetime.date`.
+        bucket: ColumnElement[Any]
+        if granularity == TimeGranularity.DAY:
+            bucket = cast(ColumnElement[Any], SalesDaily.date)
+        else:
+            bucket = cast(
+                ColumnElement[Any],
+                sa_cast(func.date_trunc(granularity.value, SalesDaily.date), Date),
+            )
+
+        # Same aggregation/filter shape as compute_kpis, grouped per bucket.
+        stmt = select(
+            bucket.label("period"),
+            func.coalesce(func.sum(SalesDaily.total_amount), 0).label("total_revenue"),
+            func.coalesce(func.sum(SalesDaily.quantity), 0).label("total_units"),
+            func.count().label("total_transactions"),
+        ).where((SalesDaily.date >= start_date) & (SalesDaily.date <= end_date))
+
+        if store_id is not None:
+            stmt = stmt.where(SalesDaily.store_id == store_id)
+        if product_id is not None:
+            stmt = stmt.where(SalesDaily.product_id == product_id)
+        if category is not None:
+            stmt = stmt.join(Product, SalesDaily.product_id == Product.id).where(
+                Product.category == category
+            )
+
+        stmt = stmt.group_by(bucket).order_by(bucket)
+
+        result = await db.execute(stmt)
+        rows = result.all()
+
+        points: list[TimeSeriesPoint] = []
+        for row in rows:
+            revenue = Decimal(str(row.total_revenue))
+            units = int(row.total_units)
+            transactions = int(row.total_transactions)
+            avg_unit_price = revenue / units if units > 0 else None
+            avg_basket_value = revenue / transactions if transactions > 0 else None
+            points.append(
+                TimeSeriesPoint(
+                    period=row.period,
+                    metrics=KPIMetrics(
+                        total_revenue=revenue,
+                        total_units=units,
+                        total_transactions=transactions,
+                        avg_unit_price=avg_unit_price,
+                        avg_basket_value=avg_basket_value,
+                    ),
+                )
+            )
+
+        logger.info(
+            "analytics.timeseries_computed",
+            granularity=granularity.value,
+            start_date=str(start_date),
+            end_date=str(end_date),
+            store_id=store_id,
+            product_id=product_id,
+            category=category,
+            points=len(points),
+        )
+
+        return TimeSeriesResponse(
+            granularity=granularity,
+            points=points,
+            total_points=len(points),
+            start_date=start_date,
+            end_date=end_date,
+            store_id=store_id,
+            product_id=product_id,
+            category=category,
         )
