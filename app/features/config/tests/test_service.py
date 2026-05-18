@@ -101,19 +101,34 @@ class TestGetEffectiveConfig:
     async def test_get_effective_config_maps_agent_limits(self):
         """The agent session-limit fields are sourced from the Settings singleton."""
         settings = get_settings()
-        settings.agent_max_tool_calls = 7
-        settings.agent_timeout_seconds = 99
-        settings.agent_retry_attempts = 2
-        settings.agent_session_ttl_minutes = 45
-        settings.agent_require_approval = ["create_alias"]
+        # get_settings() returns a cached singleton — snapshot every field this
+        # test mutates and restore it in a finally block so the mutation never
+        # leaks into another test.
+        fields = (
+            "agent_max_tool_calls",
+            "agent_timeout_seconds",
+            "agent_retry_attempts",
+            "agent_session_ttl_minutes",
+            "agent_require_approval",
+        )
+        original = {field: getattr(settings, field) for field in fields}
+        try:
+            settings.agent_max_tool_calls = 7
+            settings.agent_timeout_seconds = 99
+            settings.agent_retry_attempts = 2
+            settings.agent_session_ttl_minutes = 45
+            settings.agent_require_approval = ["create_alias"]
 
-        config = await service.get_effective_config(_mock_db())
+            config = await service.get_effective_config(_mock_db())
 
-        assert config.agent_max_tool_calls == 7
-        assert config.agent_timeout_seconds == 99
-        assert config.agent_retry_attempts == 2
-        assert config.agent_session_ttl_minutes == 45
-        assert config.agent_require_approval == ["create_alias"]
+            assert config.agent_max_tool_calls == 7
+            assert config.agent_timeout_seconds == 99
+            assert config.agent_retry_attempts == 2
+            assert config.agent_session_ttl_minutes == 45
+            assert config.agent_require_approval == ["create_alias"]
+        finally:
+            for field, value in original.items():
+                setattr(settings, field, value)
 
 
 # =============================================================================
