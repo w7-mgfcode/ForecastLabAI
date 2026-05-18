@@ -14,6 +14,7 @@ from pydantic_ai.messages import (
     TextPart,
     UserPromptPart,
 )
+from pydantic_ai.tool_manager import _parallel_execution_mode_ctx_var
 
 from app.features.agents.deps import AgentDeps
 from app.features.agents.models import AgentSession, AgentType, SessionStatus
@@ -332,6 +333,49 @@ class TestAgentServiceChat:
         assert response.pending_approval is False
         assert "invalid tool call" in response.message
         assert "exceeded max retries" not in response.message
+
+    @pytest.mark.asyncio
+    async def test_chat_runs_tools_sequentially(
+        self,
+        sample_active_session: AgentSession,
+        sample_experiment_report: ExperimentReport,
+    ) -> None:
+        """chat() must run the agent under sequential tool execution.
+
+        Regression for issue #172: every tool shares the single AgentDeps.db
+        AsyncSession, so concurrent tool calls raised InvalidRequestError.
+        """
+        service = AgentService()
+        mock_db = AsyncMock()
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        observed: dict[str, str] = {}
+
+        async def _run(*_args: Any, **_kwargs: Any) -> MagicMock:
+            # Capture the execution mode active while the agent runs.
+            observed["mode"] = _parallel_execution_mode_ctx_var.get()
+            result = MagicMock()
+            result.output = sample_experiment_report
+            usage = MagicMock()
+            usage.total_tokens = 1
+            result.usage.return_value = usage
+            result.all_messages.return_value = []
+            return result
+
+        mock_agent = MagicMock()
+        mock_agent.run = _run
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            await service.chat(
+                db=mock_db,
+                session_id=sample_active_session.session_id,
+                message="Run a backtest",
+            )
+
+        assert observed["mode"] == "sequential"
 
 
 class TestAgentServiceStreamChat:

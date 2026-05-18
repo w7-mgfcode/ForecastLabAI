@@ -250,14 +250,18 @@ class AgentService:
         )
 
         try:
-            result = await asyncio.wait_for(
-                agent.run(
-                    message,
-                    deps=deps,
-                    message_history=message_history,
-                ),
-                timeout=self.settings.agent_timeout_seconds,
-            )
+            # Tool calls must run sequentially: every tool shares the single
+            # AgentDeps.db AsyncSession, and SQLAlchemy forbids concurrent
+            # operations on one session (issue #172).
+            with Agent.parallel_tool_call_execution_mode("sequential"):
+                result = await asyncio.wait_for(
+                    agent.run(
+                        message,
+                        deps=deps,
+                        message_history=message_history,
+                    ),
+                    timeout=self.settings.agent_timeout_seconds,
+                )
         except TimeoutError as e:
             raise TimeoutError(
                 f"Agent response timed out after {self.settings.agent_timeout_seconds} seconds"
@@ -440,144 +444,153 @@ class AgentService:
 
         # Stream the response
         try:
-            async with asyncio.timeout(self.settings.agent_timeout_seconds):
-                async with agent.run_stream(
-                    message,
-                    deps=deps,
-                    message_history=message_history,
-                ) as result:
-                    try:
-                        async for text in result.stream_text():
-                            yield StreamEvent(
-                                event_type="text_delta",
-                                data={"delta": text},
-                                timestamp=datetime.now(UTC),
+            # Tool calls must run sequentially — see the matching note in chat()
+            # and issue #172 (shared AgentDeps.db AsyncSession).
+            with Agent.parallel_tool_call_execution_mode("sequential"):
+                async with asyncio.timeout(self.settings.agent_timeout_seconds):
+                    async with agent.run_stream(
+                        message,
+                        deps=deps,
+                        message_history=message_history,
+                    ) as result:
+                        try:
+                            async for text in result.stream_text():
+                                yield StreamEvent(
+                                    event_type="text_delta",
+                                    data={"delta": text},
+                                    timestamp=datetime.now(UTC),
+                                )
+                        except Exception as e:
+                            # Structured output agents (output_type=...) cannot stream raw text deltas.
+                            # In that case we skip delta streaming and only emit the final complete event.
+                            logger.info(
+                                "agents.stream_chat_text_delta_unavailable",
+                                session_id=session_id,
+                                error=str(e),
+                                error_type=type(e).__name__,
                             )
-                    except Exception as e:
-                        # Structured output agents (output_type=...) cannot stream raw text deltas.
-                        # In that case we skip delta streaming and only emit the final complete event.
-                        logger.info(
-                            "agents.stream_chat_text_delta_unavailable",
-                            session_id=session_id,
-                            error=str(e),
-                            error_type=type(e).__name__,
+
+                        # Get final result and update session
+                        # NOTE: PydanticAI v1.48 exposes get_output() on StreamedRunResult.
+                        final_result: Any = await result.get_output()
+                        usage = result.usage()
+
+                        session.message_history = self._serialize_messages(result.all_messages())
+                        session.total_tokens_used += usage.total_tokens or 0
+                        session.tool_calls_count += deps.tool_call_count
+                        session.last_activity = datetime.now(UTC)
+                        session.expires_at = session.last_activity + timedelta(
+                            minutes=self.settings.agent_session_ttl_minutes
                         )
 
-                    # Get final result and update session
-                    # NOTE: PydanticAI v1.48 exposes get_output() on StreamedRunResult.
-                    final_result: Any = await result.get_output()
-                    usage = result.usage()
+                        await db.flush()
 
-                    session.message_history = self._serialize_messages(result.all_messages())
-                    session.total_tokens_used += usage.total_tokens or 0
-                    session.tool_calls_count += deps.tool_call_count
-                    session.last_activity = datetime.now(UTC)
-                    session.expires_at = session.last_activity + timedelta(
-                        minutes=self.settings.agent_session_ttl_minutes
-                    )
+                        # Check for pending approval actions (mirror chat() logic)
+                        pending_action = None
+                        pending_approval = False
+                        stream_now = datetime.now(UTC)
 
-                    await db.flush()
+                        # Check for pending_action in result data (primary trigger)
+                        if hasattr(final_result, "pending_action") and final_result.pending_action:
+                            pending_approval = True
+                            pending_action_data = final_result.pending_action
+                            # Extract action details - support both dict and object with attributes
+                            if isinstance(pending_action_data, dict):
+                                action_type = pending_action_data.get("action_type", "unknown")
+                                arguments = pending_action_data.get("arguments", {})
+                                description = pending_action_data.get(
+                                    "description", f"Agent requested approval for {action_type}"
+                                )
+                            else:
+                                action_type = getattr(pending_action_data, "action_type", "unknown")
+                                arguments = getattr(pending_action_data, "arguments", {})
+                                description = getattr(
+                                    pending_action_data,
+                                    "description",
+                                    f"Agent requested approval for {action_type}",
+                                )
 
-                    # Check for pending approval actions (mirror chat() logic)
-                    pending_action = None
-                    pending_approval = False
-                    stream_now = datetime.now(UTC)
-
-                    # Check for pending_action in result data (primary trigger)
-                    if hasattr(final_result, "pending_action") and final_result.pending_action:
-                        pending_approval = True
-                        pending_action_data = final_result.pending_action
-                        # Extract action details - support both dict and object with attributes
-                        if isinstance(pending_action_data, dict):
-                            action_type = pending_action_data.get("action_type", "unknown")
-                            arguments = pending_action_data.get("arguments", {})
-                            description = pending_action_data.get(
-                                "description", f"Agent requested approval for {action_type}"
-                            )
-                        else:
-                            action_type = getattr(pending_action_data, "action_type", "unknown")
-                            arguments = getattr(pending_action_data, "arguments", {})
-                            description = getattr(
-                                pending_action_data,
-                                "description",
-                                f"Agent requested approval for {action_type}",
-                            )
-
-                        session.pending_action = {
-                            "action_id": uuid.uuid4().hex[:16],
-                            "action_type": action_type,
-                            "description": description,
-                            "arguments": arguments,
-                            "created_at": stream_now.isoformat(),
-                            "expires_at": (
-                                stream_now
-                                + timedelta(minutes=self.settings.agent_approval_timeout_minutes)
-                            ).isoformat(),
-                        }
-                        session.status = SessionStatus.AWAITING_APPROVAL.value
-                        pending_action = self._format_pending_action(session.pending_action)
-                    # Fallback: check approval_required flag (legacy trigger)
-                    elif (
-                        hasattr(final_result, "approval_required")
-                        and final_result.approval_required
-                    ):
-                        pending_approval = True
-                        session.pending_action = {
-                            "action_id": uuid.uuid4().hex[:16],
-                            "action_type": "unknown",
-                            "description": "Agent requested approval for an action",
-                            "arguments": {},
-                            "created_at": stream_now.isoformat(),
-                            "expires_at": (
-                                stream_now
-                                + timedelta(minutes=self.settings.agent_approval_timeout_minutes)
-                            ).isoformat(),
-                        }
-                        session.status = SessionStatus.AWAITING_APPROVAL.value
-                        pending_action = self._format_pending_action(session.pending_action)
-
-                    await db.flush()
-
-                    # If approval is required, emit approval_required event
-                    if pending_approval and pending_action:
-                        yield StreamEvent(
-                            event_type="approval_required",
-                            data={
-                                "action": pending_action,
-                                "message": "Human approval required before proceeding.",
-                            },
-                            timestamp=stream_now,
-                        )
-
-                    # Yield completion event
-                    response_message: str = "No response generated."
-                    if final_result:
-                        if hasattr(final_result, "answer") and final_result.answer:
-                            response_message = str(final_result.answer)
-                        elif hasattr(final_result, "summary") and final_result.summary:
-                            response_message = str(final_result.summary)
+                            session.pending_action = {
+                                "action_id": uuid.uuid4().hex[:16],
+                                "action_type": action_type,
+                                "description": description,
+                                "arguments": arguments,
+                                "created_at": stream_now.isoformat(),
+                                "expires_at": (
+                                    stream_now
+                                    + timedelta(
+                                        minutes=self.settings.agent_approval_timeout_minutes
+                                    )
+                                ).isoformat(),
+                            }
+                            session.status = SessionStatus.AWAITING_APPROVAL.value
+                            pending_action = self._format_pending_action(session.pending_action)
+                        # Fallback: check approval_required flag (legacy trigger)
                         elif (
-                            hasattr(final_result, "recommendations")
-                            and final_result.recommendations
+                            hasattr(final_result, "approval_required")
+                            and final_result.approval_required
                         ):
-                            recommendations = final_result.recommendations
-                            if isinstance(recommendations, list) and recommendations:
-                                response_message = "\n".join(str(item) for item in recommendations)
+                            pending_approval = True
+                            session.pending_action = {
+                                "action_id": uuid.uuid4().hex[:16],
+                                "action_type": "unknown",
+                                "description": "Agent requested approval for an action",
+                                "arguments": {},
+                                "created_at": stream_now.isoformat(),
+                                "expires_at": (
+                                    stream_now
+                                    + timedelta(
+                                        minutes=self.settings.agent_approval_timeout_minutes
+                                    )
+                                ).isoformat(),
+                            }
+                            session.status = SessionStatus.AWAITING_APPROVAL.value
+                            pending_action = self._format_pending_action(session.pending_action)
+
+                        await db.flush()
+
+                        # If approval is required, emit approval_required event
+                        if pending_approval and pending_action:
+                            yield StreamEvent(
+                                event_type="approval_required",
+                                data={
+                                    "action": pending_action,
+                                    "message": "Human approval required before proceeding.",
+                                },
+                                timestamp=stream_now,
+                            )
+
+                        # Yield completion event
+                        response_message: str = "No response generated."
+                        if final_result:
+                            if hasattr(final_result, "answer") and final_result.answer:
+                                response_message = str(final_result.answer)
+                            elif hasattr(final_result, "summary") and final_result.summary:
+                                response_message = str(final_result.summary)
+                            elif (
+                                hasattr(final_result, "recommendations")
+                                and final_result.recommendations
+                            ):
+                                recommendations = final_result.recommendations
+                                if isinstance(recommendations, list) and recommendations:
+                                    response_message = "\n".join(
+                                        str(item) for item in recommendations
+                                    )
+                                else:
+                                    response_message = str(final_result)
                             else:
                                 response_message = str(final_result)
-                        else:
-                            response_message = str(final_result)
 
-                    yield StreamEvent(
-                        event_type="complete",
-                        data={
-                            "message": response_message,
-                            "tokens_used": usage.total_tokens or 0,
-                            "tool_calls_count": deps.tool_call_count,
-                            "pending_approval": pending_approval,
-                        },
-                        timestamp=datetime.now(UTC),
-                    )
+                        yield StreamEvent(
+                            event_type="complete",
+                            data={
+                                "message": response_message,
+                                "tokens_used": usage.total_tokens or 0,
+                                "tool_calls_count": deps.tool_call_count,
+                                "pending_approval": pending_approval,
+                            },
+                            timestamp=datetime.now(UTC),
+                        )
         except TimeoutError as e:
             raise TimeoutError(
                 f"Agent response timed out after {self.settings.agent_timeout_seconds} seconds"
