@@ -22,6 +22,7 @@ from app.features.agents.agents.base import (
     get_agent_retries,
     get_model_identifier,
     get_model_settings,
+    recoverable,
     validate_api_key_for_model,
 )
 from app.features.agents.deps import AgentDeps
@@ -103,6 +104,7 @@ def create_rag_assistant_agent() -> Agent[AgentDeps, RAGAnswer]:
 
     # Register tools with the agent
     @agent.tool
+    @recoverable
     async def tool_retrieve_context(
         ctx: RunContext[AgentDeps],
         query: str,
@@ -187,6 +189,7 @@ def create_rag_assistant_agent() -> Agent[AgentDeps, RAGAnswer]:
         )
 
     @agent.tool
+    @recoverable
     async def tool_list_sources(
         ctx: RunContext[AgentDeps],
     ) -> dict[str, Any]:

@@ -1,20 +1,28 @@
 """Unit tests for agent base helpers (Ollama-aware model factory)."""
 
+import re
 from collections.abc import Iterator
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic_ai import ModelRetry
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel
 
 from app.core.config import get_settings
 from app.features.agents.agents.base import (
+    TOOL_USAGE_INSTRUCTIONS,
     build_agent_model,
     get_agent_retries,
+    recoverable,
     validate_api_key_for_model,
 )
-from app.features.agents.agents.experiment import create_experiment_agent
+from app.features.agents.agents.experiment import (
+    EXPERIMENT_SYSTEM_PROMPT,
+    create_experiment_agent,
+)
 from app.features.agents.agents.rag_assistant import create_rag_assistant_agent
 from app.features.agents.deps import AgentDeps
 from app.features.agents.schemas import ExperimentReport, RAGAnswer
@@ -52,6 +60,94 @@ def test_validate_api_key_for_model_ollama_skips_key_check():
     settings.google_api_key = ""
     # Should return without raising even though no cloud key is configured.
     validate_api_key_for_model("ollama:llama3.1")
+
+
+def test_prompts_only_reference_registered_tool_names() -> None:
+    """Every `tool_*` name in the agent prompts must be an actually-registered tool.
+
+    Regression for issue #175: the prompts named tools as `run_backtest`,
+    `list_runs`, … but the registered tools are `tool_`-prefixed, so weaker
+    models called unknown tool names. This test is the single source of truth
+    for that invariant — the registered set is read off the built agent (not a
+    hardcoded list), so drift in either direction (a renamed tool or an edited
+    prompt) fails CI.
+    """
+    settings = get_settings()
+    settings.agent_default_model = "ollama:llama3.1"
+    agent = create_experiment_agent()
+
+    captured: dict[str, set[str]] = {}
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        captured["registered"] = {tool.name for tool in info.function_tools}
+        # End the run immediately with a PromptedOutput-parseable text reply.
+        return ModelResponse(parts=[TextPart(content='{"summary": "noop"}')])
+
+    agent.run_sync(
+        "noop",
+        model=FunctionModel(respond),
+        deps=AgentDeps(db=AsyncMock(), session_id="test-tool-names"),
+    )
+    registered = captured["registered"]
+
+    # Tool names the prompts instruct the model to call. EXPERIMENT_SYSTEM_PROMPT
+    # already embeds TOOL_USAGE_INSTRUCTIONS; both are scanned to stay correct
+    # even if that embedding changes.
+    prompt_text = TOOL_USAGE_INSTRUCTIONS + EXPERIMENT_SYSTEM_PROMPT
+    referenced = set(re.findall(r"\btool_[a-z_]+\b", prompt_text))
+
+    assert referenced, "expected the prompts to name at least one tool"
+    unknown = referenced - registered
+    assert not unknown, f"prompts reference unregistered tools: {sorted(unknown)}"
+
+
+async def test_recoverable_converts_valueerror_to_model_retry():
+    """A ValueError from a tool becomes a ModelRetry the model can recover from (#176)."""
+
+    @recoverable
+    async def tool() -> str:
+        raise ValueError("No data found for store=1")
+
+    with pytest.raises(ModelRetry, match="No data found for store=1"):
+        await tool()
+
+
+async def test_recoverable_passes_through_other_exceptions():
+    """Non-ValueError exceptions are genuine bugs — they must still propagate."""
+
+    @recoverable
+    async def tool() -> str:
+        raise RuntimeError("a real bug")
+
+    with pytest.raises(RuntimeError, match="a real bug"):
+        await tool()
+
+
+async def test_recoverable_returns_value_on_success():
+    """The decorator is transparent when the tool succeeds."""
+
+    @recoverable
+    async def tool() -> str:
+        return "ok"
+
+    assert await tool() == "ok"
+
+
+def test_recoverable_rejects_sync_function() -> None:
+    """@recoverable is async-only — applying it to a sync function fails fast.
+
+    Without the guard a sync function would be wrapped and then ``await``ed,
+    surfacing a confusing ``TypeError: ... is not awaitable`` only at call
+    time. The decorator rejects it at decoration time instead.
+    """
+
+    def sync_tool() -> str:
+        return "nope"
+
+    # recoverable is async-only by type; cast bypasses the static check so the
+    # runtime guard itself can be exercised.
+    with pytest.raises(TypeError, match="async tool functions only"):
+        recoverable(cast(Any, sync_tool))
 
 
 def test_get_agent_retries_returns_configured_value():

@@ -5,10 +5,14 @@ Provides shared configuration and utility functions for all agents.
 
 from __future__ import annotations
 
+import functools
+import inspect
 import os
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import structlog
+from pydantic_ai import ModelRetry
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.ollama import OllamaProvider
@@ -16,6 +20,45 @@ from pydantic_ai.providers.ollama import OllamaProvider
 from app.core.config import get_settings
 
 logger = structlog.get_logger()
+
+
+def recoverable[**P, ToolReturnT](
+    func: Callable[P, Awaitable[ToolReturnT]],
+) -> Callable[P, Awaitable[ToolReturnT]]:
+    """Wrap an async agent tool so an expected ``ValueError`` becomes a ``ModelRetry``.
+
+    Input-driven failures (no data for a store, an unknown run id, a malformed
+    date) should let the model correct its arguments on the next turn instead of
+    crashing the whole run (issue #176). Other exception types still propagate
+    as genuine errors.
+
+    Args:
+        func: The async tool function to wrap.
+
+    Returns:
+        The wrapped tool function, signature preserved for PydanticAI schema
+        extraction.
+
+    Raises:
+        TypeError: If ``func`` is not a coroutine function. The wrapper
+            ``await``s ``func``, so wrapping a sync callable would only fail
+            (with an opaque "not awaitable" error) when the tool is first
+            called — this guard surfaces the mistake at decoration time.
+    """
+    if not inspect.iscoroutinefunction(func):
+        raise TypeError(
+            f"@recoverable wraps async tool functions only; "
+            f"{getattr(func, '__qualname__', func)!r} is not a coroutine function."
+        )
+
+    @functools.wraps(func)
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> ToolReturnT:
+        try:
+            return await func(*args, **kwargs)
+        except ValueError as exc:
+            raise ModelRetry(str(exc)) from exc
+
+    return wrapper
 
 
 def build_agent_model(identifier: str) -> str | Model:
@@ -183,13 +226,13 @@ CRITICAL INSTRUCTIONS:
 """
 
 TOOL_USAGE_INSTRUCTIONS = """
-TOOL USAGE:
-- Use list_runs to find existing experiments
-- Use run_backtest to evaluate model performance
-- Use compare_runs to analyze differences between runs
-- Use create_alias to deploy successful models (requires approval)
-- Use archive_run to clean up old experiments (requires approval)
-- Use retrieve_context to find documentation
+TOOL USAGE (call tools by these EXACT names):
+- Use tool_list_runs to find existing experiments
+- Use tool_run_backtest to evaluate model performance
+- Use tool_compare_backtest_results to compare two backtest results
+- Use tool_compare_runs to analyze differences between registered runs
+- Use tool_create_alias to deploy successful models (requires approval)
+- Use tool_archive_run to clean up old experiments (requires approval)
 """
 
 SAFETY_INSTRUCTIONS = """

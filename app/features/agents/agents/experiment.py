@@ -23,6 +23,7 @@ from app.features.agents.agents.base import (
     get_agent_retries,
     get_model_identifier,
     get_model_settings,
+    recoverable,
     requires_approval,
     validate_api_key_for_model,
 )
@@ -55,9 +56,9 @@ You are the Experiment Orchestrator Agent. Your role is to:
 
 WORKFLOW:
 1. Parse the objective to understand what the user wants
-2. Check existing runs with list_runs to avoid duplicates
-3. Run backtests for candidate models
-4. Compare results using compare_backtest_results
+2. Check existing runs with tool_list_runs to avoid duplicates
+3. Run backtests for candidate models with tool_run_backtest
+4. Compare results using tool_compare_backtest_results
 5. Formulate recommendation with clear metrics
 6. If auto_deploy requested and model beats baselines, propose deployment
 
@@ -104,6 +105,7 @@ def create_experiment_agent() -> Agent[AgentDeps, ExperimentReport]:
 
     # Register tools with the agent
     @agent.tool
+    @recoverable
     async def tool_list_runs(
         ctx: RunContext[AgentDeps],
         page: int = 1,
@@ -145,6 +147,7 @@ def create_experiment_agent() -> Agent[AgentDeps, ExperimentReport]:
         )
 
     @agent.tool
+    @recoverable
     async def tool_get_run(
         ctx: RunContext[AgentDeps],
         run_id: str,
@@ -166,6 +169,7 @@ def create_experiment_agent() -> Agent[AgentDeps, ExperimentReport]:
         return await get_run(db=ctx.deps.db, run_id=run_id)
 
     @agent.tool
+    @recoverable
     async def tool_run_backtest(
         ctx: RunContext[AgentDeps],
         store_id: int,
@@ -257,6 +261,7 @@ def create_experiment_agent() -> Agent[AgentDeps, ExperimentReport]:
         return compare_backtest_results(result_a, result_b)
 
     @agent.tool
+    @recoverable
     async def tool_compare_runs(
         ctx: RunContext[AgentDeps],
         run_id_a: str,
@@ -285,6 +290,7 @@ def create_experiment_agent() -> Agent[AgentDeps, ExperimentReport]:
         )
 
     @agent.tool
+    @recoverable
     async def tool_create_alias(
         ctx: RunContext[AgentDeps],
         alias_name: str,
@@ -333,6 +339,7 @@ def create_experiment_agent() -> Agent[AgentDeps, ExperimentReport]:
         )
 
     @agent.tool
+    @recoverable
     async def tool_archive_run(
         ctx: RunContext[AgentDeps],
         run_id: str,
