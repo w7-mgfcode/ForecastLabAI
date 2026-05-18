@@ -20,6 +20,7 @@ from typing import Any, Literal, cast
 
 import structlog
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import ModelMessage
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -261,6 +262,26 @@ class AgentService:
             raise TimeoutError(
                 f"Agent response timed out after {self.settings.agent_timeout_seconds} seconds"
             ) from e
+        except UnexpectedModelBehavior as e:
+            # The model misbehaved (e.g. a tool call exceeded its retry budget).
+            # This is recoverable from the user's perspective — surface a clean
+            # message instead of leaking the raw PydanticAI exception string.
+            logger.warning(
+                "agents.chat_model_misbehavior",
+                session_id=session_id,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            session.last_activity = datetime.now(UTC)
+            await db.flush()
+            return ChatResponse(
+                session_id=session_id,
+                message=(
+                    "I couldn't complete that request — the model produced an "
+                    "invalid tool call. Please try rephrasing, or give me a "
+                    "specific forecasting objective to work on."
+                ),
+            )
 
         # Extract tool calls from result
         tool_calls: list[ToolCallResult] = []
@@ -561,6 +582,29 @@ class AgentService:
             raise TimeoutError(
                 f"Agent response timed out after {self.settings.agent_timeout_seconds} seconds"
             ) from e
+        except UnexpectedModelBehavior as e:
+            # The model misbehaved (e.g. a tool call exceeded its retry budget).
+            # Emit a clean, recoverable `error` event rather than letting the raw
+            # PydanticAI exception bubble to the WebSocket handler.
+            logger.warning(
+                "agents.stream_chat_model_misbehavior",
+                session_id=session_id,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            yield StreamEvent(
+                event_type="error",
+                data={
+                    "error": (
+                        "The assistant produced an invalid tool call and couldn't "
+                        "complete the request. Please try rephrasing your message."
+                    ),
+                    "error_type": "model_behavior_error",
+                    "recoverable": True,
+                },
+                timestamp=datetime.now(UTC),
+            )
+            return
 
         logger.info(
             "agents.stream_chat_completed",
