@@ -113,4 +113,4 @@ wc -l CLAUDE.md                                # must stay ≤ 150
 ## Learnings
 
 <!-- Session-specific discoveries Claude should remember. Update sparingly. -->
-- HEURISTIC_MODE generated this doc (no `docs/_kB/repo-map/` KB). Run `mapping-repo-context` to upgrade fidelity; sections marked `[UNVERIFIED]` in `docs/_base/` need verification.
+- HEURISTIC_MODE generated this doc (no `docs/_kB/repo-map/` KB). Run `mapping-repo-context` to upgrade fidelity; sections marked `[ASSUMPTION]` in `docs/_base/` need verification.

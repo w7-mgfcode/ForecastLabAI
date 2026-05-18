@@ -39,7 +39,7 @@ docker-compose up -d
 3. **Install dependencies**
 
 ```bash
-uv sync
+uv sync --extra dev
 # or: pip install -e ".[dev]"
 ```
 
@@ -711,6 +711,15 @@ uv run python scripts/seed_random.py --verify
 - Dry-run mode for previewing changes
 
 See [examples/seed/README.md](examples/seed/README.md) for detailed configuration options.
+
+### Demo Pipeline
+
+Drives the end-to-end pipeline (`seed → features → train ×3 → backtest → register → alias → agent`) in-process and powers the dashboard Showcase page.
+
+- `POST /demo/run` - Run the full pipeline in-process; returns a `DemoRunResult`. Returns `409 application/problem+json` if a run is already active.
+- `WS /demo/stream` - Stream one `StepEvent` per pipeline step for the live Showcase page.
+
+Only one demo pipeline runs at a time (module-level lock). See [docs/_base/API_CONTRACTS.md](docs/_base/API_CONTRACTS.md) for the full `StepEvent` schema, and the [`/showcase`](http://localhost:5173/showcase) page for the browser view.
 
 ### Error Responses (RFC 7807)
 

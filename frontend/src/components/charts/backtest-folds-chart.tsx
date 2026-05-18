@@ -24,11 +24,13 @@ interface BacktestFoldsChartProps {
   className?: string
 }
 
+// The --chart-N vars are complete oklch() colours (Tailwind 4 / shadcn v4);
+// reference them directly — wrapping in hsl() produces invalid CSS (black).
 const metricColors: Record<string, string> = {
-  mae: 'hsl(var(--chart-1))',
-  smape: 'hsl(var(--chart-2))',
-  wape: 'hsl(var(--chart-3))',
-  bias: 'hsl(var(--chart-4))',
+  mae: 'var(--chart-1)',
+  smape: 'var(--chart-2)',
+  wape: 'var(--chart-3)',
+  bias: 'var(--chart-4)',
 }
 
 const metricLabels: Record<string, string> = {

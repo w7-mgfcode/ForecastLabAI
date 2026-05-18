@@ -39,14 +39,16 @@ export function TimeSeriesChart({
   height = 300,
   className,
 }: TimeSeriesChartProps) {
+  // The --chart-N vars are complete oklch() colours (Tailwind 4 / shadcn v4);
+  // reference them directly — wrapping in hsl() produces invalid CSS (black).
   const chartConfig: ChartConfig = {
     [actualKey]: {
       label: 'Actual',
-      color: 'hsl(var(--chart-1))',
+      color: 'var(--chart-1)',
     },
     [predictedKey]: {
       label: 'Predicted',
-      color: 'hsl(var(--chart-2))',
+      color: 'var(--chart-2)',
     },
   }
 
@@ -77,7 +79,7 @@ export function TimeSeriesChart({
               <Line
                 type="monotone"
                 dataKey={actualKey}
-                stroke="var(--color-actual)"
+                stroke={`var(--color-${actualKey})`}
                 strokeWidth={2}
                 dot={false}
                 name="Actual"
@@ -87,7 +89,7 @@ export function TimeSeriesChart({
               <Line
                 type="monotone"
                 dataKey={predictedKey}
-                stroke="var(--color-predicted)"
+                stroke={`var(--color-${predictedKey})`}
                 strokeWidth={2}
                 strokeDasharray="5 5"
                 dot={false}

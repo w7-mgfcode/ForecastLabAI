@@ -8,9 +8,10 @@ CRITICAL: All job operations are logged for auditability.
 
 from __future__ import annotations
 
+import math
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,7 +30,98 @@ from app.features.jobs.schemas import (
     JobResponse,
 )
 
+if TYPE_CHECKING:
+    from app.features.backtesting.schemas import BacktestResponse
+
 logger = get_logger(__name__)
+
+# The metrics the /visualize/backtest dashboard reads. The job result is a
+# fixed contract with the frontend (BacktestResult in backtest.tsx), so this
+# set is enumerated here rather than derived from the response — but a missing
+# key is logged (see _shape_backtest_result) so any drift is loud, not silent.
+_BACKTEST_METRICS: tuple[str, ...] = ("mae", "smape", "wape", "bias")
+
+# Metric whose fold-to-fold stability surfaces as the headline `stability_index`.
+# WAPE is the demo's primary model-selection metric, so its stability is the
+# most meaningful single number; change this constant to pick a different one.
+_STABILITY_METRIC: str = "wape"
+
+
+def _finite(value: float) -> float:
+    """Coerce NaN/inf to 0.0 so a job result stays JSON/JSONB-safe.
+
+    Backtest metrics can be NaN (e.g. stability with fewer than two valid
+    folds); Postgres `jsonb` rejects non-finite floats.
+    """
+    return value if math.isfinite(value) else 0.0
+
+
+def _shape_backtest_result(response: BacktestResponse, model_type: str) -> dict[str, Any]:
+    """Flatten a ``BacktestResponse`` into the job-result contract the dashboard reads.
+
+    ``BacktestingService.run_backtest`` produces per-fold metrics, stability
+    indices and a baseline comparison, but the job result must be a plain dict.
+    This shapes it into exactly what ``/visualize/backtest`` expects:
+    ``aggregated_metrics`` with ``*_mean`` keys plus ``stability_index``,
+    ``fold_metrics``, and (when baselines ran) ``baseline_comparison``.
+
+    The metric set is ``_BACKTEST_METRICS``; ``stability_index`` is the stability
+    of ``_STABILITY_METRIC`` (WAPE). A metric absent from the response is logged
+    and defaulted to ``0.0`` rather than failing silently.
+    """
+    main = response.main_model_results
+    agg = main.aggregated_metrics
+    # aggregate_fold_metrics() returns stability indices in the metric_std slot,
+    # keyed "<metric>_stability".
+    stability = main.metric_std
+
+    missing = [m for m in _BACKTEST_METRICS if m not in agg]
+    if missing:
+        logger.warning(
+            "jobs.backtest_metrics_missing",
+            missing=missing,
+            available=sorted(agg),
+        )
+
+    fold_metrics = [
+        {
+            "fold": fold.fold_index + 1,
+            **{m: _finite(fold.metrics.get(m, 0.0)) for m in _BACKTEST_METRICS},
+        }
+        for fold in main.fold_results
+    ]
+
+    aggregated_metrics: dict[str, float] = {
+        f"{m}_mean": _finite(agg.get(m, 0.0)) for m in _BACKTEST_METRICS
+    }
+    aggregated_metrics["stability_index"] = _finite(
+        stability.get(f"{_STABILITY_METRIC}_stability", 0.0)
+    )
+
+    result: dict[str, Any] = {
+        "backtest_id": response.backtest_id,
+        "model_type": model_type,
+        "n_splits": len(main.fold_results),
+        "aggregated_metrics": aggregated_metrics,
+        "fold_metrics": fold_metrics,
+        "duration_ms": response.duration_ms,
+    }
+
+    summary = response.comparison_summary
+    if summary:
+        mae_cmp = summary.get("mae", {})
+        result["baseline_comparison"] = {
+            "naive": {
+                "mae": _finite(mae_cmp.get("naive", 0.0)),
+                "improvement_pct": _finite(mae_cmp.get("vs_naive_pct", 0.0)),
+            },
+            "seasonal_naive": {
+                "mae": _finite(mae_cmp.get("seasonal_naive", 0.0)),
+                "improvement_pct": _finite(mae_cmp.get("vs_seasonal_pct", 0.0)),
+            },
+        }
+
+    return result
 
 
 class JobService:
@@ -530,21 +622,10 @@ class JobService:
             config=backtest_config,
         )
 
-        # Extract metrics from main_model_results
-        main_metrics = response.main_model_results.aggregated_metrics
-
-        return {
-            "backtest_id": response.backtest_id,
-            "model_type": model_type,
-            "n_splits": len(response.main_model_results.fold_results),
-            "aggregated_metrics": {
-                "mae": main_metrics.get("mae", 0.0),
-                "smape": main_metrics.get("smape", 0.0),
-                "wape": main_metrics.get("wape", 0.0),
-                "bias": main_metrics.get("bias", 0.0),
-            },
-            "duration_ms": response.duration_ms,
-        }
+        # Shape the full response into the dashboard's job-result contract
+        # (per-fold metrics, stability, baseline comparison) instead of
+        # discarding everything but four aggregated values.
+        return _shape_backtest_result(response, model_type)
 
     def _to_response(self, job: Job) -> JobResponse:
         """Convert Job model to response schema.

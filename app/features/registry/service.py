@@ -601,18 +601,30 @@ class RegistryService:
             data_window_end: Data window end date.
 
         Returns:
-            Existing run or None.
+            The most recent matching run, or None.
+
+        Note:
+            Under ``registry_duplicate_policy="detect"`` (the default), duplicate
+            runs are intentionally created, so multiple non-archived rows may
+            share the same config hash. This query therefore orders by
+            ``created_at`` and takes the first row rather than asserting a single
+            match — ``scalar_one_or_none()`` would raise ``MultipleResultsFound``.
         """
-        stmt = select(ModelRun).where(
-            (ModelRun.config_hash == config_hash)
-            & (ModelRun.store_id == store_id)
-            & (ModelRun.product_id == product_id)
-            & (ModelRun.data_window_start == data_window_start)
-            & (ModelRun.data_window_end == data_window_end)
-            & (ModelRun.status != RunStatusORM.ARCHIVED.value)
+        stmt = (
+            select(ModelRun)
+            .where(
+                (ModelRun.config_hash == config_hash)
+                & (ModelRun.store_id == store_id)
+                & (ModelRun.product_id == product_id)
+                & (ModelRun.data_window_start == data_window_start)
+                & (ModelRun.data_window_end == data_window_end)
+                & (ModelRun.status != RunStatusORM.ARCHIVED.value)
+            )
+            .order_by(ModelRun.created_at.desc())
+            .limit(1)
         )
         result = await db.execute(stmt)
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     def _model_to_response(self, model_run: ModelRun) -> RunResponse:
         """Convert ORM model to response schema.

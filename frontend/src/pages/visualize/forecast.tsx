@@ -2,62 +2,42 @@ import { useState } from 'react'
 import { useJob } from '@/hooks/use-jobs'
 import { TimeSeriesChart } from '@/components/charts/time-series-chart'
 import { EmptyState } from '@/components/common/error-display'
+import { JobPicker } from '@/components/common/job-picker'
 import { LoadingState } from '@/components/common/loading-state'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
-import { Search, BarChart3 } from 'lucide-react'
+import { BarChart3 } from 'lucide-react'
 
 export default function ForecastPage() {
-  const [jobId, setJobId] = useState('')
   const [searchJobId, setSearchJobId] = useState('')
 
   const { data: job, isLoading, error } = useJob(searchJobId, !!searchJobId)
 
-  const handleSearch = () => {
-    if (jobId.trim()) {
-      setSearchJobId(jobId.trim())
-    }
-  }
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleSearch()
-    }
-  }
-
-  // Extract forecast data from job result
-  const forecastData = job?.result?.predictions as Array<{
+  // Extract forecast data from job result.
+  // A completed `predict` job stores result.forecasts (each point: date + forecast).
+  const forecastData = job?.result?.forecasts as Array<{
     date: string
-    predicted: number
+    forecast: number
   }> | undefined
 
   return (
     <div className="space-y-6">
       <h1 className="text-3xl font-bold">Forecast Visualization</h1>
 
-      {/* Search by Job ID */}
+      {/* Job picker */}
       <Card>
         <CardHeader>
           <CardTitle>Load Forecast</CardTitle>
           <CardDescription>
-            Enter a completed prediction job ID to visualize the forecast
+            Pick a completed prediction job to visualize the forecast
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="flex gap-2">
-            <Input
-              placeholder="Enter job ID (e.g., abc12345...)"
-              value={jobId}
-              onChange={(e) => setJobId(e.target.value)}
-              onKeyDown={handleKeyDown}
-              className="max-w-md"
-            />
-            <Button onClick={handleSearch} disabled={!jobId.trim()}>
-              <Search className="h-4 w-4 mr-2" />
-              Load
-            </Button>
-          </div>
+          <JobPicker
+            jobType="predict"
+            selectedJobId={searchJobId}
+            onSelect={setSearchJobId}
+            autoSelectLatest
+          />
         </CardContent>
       </Card>
 
@@ -109,6 +89,7 @@ export default function ForecastPage() {
               title="Forecast Results"
               description={`${forecastData.length} day forecast`}
               data={forecastData}
+              predictedKey="forecast"
               showActual={false}
               showPredicted={true}
             />
@@ -137,7 +118,7 @@ export default function ForecastPage() {
       {!searchJobId && !isLoading && (
         <EmptyState
           title="No forecast loaded"
-          description="Enter a prediction job ID above to visualize the forecast results."
+          description="Pick a prediction job above to visualize the forecast results."
           icon={<BarChart3 className="h-12 w-12" />}
         />
       )}
