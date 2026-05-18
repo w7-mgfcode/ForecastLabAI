@@ -60,6 +60,12 @@ WORKFLOW:
 5. Formulate recommendation with clear metrics
 6. If auto_deploy requested and model beats baselines, propose deployment
 
+CONVERSATIONAL BEHAVIOR:
+- If the user greets you or has not yet described a concrete forecasting
+  objective, reply conversationally in the `summary` field and ask what they
+  would like to experiment on. Do NOT call any tools until you have a specific
+  objective (a store and product plus a date range, or an explicit request).
+
 {TOOL_USAGE_INSTRUCTIONS}
 
 {SAFETY_INSTRUCTIONS}
@@ -212,20 +218,33 @@ def create_experiment_agent() -> Agent[AgentDeps, ExperimentReport]:
 
     @agent.tool_plain
     def tool_compare_backtest_results(
-        result_a: dict[str, Any],
-        result_b: dict[str, Any],
+        result_a: dict[str, Any] | None = None,
+        result_b: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Compare two backtest results.
 
-        Use this to analyze which model performs better.
+        Use this to analyze which model performs better. Both arguments must be
+        full backtest-result dicts as returned by tool_run_backtest.
 
         Args:
-            result_a: First backtest result.
-            result_b: Second backtest result.
+            result_a: First backtest result (from tool_run_backtest).
+            result_b: Second backtest result (from tool_run_backtest).
 
         Returns:
-            Comparison with metric differences and recommendation.
+            Comparison with metric differences and recommendation, or an
+            informative error dict if either result is missing.
         """
+        # Tolerate missing/empty args: return a self-correcting hint instead of
+        # failing schema validation, which would burn the tool's retry budget
+        # and crash the whole run with UnexpectedModelBehavior.
+        if not result_a or not result_b:
+            return {
+                "error": "compare_backtest_results needs two backtest results.",
+                "hint": (
+                    "Call tool_run_backtest twice first, then pass both result "
+                    "dicts as result_a and result_b."
+                ),
+            }
         return compare_backtest_results(result_a, result_b)
 
     @agent.tool

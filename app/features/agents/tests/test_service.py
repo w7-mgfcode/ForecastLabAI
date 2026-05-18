@@ -5,6 +5,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from app.features.agents.deps import AgentDeps
 from app.features.agents.models import AgentSession, AgentType, SessionStatus
@@ -286,6 +287,95 @@ class TestAgentServiceChat:
         assert response.session_id == sample_active_session.session_id
         assert response.tokens_used == 100
         mock_agent.run.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_model_misbehavior_returns_friendly_message(
+        self,
+        sample_active_session: AgentSession,
+    ) -> None:
+        """A misbehaving model should yield a clean message, not crash.
+
+        Regression for issue #164: a tool call exceeding its retry budget
+        raised PydanticAI's `UnexpectedModelBehavior`, whose raw string
+        ("Tool '...' exceeded max retries count of 1") leaked to the user.
+        """
+        service = AgentService()
+        mock_db = AsyncMock()
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(
+            side_effect=UnexpectedModelBehavior(
+                "Tool 'tool_compare_backtest_results' exceeded max retries count of 1"
+            )
+        )
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            response = await service.chat(
+                db=mock_db,
+                session_id=sample_active_session.session_id,
+                message="Hello",
+            )
+
+        assert response.session_id == sample_active_session.session_id
+        assert response.pending_approval is False
+        assert "invalid tool call" in response.message
+        assert "exceeded max retries" not in response.message
+
+
+class TestAgentServiceStreamChat:
+    """Tests for streaming chat functionality."""
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_model_misbehavior_yields_error_event(
+        self,
+        sample_active_session: AgentSession,
+    ) -> None:
+        """A misbehaving model should yield a recoverable `error` event, not crash.
+
+        Regression for issue #164: `UnexpectedModelBehavior` raised inside
+        `agent.run_stream` bubbled to the WebSocket handler, which echoed the
+        raw exception string to the client.
+        """
+        service = AgentService()
+        mock_db = AsyncMock()
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        class _RaisingStream:
+            """Async context manager that fails on entry like a misbehaving run."""
+
+            async def __aenter__(self) -> Any:
+                raise UnexpectedModelBehavior(
+                    "Tool 'tool_compare_backtest_results' exceeded max retries count of 1"
+                )
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        mock_agent = MagicMock()
+        mock_agent.run_stream = MagicMock(return_value=_RaisingStream())
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            events = [
+                event
+                async for event in service.stream_chat(
+                    db=mock_db,
+                    session_id=sample_active_session.session_id,
+                    message="Hello",
+                )
+            ]
+
+        assert len(events) == 1
+        assert events[0].event_type == "error"
+        assert events[0].data["recoverable"] is True
+        assert events[0].data["error_type"] == "model_behavior_error"
+        assert "exceeded max retries" not in events[0].data["error"]
 
 
 class TestAgentServiceApproval:
