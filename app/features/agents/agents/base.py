@@ -77,6 +77,19 @@ def get_fallback_model() -> str:
     return settings.agent_fallback_model
 
 
+def get_agent_retries() -> int:
+    """Get the configured retry budget for agent tool calls and output validation.
+
+    PydanticAI defaults to 1 retry; without this the configured
+    ``agent_retry_attempts`` setting is silently ignored.
+
+    Returns:
+        Number of retry attempts for tool calls and structured-output validation.
+    """
+    settings = get_settings()
+    return settings.agent_retry_attempts
+
+
 def get_model_settings() -> dict[str, Any]:
     """Get model settings from configuration for PydanticAI Agent.
 
