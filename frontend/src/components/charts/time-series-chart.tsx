@@ -79,7 +79,7 @@ export function TimeSeriesChart({
               <Line
                 type="monotone"
                 dataKey={actualKey}
-                stroke="var(--color-actual)"
+                stroke={`var(--color-${actualKey})`}
                 strokeWidth={2}
                 dot={false}
                 name="Actual"
@@ -89,7 +89,7 @@ export function TimeSeriesChart({
               <Line
                 type="monotone"
                 dataKey={predictedKey}
-                stroke="var(--color-predicted)"
+                stroke={`var(--color-${predictedKey})`}
                 strokeWidth={2}
                 strokeDasharray="5 5"
                 dot={false}
