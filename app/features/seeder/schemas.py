@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.shared.seeder.config import default_seed_end_date, default_seed_start_date
+
 VALID_CHANNELS: frozenset[str] = frozenset({"in_store", "online", "click_collect", "wholesale"})
 """Allow-list for ``sales_daily.channel`` — mirrors the SQL CHECK."""
 
@@ -98,12 +100,12 @@ class GenerateParams(BaseModel):
         description="Number of products to generate",
     )
     start_date: date = Field(
-        default_factory=lambda: date(2024, 1, 1),
-        description="Start of date range",
+        default_factory=default_seed_start_date,
+        description="Start of date range (defaults to one year before today)",
     )
     end_date: date = Field(
-        default_factory=lambda: date(2024, 12, 31),
-        description="End of date range",
+        default_factory=default_seed_end_date,
+        description="End of date range (defaults to today)",
     )
     sparsity: float = Field(
         default=0.0,

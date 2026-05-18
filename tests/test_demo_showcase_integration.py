@@ -7,7 +7,11 @@ Requires ``docker-compose up -d`` + ``alembic upgrade head``. Marked
 ``integration`` so it is excluded from the fast unit run.
 """
 
+from datetime import timedelta
+
 import pytest
+
+from app.shared.seeder.config import DEMO_MINIMAL_SPAN_DAYS, default_seed_end_date
 
 pytestmark = pytest.mark.integration
 
@@ -15,6 +19,9 @@ pytestmark = pytest.mark.integration
 async def test_demo_run_pipeline_end_to_end(client):
     """Seed demo_minimal, run the demo pipeline, and verify the registered winner."""
     # Precondition: seed the demo_minimal scenario so skip_seed=true has data.
+    # The window is anchored to today, mirroring the demo pipeline's own seed step.
+    seed_end = default_seed_end_date()
+    seed_start = seed_end - timedelta(days=DEMO_MINIMAL_SPAN_DAYS)
     seed_resp = await client.post(
         "/seeder/generate",
         json={
@@ -22,8 +29,8 @@ async def test_demo_run_pipeline_end_to_end(client):
             "seed": 42,
             "stores": 3,
             "products": 10,
-            "start_date": "2024-10-01",
-            "end_date": "2024-12-31",
+            "start_date": seed_start.isoformat(),
+            "end_date": seed_end.isoformat(),
             "sparsity": 0.0,
             "dry_run": False,
         },

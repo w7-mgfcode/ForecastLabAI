@@ -1,11 +1,12 @@
 """Unit tests for seeder service layer."""
 
-from datetime import date
+from datetime import date, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.features.seeder import schemas, service
+from app.shared.seeder.config import DEMO_MINIMAL_SPAN_DAYS, default_seed_end_date
 
 
 class TestListScenarios:
@@ -27,14 +28,18 @@ class TestListScenarios:
         assert "demo_minimal" in names
 
     def test_demo_minimal_dimensions(self):
-        """Test that demo_minimal is the small preset for the make demo target."""
+        """Test that demo_minimal is the small preset for the make demo target.
+
+        The window is anchored to *today* so the scenario picker reflects what
+        the seeder will actually produce.
+        """
         scenarios = service.list_scenarios()
 
         demo = next(s for s in scenarios if s.name == "demo_minimal")
         assert demo.stores == 3
         assert demo.products == 10
-        assert demo.start_date == date(2024, 10, 1)
-        assert demo.end_date == date(2024, 12, 31)
+        assert demo.end_date == default_seed_end_date()
+        assert demo.start_date == default_seed_end_date() - timedelta(days=DEMO_MINIMAL_SPAN_DAYS)
 
     def test_scenario_info_structure(self):
         """Test that scenarios have required fields."""

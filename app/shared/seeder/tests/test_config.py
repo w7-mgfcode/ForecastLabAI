@@ -1,11 +1,14 @@
 """Tests for seeder configuration."""
 
-from datetime import date
+from datetime import date, timedelta
 
 from app.shared.seeder.config import (
+    DEMO_MINIMAL_SPAN_DAYS,
     ScenarioPreset,
     SeederConfig,
     TimeSeriesConfig,
+    default_seed_end_date,
+    default_seed_start_date,
 )
 
 
@@ -39,12 +42,16 @@ class TestSeederConfig:
     """Tests for SeederConfig."""
 
     def test_default_values(self):
-        """Test default configuration values."""
+        """Test default configuration values.
+
+        The default date window is anchored to *today* and runs
+        DEFAULT_SEED_SPAN_DAYS backwards, so seeded data always looks current.
+        """
         config = SeederConfig()
 
         assert config.seed == 42
-        assert config.start_date == date(2024, 1, 1)
-        assert config.end_date == date(2024, 12, 31)
+        assert config.end_date == default_seed_end_date()
+        assert config.start_date == default_seed_start_date()
         assert config.dimensions.stores == 10
         assert config.dimensions.products == 50
         assert config.batch_size == 1000
@@ -93,15 +100,16 @@ class TestSeederConfig:
     def test_from_scenario_demo_minimal(self):
         """Test demo_minimal scenario preset.
 
-        This preset powers the `make demo` target; the date range MUST cover at
-        least 72 days so an expanding backtest with n_splits=3 + horizon=14 +
-        min_train_size=30 produces non-NaN WAPE.
+        This preset powers the `make demo` target; the window is anchored to
+        *today* and MUST cover at least 72 days so an expanding backtest with
+        n_splits=3 + horizon=14 + min_train_size=30 produces non-NaN WAPE.
         """
         config = SeederConfig.from_scenario(ScenarioPreset.DEMO_MINIMAL, seed=42)
 
         assert config.seed == 42
-        assert config.start_date == date(2024, 10, 1)
-        assert config.end_date == date(2024, 12, 31)
+        assert config.end_date == default_seed_end_date()
+        assert config.start_date == default_seed_end_date() - timedelta(days=DEMO_MINIMAL_SPAN_DAYS)
+        assert (config.end_date - config.start_date).days >= 72
         assert config.dimensions.stores == 3
         assert config.dimensions.products == 10
         assert config.time_series.trend == "linear"

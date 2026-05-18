@@ -8,16 +8,19 @@ in `tests/test_e2e_demo.py` (marked `@pytest.mark.integration`).
 from __future__ import annotations
 
 import math
+from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
+from app.shared.seeder.config import default_seed_end_date
 from scripts import run_demo
 from scripts.run_demo import (
     DEMO_ALIAS,
     DEMO_HORIZON,
     DEMO_MODEL_TYPES,
+    DEMO_SEED_SPAN_DAYS,
     GLYPHS,
     DemoArgs,
     DemoContext,
@@ -341,7 +344,11 @@ class TestStepPayloads:
     async def test_step_seed_sends_demo_minimal(
         self,
     ) -> None:
-        """Seed step posts demo_minimal scenario with correct dims + dates."""
+        """Seed step posts demo_minimal scenario with correct dims + dates.
+
+        The seed window is anchored to *today* and runs DEMO_SEED_SPAN_DAYS
+        backwards, so the demo always seeds current-looking data.
+        """
         calls: list[dict[str, Any]] = []
 
         class _RecordingClient:
@@ -374,8 +381,9 @@ class TestStepPayloads:
         assert body["seed"] == 42
         assert body["stores"] == 3
         assert body["products"] == 10
-        assert body["start_date"] == "2024-10-01"
-        assert body["end_date"] == "2024-12-31"
+        today = default_seed_end_date()
+        assert body["end_date"] == today.isoformat()
+        assert body["start_date"] == (today - timedelta(days=DEMO_SEED_SPAN_DAYS)).isoformat()
 
     @pytest.mark.asyncio
     async def test_step_seed_skipped(self) -> None:
