@@ -322,9 +322,11 @@ class RegistryService:
         else:
             order_by = ModelRun.created_at.desc()
 
-        # Apply pagination
+        # Apply pagination. Append the unique `run_id` as a tie-breaker so rows
+        # with equal sort values keep a stable order across pages (offset
+        # pagination over a non-unique sort key is otherwise non-deterministic).
         offset = (page - 1) * page_size
-        stmt = stmt.order_by(order_by).offset(offset).limit(page_size)
+        stmt = stmt.order_by(order_by, ModelRun.run_id.asc()).offset(offset).limit(page_size)
 
         result = await db.execute(stmt)
         runs = result.scalars().all()

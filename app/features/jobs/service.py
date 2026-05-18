@@ -261,9 +261,16 @@ class JobService:
         else:
             order_by = Job.created_at.desc()
 
-        # Apply pagination
+        # Apply pagination. Append created_at then the unique `job_id` as
+        # tie-breakers so rows with equal sort values keep a stable order
+        # across pages (offset pagination over a non-unique sort key is
+        # otherwise non-deterministic).
         offset = (page - 1) * page_size
-        stmt = stmt.order_by(order_by).offset(offset).limit(page_size)
+        stmt = (
+            stmt.order_by(order_by, Job.created_at.desc(), Job.job_id.asc())
+            .offset(offset)
+            .limit(page_size)
+        )
 
         # Execute query
         result = await db.execute(stmt)
