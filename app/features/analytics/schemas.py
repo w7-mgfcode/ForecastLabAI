@@ -192,6 +192,69 @@ class DrilldownResponse(BaseModel):
 
 
 # =============================================================================
+# Time Series Response Schemas
+# =============================================================================
+
+
+class TimeSeriesPoint(BaseModel):
+    """One aggregated period of the sales time series."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    period: date = Field(
+        ...,
+        description="Bucket start date (the day itself, or the first day of "
+        "the week/month/quarter bucket).",
+    )
+    metrics: KPIMetrics = Field(
+        ...,
+        description="Aggregated KPI metrics for this period.",
+    )
+
+
+class TimeSeriesResponse(BaseModel):
+    """Period-bucketed sales time series for charting.
+
+    Points are ordered ascending by period. Use this to render
+    revenue-over-time trends scoped to a store, product, or category.
+    """
+
+    granularity: TimeGranularity = Field(
+        ...,
+        description="Bucket size used for aggregation (day, week, month, quarter).",
+    )
+    points: list[TimeSeriesPoint] = Field(
+        ...,
+        description="Time series points in ascending period order.",
+    )
+    total_points: int = Field(
+        ...,
+        ge=0,
+        description="Number of points returned (equals len(points)).",
+    )
+    start_date: date = Field(
+        ...,
+        description="Start of the analysis period (inclusive).",
+    )
+    end_date: date = Field(
+        ...,
+        description="End of the analysis period (inclusive).",
+    )
+    store_id: int | None = Field(
+        None,
+        description="Store filter applied (if any). Null means all stores included.",
+    )
+    product_id: int | None = Field(
+        None,
+        description="Product filter applied (if any). Null means all products included.",
+    )
+    category: str | None = Field(
+        None,
+        description="Category filter applied (if any). Null means all categories included.",
+    )
+
+
+# =============================================================================
 # Date Range Validation
 # =============================================================================
 
