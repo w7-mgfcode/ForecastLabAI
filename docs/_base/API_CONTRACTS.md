@@ -9,12 +9,13 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 |-------|--------|------|---------|
 | health | GET | `/health` | Liveness probe — `{"status":"ok"}` |
 | ingest | POST | `/ingest/sales-daily` | Batch upsert with natural-key resolution, idempotent `ON CONFLICT DO UPDATE` |
-| dimensions | GET | `/dimensions/stores` | List stores (1-indexed pagination, region/store_type filter, case-insensitive search) |
+| dimensions | GET | `/dimensions/stores` | List stores (1-indexed pagination, region/store_type filter, case-insensitive search, optional allow-listed `sort_by`/`sort_order`) |
 | dimensions | GET | `/dimensions/stores/{store_id}` | Get store by ID |
-| dimensions | GET | `/dimensions/products` | List products (category/brand filter, sku/name search) |
+| dimensions | GET | `/dimensions/products` | List products (category/brand filter, sku/name search, optional allow-listed `sort_by`/`sort_order`) |
 | dimensions | GET | `/dimensions/products/{product_id}` | Get product by ID |
 | analytics | GET | `/analytics/kpis` | Aggregated KPIs (revenue, units, transactions, avg unit price, avg basket) |
 | analytics | GET | `/analytics/drilldowns` | Group-by dimension: store / product / category / region / date |
+| analytics | GET | `/analytics/timeseries` | Period-bucketed sales series (`granularity` = day/week/month/quarter) for revenue-over-time charts; reuses `validate_date_range` (inverted/over-730-day ranges 400) |
 | featuresets | POST | `/featuresets/compute` | Compute time-safe features (lag/rolling/calendar, leakage-prevented) |
 | featuresets | POST | `/featuresets/preview` | Preview features with sample rows |
 | forecasting | POST | `/forecasting/train` | Train a model (naive / seasonal_naive / moving_average / lightgbm) |
