@@ -65,7 +65,13 @@ def test_validate_api_key_for_model_ollama_skips_key_check():
 
 
 def test_build_agent_model_with_fallback_wraps_primary_and_fallback():
-    """A distinct, key-backed fallback yields a FallbackModel(primary, fallback)."""
+    """A distinct, key-backed fallback yields a FallbackModel wired primary-then-fallback.
+
+    Asserts the *order* via the public ``FallbackModel.models`` list — ``models[0]``
+    must be the primary (``agent_default_model``) and ``models[1]`` the fallback
+    (``agent_fallback_model``) — so a swap or misconfiguration is caught, not just
+    the wrapper type.
+    """
     settings = get_settings()
     settings.agent_default_model = "anthropic:claude-sonnet-4-5"
     settings.agent_fallback_model = "openai:gpt-4o"
@@ -75,6 +81,22 @@ def test_build_agent_model_with_fallback_wraps_primary_and_fallback():
     model = build_agent_model_with_fallback()
 
     assert isinstance(model, FallbackModel)
+    # Each member model exposes its provider via `.system` and name via
+    # `.model_name`; recombine to the `provider:model` identifier we configured.
+    wired = [f"{m.system}:{m.model_name}" for m in model.models]
+    assert wired == [settings.agent_default_model, settings.agent_fallback_model]
+
+
+def test_build_agent_model_with_fallback_raises_when_primary_api_key_missing():
+    """Fail fast: a non-Ollama primary with no API key raises before any wrapping."""
+    settings = get_settings()
+    settings.agent_default_model = "anthropic:claude-sonnet-4-5"
+    settings.agent_fallback_model = "openai:gpt-4o"
+    settings.anthropic_api_key = ""
+    settings.openai_api_key = "test-openai-key"
+
+    with pytest.raises(ValueError, match="Anthropic API key not configured"):
+        build_agent_model_with_fallback()
 
 
 def test_build_agent_model_with_fallback_primary_only_when_fallback_key_missing():
