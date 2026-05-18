@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.12](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.11...v0.2.12) (2026-05-18)
+
+
+### Features
+
+* cut v0.2.12 — agent hardening, AI model console, demo showcase ([#178](https://github.com/w7-mgfcode/ForecastLabAI/issues/178)) ([9af4ef0](https://github.com/w7-mgfcode/ForecastLabAI/commit/9af4ef096d0f1365d655d3f3ee4e92302f439094))
+
 ## [0.2.11](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.10...v0.2.11) (2026-05-18)
 
 
