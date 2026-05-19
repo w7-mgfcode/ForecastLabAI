@@ -82,7 +82,18 @@ def build_historical_feature_rows(
         Row-major feature matrix ``[n_observations][n_features]``; ``NaN`` marks
         a lag whose source day precedes the series, and ``days_since_launch``
         when the product has no launch date.
+
+    Raises:
+        ValueError: When ``dates``, ``quantities``, and ``prices`` do not all
+            share the same length.
     """
+    n_dates = len(dates)
+    if len(quantities) != n_dates or len(prices) != n_dates:
+        raise ValueError(
+            "build_historical_feature_rows: dates, quantities, and prices must have "
+            f"equal lengths (got dates={n_dates}, quantities={len(quantities)}, "
+            f"prices={len(prices)})"
+        )
     calendar_columns = build_calendar_columns(dates)
     rows: list[list[float]] = []
     for index, day in enumerate(dates):
