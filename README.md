@@ -11,6 +11,7 @@ Portfolio-grade end-to-end retail demand forecasting system.
 - **Dashboard**: React 19 + Vite + Tailwind CSS 4 + shadcn/ui for data exploration and model management
 - **Explorer**: Click-through detail pages for stores, products, model runs, and jobs; run-vs-run comparison and SHA-256 artifact integrity verification; server-side sortable, CSV-exportable tables with column-visibility toggles and URL-shareable filter/sort/page state across every Explorer page; date-scoped KPIs, revenue bar/line charts, and cross-filtering on the Sales page
 - **Demand Planner**: `/visualize/demand` — every completed forecast rolled into a multi-SKU table (tomorrow / next-week / next-month demand + inventory requirement), with a lead-time selector and a single-SKU drill-in; the Forecast and Backtest pages run jobs in-page, export CSV, toggle a prediction-interval band, and cross-link to runs/jobs
+- **What-If Planner**: `/visualize/planner` — take an existing forecast, apply deterministic price / promotion / holiday / inventory / lifecycle assumptions, and see the baseline-vs-scenario demand and revenue impact (clearly labelled heuristic); save, reload, and delete named scenario plans
 - **RAG Knowledge Base**: Postgres pgvector embeddings + evidence-grounded answers with citations
 - **Agentic Layer**: PydanticAI agents for autonomous experimentation and evidence-grounded Q&A with human-in-the-loop approval
 - **Data Seeder (The Forge)**: Reproducible synthetic data generator with realistic time-series patterns, scenario presets, and retail effects
