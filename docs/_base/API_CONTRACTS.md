@@ -19,13 +19,14 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 | analytics | GET | `/analytics/inventory-status` | Latest `inventory_snapshot_daily` row per `(store, product)` grain (Postgres `DISTINCT ON`); optional `store_id`/`product_id` filters; `200` + empty list on an empty table (never `404`) |
 | featuresets | POST | `/featuresets/compute` | Compute time-safe features (lag/rolling/calendar, leakage-prevented) |
 | featuresets | POST | `/featuresets/preview` | Preview features with sample rows |
-| forecasting | POST | `/forecasting/train` | Train a model (naive / seasonal_naive / moving_average / lightgbm) |
+| forecasting | POST | `/forecasting/train` | Train a model (naive / seasonal_naive / moving_average / lightgbm / regression). `regression` wraps `HistGradientBoostingRegressor` on lag + calendar + exogenous features — the baseline a `model_exogenous` scenario re-forecasts through |
 | forecasting | POST | `/forecasting/predict` | Generate horizon predictions from a trained model |
 | backtesting | POST | `/backtesting/run` | Time-series CV (rolling/expanding splits, MAE/sMAPE/WAPE/bias/stability) |
-| scenarios | POST | `/scenarios/simulate` | Stateless what-if: load a baseline model, forecast, apply deterministic price/promotion/holiday/inventory/lifecycle factors, return a `ScenarioComparison` (`method="heuristic"`). Bogus `run_id` → RFC 7807 404 |
-| scenarios | POST | `/scenarios` | Run a simulation and persist it as a named `scenario_plan` (raw assumptions + full comparison snapshot) |
-| scenarios | GET | `/scenarios` | List saved scenario plans, newest first (`limit`/`offset`); `200` + empty list on an empty table |
+| scenarios | POST | `/scenarios/simulate` | Stateless what-if: load a baseline model, forecast, apply price/promotion/holiday/inventory/lifecycle assumptions, return a `ScenarioComparison`. A `regression` baseline genuinely re-forecasts through a leakage-safe future feature frame (`method="model_exogenous"`); any other baseline applies a deterministic post-forecast multiplier (`method="heuristic"`). Bogus `run_id` → RFC 7807 404 |
+| scenarios | POST | `/scenarios` | Run a simulation and persist it as a named `scenario_plan` (raw assumptions + full comparison snapshot); optional `tags` + `cloned_from` |
+| scenarios | GET | `/scenarios` | List saved scenario plans, newest first (`limit`/`offset`, optional repeated `tags` filter — JSONB containment); `200` + empty list on an empty table |
 | scenarios | GET | `/scenarios/{scenario_id}` | Saved plan + embedded comparison snapshot; `404` when missing |
+| scenarios | POST | `/scenarios/compare` | Rank 2-5 saved plans (`scenario_ids`, `rank_by`) against a shared baseline; returns a `MultiScenarioComparison` with ranked rows + merged multi-series chart data. Unknown `scenario_id` → 404 |
 | scenarios | DELETE | `/scenarios/{scenario_id}` | Delete a saved plan; `404` when missing |
 | registry | POST | `/registry/runs` | Create model run (pending) |
 | registry | GET | `/registry/runs` | List with filters + pagination + optional allow-listed `sort_by`/`sort_order` (created_at/model_type/status/store_id/product_id; unknown → default `created_at desc`) |
