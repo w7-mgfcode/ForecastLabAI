@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { BarChart3, Download, ExternalLink, Loader2, Play } from 'lucide-react'
 import { useJob, useCreateJob } from '@/hooks/use-jobs'
+import { useJobExplanation } from '@/hooks/use-explanations'
+import { ExplanationPanel } from '@/components/explainability/explanation-panel'
 import { TimeSeriesChart } from '@/components/charts/time-series-chart'
 import { EmptyState } from '@/components/common/error-display'
 import { JobPicker } from '@/components/common/job-picker'
@@ -57,6 +59,10 @@ export default function ForecastPage() {
   const hasBounds = forecastData.some(
     (point) => point.lower_bound != null && point.upper_bound != null,
   )
+
+  // Explain the loaded job only when it is a completed predict job.
+  const isPredictDone = job?.status === 'completed' && job?.job_type === 'predict'
+  const explanationQuery = useJobExplanation(job?.job_id ?? '', !!job && isPredictDone)
 
   async function handleRunForecast() {
     if (!trainRunId) return
@@ -245,6 +251,15 @@ export default function ForecastPage() {
                 </p>
               </CardContent>
             </Card>
+          )}
+
+          {/* Forecast explanation — only for a completed predict job */}
+          {isPredictDone && (
+            <ExplanationPanel
+              explanation={explanationQuery.data}
+              isLoading={explanationQuery.isLoading}
+              error={explanationQuery.error}
+            />
           )}
         </>
       )}

@@ -860,3 +860,44 @@ export interface MultiScenarioComparison {
   // entry per scenario name.
   chart_series: Record<string, number | string>[]
 }
+
+// =============================================================================
+// Explainability — PRP-28 forecast explanation & driver attribution
+// =============================================================================
+
+// Qualitative confidence band for a forecast explanation.
+export type ConfidenceLevel = 'high' | 'medium' | 'low'
+
+// One named, interpretable demand driver behind a forecast. A driver with
+// contribution === 0 is informational context the model does not consume.
+export interface DriverContribution {
+  name: string
+  feature_value: number
+  contribution: number
+  direction: 'positive' | 'negative' | 'neutral'
+  description: string
+}
+
+// An advisory retail signal correlated with the forecast — never a causal claim.
+export interface ReasonCode {
+  code: string
+  severity: 'info' | 'warn'
+  detail: string
+}
+
+// A structured, rule-based explanation of a baseline h=1 forecast —
+// GET /explain/runs/{run_id}, GET /explain/jobs/{job_id}, POST /explain/forecast.
+export interface ForecastExplanation {
+  store_id: number
+  product_id: number
+  model_type: string
+  method: 'rule_based'
+  forecast_value: number
+  drivers: DriverContribution[]
+  reason_codes: ReasonCode[]
+  confidence: ConfidenceLevel
+  caveats: string[]
+  agent_summary: string
+  as_of_date: string // ISO date
+  generated_at: string // ISO datetime
+}

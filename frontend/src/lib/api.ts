@@ -48,7 +48,11 @@ export async function api<T>(endpoint: string, config: RequestConfig = {}): Prom
 
   const contentType = response.headers.get('content-type') || ''
   const rawBody = await response.text()
-  const isJson = contentType.includes('application/json')
+  // RFC 7807 error responses use `application/problem+json`, so match the
+  // `+json` structured-syntax suffix as well as plain `application/json` --
+  // otherwise error bodies go unparsed and `ApiError.detail` is always empty.
+  const isJson =
+    contentType.includes('application/json') || contentType.includes('+json')
 
   let data: unknown = undefined
   if (rawBody && isJson) {
