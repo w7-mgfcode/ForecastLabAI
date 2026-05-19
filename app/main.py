@@ -27,6 +27,7 @@ from app.features.jobs.routes import router as jobs_router
 from app.features.ops.routes import router as ops_router
 from app.features.rag.routes import router as rag_router
 from app.features.registry.routes import router as registry_router
+from app.features.scenarios.routes import router as scenarios_router
 from app.features.seeder.routes import router as seeder_router
 
 logger = get_logger(__name__)
@@ -140,6 +141,7 @@ def create_app() -> FastAPI:
     app.include_router(backtesting_router)
     app.include_router(registry_router)
     app.include_router(rag_router)
+    app.include_router(scenarios_router)
     app.include_router(agents_router)
     app.include_router(agents_ws_router)
     app.include_router(seeder_router)
