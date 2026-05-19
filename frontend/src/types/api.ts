@@ -702,3 +702,124 @@ export interface ModelHealthResponse {
   total_evaluated: number
   generated_at: string
 }
+
+// ── Scenario Simulation / What-If Planner ──
+
+// A relative price change over a future date window.
+export interface PriceAssumption {
+  change_pct: number
+  start_date: string
+  end_date: string
+}
+
+// A promotion of a given kind running over a future date window.
+export interface PromotionAssumption {
+  kind: 'pct_off' | 'bogo' | 'bundle' | 'markdown'
+  start_date: string
+  end_date: string
+}
+
+// Explicit holiday / event days that lift demand.
+export interface HolidayAssumption {
+  dates: string[]
+}
+
+// On-hand stock used only to derive a coverage verdict.
+export interface InventoryAssumption {
+  on_hand_units: number
+}
+
+// A forced product lifecycle stage for the horizon.
+export interface LifecycleAssumption {
+  stage: 'launch' | 'growth' | 'maturity' | 'decline'
+}
+
+// The full set of optional what-if assumptions.
+export interface ScenarioAssumptions {
+  price?: PriceAssumption | null
+  promotion?: PromotionAssumption | null
+  holiday?: HolidayAssumption | null
+  inventory?: InventoryAssumption | null
+  lifecycle?: LifecycleAssumption | null
+}
+
+// Request body for POST /scenarios/simulate.
+export interface SimulateScenarioRequest {
+  run_id: string
+  horizon: number
+  assumptions: ScenarioAssumptions
+  name?: string | null
+}
+
+// Request body for POST /scenarios.
+export interface CreateScenarioRequest {
+  name: string
+  run_id: string
+  horizon: number
+  assumptions: ScenarioAssumptions
+}
+
+// Whether projected demand is covered by on-hand stock.
+export type CoverageVerdict = 'covered' | 'at_risk' | 'stockout' | 'unknown'
+
+// One horizon day: baseline vs. scenario demand and the factor applied.
+export interface ScenarioPoint {
+  date: string
+  baseline: number
+  scenario: number
+  delta: number
+  applied_factor: number
+}
+
+// A full baseline-vs-scenario comparison — POST /scenarios/simulate.
+export interface ScenarioComparison {
+  store_id: number
+  product_id: number
+  model_type: string
+  horizon: number
+  points: ScenarioPoint[]
+  baseline_total_units: number
+  scenario_total_units: number
+  units_delta: number
+  units_delta_pct: number
+  unit_price_used: number
+  baseline_revenue: number
+  scenario_revenue: number
+  revenue_delta: number
+  coverage_verdict: CoverageVerdict
+  method: 'heuristic'
+  disclaimer: string
+  generated_at: string
+}
+
+// A persisted scenario plan with its embedded comparison snapshot.
+export interface ScenarioPlanResponse {
+  scenario_id: string
+  name: string
+  store_id: number
+  product_id: number
+  run_id: string
+  horizon: number
+  method: string
+  created_at: string
+  assumptions: ScenarioAssumptions
+  comparison: ScenarioComparison
+}
+
+// A compact row in the saved-plans list.
+export interface ScenarioListItem {
+  scenario_id: string
+  name: string
+  store_id: number
+  product_id: number
+  horizon: number
+  units_delta: number
+  revenue_delta: number
+  created_at: string
+}
+
+// A page of saved scenario plans — GET /scenarios.
+export interface ScenarioListResponse {
+  scenarios: ScenarioListItem[]
+  total: number
+}

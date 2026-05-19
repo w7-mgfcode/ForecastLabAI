@@ -24,6 +24,7 @@ const JobDetailPage = lazy(() => import('@/pages/explorer/job-detail'))
 const ForecastPage = lazy(() => import('@/pages/visualize/forecast'))
 const BacktestPage = lazy(() => import('@/pages/visualize/backtest'))
 const DemandPlannerPage = lazy(() => import('@/pages/visualize/demand'))
+const WhatIfPlannerPage = lazy(() => import('@/pages/visualize/planner'))
 const ChatPage = lazy(() => import('@/pages/chat'))
 const KnowledgePage = lazy(() => import('@/pages/knowledge'))
 const GuidePage = lazy(() => import('@/pages/guide'))
@@ -165,6 +166,14 @@ function App() {
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <DemandPlannerPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.VISUALIZE.PLANNER}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <WhatIfPlannerPage />
                   </Suspense>
                 }
               />

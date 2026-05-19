@@ -9,6 +9,7 @@
 | Featuresets | Computed feature matrices (in-memory; not persisted) | Time-cutoff parameter — never reads beyond `cutoff_date` |
 | Forecasting | Trained model artifacts on disk (joblib `.pkl`) | Model interface in `examples/models/model_interface.md`; artifact_uri returned to caller |
 | Backtesting | Fold results, metrics (returned in response; persisted via Registry) | `SplitConfig` (expanding/sliding, gap, horizon) — `app/features/backtesting/splitter.py` |
+| Scenarios | `scenario_plan` (saved what-if plans, JSONB assumptions + comparison) | `load_model_bundle` only (never a sibling `service.py`); deterministic `adjustments.py` post-forecast multiplier |
 | Registry | `model_run`, `run_alias`, `model_artifact` | SHA-256 hash on artifact_uri; status state machine |
 | RAG | `rag_source`, `rag_chunk` (with pgvector embedding column) | Content hash for idempotent indexing; embedding dimension fixed per provider |
 | Agents | `agent_session` (JSONB message_history) | Pydantic-validated tool args; HITL approval queue |
@@ -42,6 +43,14 @@
   - `store_id`, `product_id`, `date` must reference existing dimension rows.
   - Idempotent upsert via `ON CONFLICT (store_id, product_id, date) DO UPDATE` (`app/features/ingest/service.py`).
 
+### `scenario_plan` (Scenarios)
+- **Root:** `ScenarioPlan(scenario_id: str, name: str)`
+- **JSONB fields:** `assumptions` (the raw `ScenarioAssumptions`), `comparison` (the full `ScenarioComparison` snapshot — stored so a reloaded plan re-renders without recomputation or the original artifact).
+- **Invariants:**
+  - `method` is CHECK-constrained to `'heuristic'` — the MVP only ever produces a deterministic post-forecast multiplier, never a re-trained causal model.
+  - A scenario adjustment touches only horizon (future) points; it never reads or mutates the historical series (`app/features/scenarios/tests/test_leakage.py` is the spec).
+  - JSONB columns are persisted via `model_dump(mode="json")` so `date`/`datetime` serialise to ISO strings.
+
 ## Key Invariants — NEVER violate
 
 1. **Time safety in features.** `app/features/featuresets/` uses only data at or before `cutoff_date`. Lags via `shift(positive)`, rolling via `shift(1).rolling(...)`, all `groupby` entity-aware. The test `app/features/featuresets/tests/test_leakage.py` is the spec — it MUST keep passing.
@@ -70,6 +79,9 @@
 | `replenishment event` | One row in `replenishment_event` representing inbound stock at `(store, product, date)`; feature cadence is derived from event spacing | inbound order, restock (those would be different grains) |
 | `promotion (kind)` | One row in `promotion` with `kind ∈ {pct_off, bogo, bundle, markdown}`; features are one-hot per kind via `PromotionConfig.kinds_to_track` | discount, sale (kind is the discriminator, not "promotion" in the colloquial sense) |
 | `scenario` (seeder) | A YAML or in-code preset (`retail_standard`, `holiday_rush`, …) that wires `DimensionConfig` + `FactsConfig` | template, profile |
+| `scenario plan` | A saved what-if analysis — a `scenario_plan` row pairing raw `ScenarioAssumptions` with a `ScenarioComparison` snapshot | seeder `scenario` (a different concept entirely) |
+| `assumption` (what-if) | One future change a planner posits — a price change, promotion, holiday set, inventory cap, or lifecycle stage — fed to `POST /scenarios/simulate` | forecast input, feature |
+| `applied factor` | The deterministic per-day multiplier `combined_daily_factor` derives from the assumptions; `1.0` means no change | weight, coefficient |
 
 ## Event Taxonomy
 
@@ -92,6 +104,8 @@ rag_source ──owns──► rag_chunk (with pgvector embedding)
 agent_session ──owns──► message_history (JSONB) ──may-contain──► tool_call (pending approval)
 
 job ──may-reference──► model_run (for train/backtest jobs)
+
+scenario_plan ──built-from──► model artifact (a baseline run_id) ──embeds──► comparison snapshot (JSONB)
 ```
 
 ## Glossary (cross-cutting)

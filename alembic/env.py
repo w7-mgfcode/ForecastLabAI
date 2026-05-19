@@ -18,6 +18,7 @@ from app.features.data_platform import models as data_platform_models  # noqa: F
 from app.features.jobs import models as jobs_models  # noqa: F401
 from app.features.rag import models as rag_models  # noqa: F401
 from app.features.registry import models as registry_models  # noqa: F401
+from app.features.scenarios import models as scenarios_models  # noqa: F401
 
 # Alembic Config object
 config = context.config

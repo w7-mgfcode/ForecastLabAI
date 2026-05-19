@@ -22,6 +22,11 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 | forecasting | POST | `/forecasting/train` | Train a model (naive / seasonal_naive / moving_average / lightgbm) |
 | forecasting | POST | `/forecasting/predict` | Generate horizon predictions from a trained model |
 | backtesting | POST | `/backtesting/run` | Time-series CV (rolling/expanding splits, MAE/sMAPE/WAPE/bias/stability) |
+| scenarios | POST | `/scenarios/simulate` | Stateless what-if: load a baseline model, forecast, apply deterministic price/promotion/holiday/inventory/lifecycle factors, return a `ScenarioComparison` (`method="heuristic"`). Bogus `run_id` → RFC 7807 404 |
+| scenarios | POST | `/scenarios` | Run a simulation and persist it as a named `scenario_plan` (raw assumptions + full comparison snapshot) |
+| scenarios | GET | `/scenarios` | List saved scenario plans, newest first (`limit`/`offset`); `200` + empty list on an empty table |
+| scenarios | GET | `/scenarios/{scenario_id}` | Saved plan + embedded comparison snapshot; `404` when missing |
+| scenarios | DELETE | `/scenarios/{scenario_id}` | Delete a saved plan; `404` when missing |
 | registry | POST | `/registry/runs` | Create model run (pending) |
 | registry | GET | `/registry/runs` | List with filters + pagination + optional allow-listed `sort_by`/`sort_order` (created_at/model_type/status/store_id/product_id; unknown → default `created_at desc`) |
 | registry | GET | `/registry/runs/{run_id}` | Run details + JSONB metrics + runtime_info |
