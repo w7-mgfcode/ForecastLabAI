@@ -217,6 +217,31 @@ class TestSimulateModelExogenous:
         assert data["disclaimer"], "every comparison must carry a non-empty disclaimer"
         assert len(data["points"]) == 14
 
+    async def test_prophet_like_baseline_returns_model_exogenous(
+        self, client: AsyncClient, trained_prophet_like_model: str
+    ) -> None:
+        """A prophet_like baseline is feature-aware — it re-forecasts (MLZOO-C2).
+
+        Pins that the capability-based dispatch in ``ScenarioService.simulate``
+        (the ``bundle.model.requires_features`` branch) routes the pure-sklearn
+        additive model through the genuine re-forecast path with zero scenarios
+        changes — no flag, no optional dependency.
+        """
+        response = await client.post(
+            "/scenarios/simulate",
+            json={
+                "run_id": trained_prophet_like_model,
+                "horizon": 14,
+                "assumptions": _PRICE_ASSUMPTION,
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["method"] == "model_exogenous"
+        assert data["disclaimer"], "every comparison must carry a non-empty disclaimer"
+        assert len(data["points"]) == 14
+
     async def test_regression_empty_assumptions_equals_baseline(
         self, client: AsyncClient, trained_regression_model: str
     ) -> None:

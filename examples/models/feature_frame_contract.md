@@ -1,7 +1,7 @@
 # Feature-Frame Contract
 
-The contract a **feature-aware** forecasting model (the regression, LightGBM
-and XGBoost forecasters today; a Prophet-like model later in the MLZOO sequence)
+The contract a **feature-aware** forecasting model (the regression, LightGBM,
+XGBoost, and Prophet-like forecasters today)
 stands on. The single source of truth in code is
 [`app/shared/feature_frames`](../../app/shared/feature_frames/) — the pinned
 constants, the canonical column set and order, the `FutureFeatureFrame`
@@ -91,9 +91,12 @@ at origin `T` — a long-lag whose source day lies in the horizon, or
 `days_since_launch` for a product with no launch date. `NaN` means *unknown*; it
 is never silently replaced with a fabricated default such as `0.0`.
 
-`HistGradientBoostingRegressor` tolerates `NaN` natively. A future model that is
-**not** NaN-tolerant must impute explicitly inside its own `fit`/`predict` — the
-shared frame builders must not impute on its behalf.
+`HistGradientBoostingRegressor` and `lightgbm.LGBMRegressor` tolerate `NaN`
+natively. A model that is **not** NaN-tolerant must impute explicitly inside its
+own `fit`/`predict` — the shared frame builders must not impute on its behalf.
+The `prophet_like` model is the worked example: its `Ridge` step rejects `NaN`,
+so it folds a `SimpleImputer(median)` in as the first `Pipeline` step (the
+imputer learns its medians on the training `X` only — no leakage).
 
 ## How a future advanced model plugs in
 

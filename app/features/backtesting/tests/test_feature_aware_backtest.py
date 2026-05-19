@@ -27,6 +27,7 @@ from app.features.backtesting.service import (
 from app.features.backtesting.splitter import TimeSeriesSplitter
 from app.features.forecasting.schemas import (
     NaiveModelConfig,
+    ProphetLikeModelConfig,
     RegressionModelConfig,
     XGBoostModelConfig,
 )
@@ -175,6 +176,38 @@ def test_feature_aware_backtest_runs_with_xgboost_model(
     assert "mae" in result.aggregated_metrics
     for fold in result.fold_results:
         assert "mae" in fold.metrics
+
+
+def test_prophet_like_feature_aware_backtest_produces_per_fold_metrics(
+    sample_dates_120: list[date],
+    sample_values_120: np.ndarray,
+    sample_split_config_expanding: SplitConfig,
+) -> None:
+    """A prophet_like backtest runs end-to-end and yields per-fold metrics.
+
+    The Prophet-like additive model is feature-aware (pure scikit-learn, no
+    flag), so it routes through the SAME per-fold feature-aware path as the
+    regression model — satisfying INITIAL-MLZOO-B's "backtesting integration
+    test comparing baseline and advanced model path".
+    """
+    service = BacktestingService()
+    series = _series(sample_dates_120, sample_values_120, with_exogenous=True)
+    splitter = TimeSeriesSplitter(sample_split_config_expanding)
+
+    result = service._run_model_backtest(
+        series_data=series,
+        splitter=splitter,
+        model_config=ProphetLikeModelConfig(),
+        store_fold_details=True,
+    )
+
+    assert result.model_type == "prophet_like"
+    assert result.feature_aware is True
+    assert len(result.fold_results) > 0
+    assert "mae" in result.aggregated_metrics
+    for fold in result.fold_results:
+        assert "mae" in fold.metrics
+        assert np.isfinite(fold.metrics["mae"])
 
 
 def test_feature_aware_result_records_observed_policy(

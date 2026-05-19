@@ -427,6 +427,7 @@ class JobService:
             LightGBMModelConfig,
             MovingAverageModelConfig,
             NaiveModelConfig,
+            ProphetLikeModelConfig,
             RegressionModelConfig,
             SeasonalNaiveModelConfig,
             XGBoostModelConfig,
@@ -482,6 +483,9 @@ class JobService:
                 learning_rate=params.get("learning_rate", 0.1),
                 max_depth=params.get("max_depth", 6),
             )
+        elif model_type == "prophet_like":
+            # Pure scikit-learn additive model — no flag, always available.
+            config = ProphetLikeModelConfig(alpha=params.get("alpha", 1.0))
         else:
             msg = f"Unsupported model_type: {model_type}"
             raise ValueError(msg)
@@ -621,6 +625,7 @@ class JobService:
             LightGBMModelConfig,
             MovingAverageModelConfig,
             NaiveModelConfig,
+            ProphetLikeModelConfig,
             RegressionModelConfig,
             SeasonalNaiveModelConfig,
             XGBoostModelConfig,
@@ -667,6 +672,9 @@ class JobService:
             # Feature-aware — still gated by forecast_enable_xgboost inside
             # model_factory; a disabled flag surfaces as a loud failed job.
             model_config = XGBoostModelConfig()
+        elif model_type == "prophet_like":
+            # Feature-aware — the backtest builds per-fold leakage-safe X.
+            model_config = ProphetLikeModelConfig()
         else:
             msg = f"Unsupported model_type: {model_type}"
             raise ValueError(msg)

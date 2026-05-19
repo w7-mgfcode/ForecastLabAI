@@ -352,12 +352,18 @@ class TestFeatureAwareContract:
     def test_requires_features_flag(self):
         """Baseline forecasters require no features; feature-aware ones do."""
         from app.features.forecasting.models import LightGBMForecaster, XGBoostForecaster
-        from app.features.forecasting.schemas import RegressionModelConfig
+        from app.features.forecasting.schemas import (
+            ProphetLikeModelConfig,
+            RegressionModelConfig,
+        )
 
         assert model_factory(NaiveModelConfig()).requires_features is False
         assert model_factory(SeasonalNaiveModelConfig()).requires_features is False
         assert model_factory(MovingAverageModelConfig()).requires_features is False
         assert model_factory(RegressionModelConfig()).requires_features is True
+        # The Prophet-like model is feature-aware too — pure scikit-learn, so
+        # the factory needs no flag and no optional dependency.
+        assert model_factory(ProphetLikeModelConfig()).requires_features is True
         # LightGBM is feature-aware too — assert the ClassVar directly so this
         # needs neither the factory flag nor the optional lightgbm dependency.
         assert LightGBMForecaster.requires_features is True
