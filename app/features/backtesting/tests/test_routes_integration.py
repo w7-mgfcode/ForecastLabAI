@@ -474,4 +474,9 @@ class TestBacktestingRouteFeatureAwareIntegration:
         )
 
         assert response.status_code == 400
-        assert "at least 30" in response.text
+        assert response.headers["content-type"].startswith("application/problem+json")
+        payload = response.json()
+        for key in ("type", "title", "status", "detail"):
+            assert key in payload
+        assert payload["status"] == 400
+        assert "at least 30" in payload["detail"]

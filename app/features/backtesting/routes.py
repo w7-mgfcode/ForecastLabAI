@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.exceptions import DatabaseError
+from app.core.exceptions import BadRequestError, DatabaseError
 from app.core.logging import get_logger
 from app.features.backtesting.schemas import BacktestRequest, BacktestResponse
 from app.features.backtesting.service import BacktestingService
@@ -71,7 +71,7 @@ async def run_backtest(
         BacktestResponse with all results.
 
     Raises:
-        HTTPException: If validation fails or insufficient data.
+        BadRequestError: If validation fails or insufficient data.
         DatabaseError: If database operation fails.
     """
     start_time = time.perf_counter()
@@ -118,10 +118,7 @@ async def run_backtest(
             error=str(e),
             error_type=type(e).__name__,
         )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        ) from e
+        raise BadRequestError(message=str(e)) from e
 
     except SQLAlchemyError as e:
         logger.error(
