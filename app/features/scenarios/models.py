@@ -21,8 +21,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
 from app.shared.models import TimestampMixin
 
-# The only adjustment method the MVP produces — guarded by a CHECK constraint.
+# Adjustment methods — guarded by a CHECK constraint. ``heuristic`` is the MVP
+# post-forecast multiplier; ``model_exogenous`` (PRP-27) re-forecasts through a
+# feature-consuming regression model.
 SCENARIO_METHOD_HEURISTIC = "heuristic"
+SCENARIO_METHOD_MODEL_EXOGENOUS = "model_exogenous"
 
 
 class ScenarioPlan(TimestampMixin, Base):
@@ -65,6 +68,10 @@ class ScenarioPlan(TimestampMixin, Base):
         Index("ix_scenario_plan_comparison_gin", "comparison", postgresql_using="gin"),
         # Composite index for the common "plans for this store/product" query.
         Index("ix_scenario_plan_store_product", "store_id", "product_id"),
-        # The MVP only ever produces heuristic comparisons.
-        CheckConstraint("method IN ('heuristic')", name="ck_scenario_plan_method"),
+        # heuristic (MVP) or model_exogenous (PRP-27) — kept in lock-step with
+        # the alembic migration that widened this CHECK.
+        CheckConstraint(
+            "method IN ('heuristic', 'model_exogenous')",
+            name="ck_scenario_plan_method",
+        ),
     )

@@ -144,11 +144,87 @@ class TestScenarioPlanCrud:
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+class TestSimulateModelExogenous:
+    """Integration tests for the model-driven (regression) simulate path."""
+
+    async def test_regression_baseline_returns_model_exogenous(
+        self, client: AsyncClient, trained_regression_model: str
+    ) -> None:
+        """A regression baseline re-forecasts — method is 'model_exogenous'."""
+        response = await client.post(
+            "/scenarios/simulate",
+            json={
+                "run_id": trained_regression_model,
+                "horizon": 14,
+                "assumptions": _PRICE_ASSUMPTION,
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["method"] == "model_exogenous"
+        assert data["disclaimer"], "every comparison must carry a non-empty disclaimer"
+        assert len(data["points"]) == 14
+        # A price cut moves the re-forecast — the deltas are model-driven, not
+        # a fixed multiplier, and the modelled price response lifts demand.
+        assert data["units_delta"] > 0.0
+
+    async def test_regression_empty_assumptions_equals_baseline(
+        self, client: AsyncClient, trained_regression_model: str
+    ) -> None:
+        """With no assumptions the model re-forecasts to exactly the baseline."""
+        response = await client.post(
+            "/scenarios/simulate",
+            json={"run_id": trained_regression_model, "horizon": 10, "assumptions": {}},
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["method"] == "model_exogenous"
+        assert data["units_delta"] == 0.0
+        for point in data["points"]:
+            assert point["delta"] == 0.0
+
+    async def test_baseline_forecaster_still_heuristic(
+        self, client: AsyncClient, trained_model: str
+    ) -> None:
+        """A naive baseline still produces a heuristic comparison — unchanged."""
+        response = await client.post(
+            "/scenarios/simulate",
+            json={"run_id": trained_model, "horizon": 14, "assumptions": _PRICE_ASSUMPTION},
+        )
+        assert response.status_code == 200
+        assert response.json()["method"] == "heuristic"
+
+    async def test_model_exogenous_plan_persists(
+        self, client: AsyncClient, trained_regression_model: str
+    ) -> None:
+        """A model_exogenous comparison saves cleanly — the widened CHECK accepts it."""
+        create = await client.post(
+            "/scenarios",
+            json={
+                "name": "Model-driven price cut",
+                "run_id": trained_regression_model,
+                "horizon": 14,
+                "assumptions": _PRICE_ASSUMPTION,
+            },
+        )
+        assert create.status_code == 201
+        plan = create.json()
+        assert plan["method"] == "model_exogenous"
+
+        fetched = await client.get(f"/scenarios/{plan['scenario_id']}")
+        assert fetched.status_code == 200
+        assert fetched.json()["comparison"]["method"] == "model_exogenous"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 class TestScenarioPlanModel:
     """Constraint tests for the ScenarioPlan ORM model."""
 
-    async def test_method_check_constraint(self, db_session: AsyncSession) -> None:
-        """The method CHECK constraint rejects any value other than 'heuristic'."""
+    async def test_method_check_rejects_unknown_value(self, db_session: AsyncSession) -> None:
+        """The method CHECK constraint rejects a value outside the allow-list."""
         plan = ScenarioPlan(
             scenario_id=uuid.uuid4().hex,
             name="bad method",
@@ -158,9 +234,27 @@ class TestScenarioPlanModel:
             horizon=7,
             assumptions={},
             comparison={},
-            method="not_heuristic",
+            method="not_a_method",
         )
         db_session.add(plan)
         with pytest.raises(IntegrityError):
             await db_session.commit()
         await db_session.rollback()
+
+    async def test_method_check_accepts_model_exogenous(self, db_session: AsyncSession) -> None:
+        """The widened CHECK constraint accepts the 'model_exogenous' method."""
+        plan = ScenarioPlan(
+            scenario_id=uuid.uuid4().hex,
+            name="model exogenous plan",
+            store_id=1,
+            product_id=1,
+            run_id="abc",
+            horizon=7,
+            assumptions={},
+            comparison={},
+            method="model_exogenous",
+        )
+        db_session.add(plan)
+        await db_session.commit()
+        await db_session.refresh(plan)
+        assert plan.method == "model_exogenous"

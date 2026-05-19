@@ -255,14 +255,15 @@ class ScenarioComparison(BaseModel):
         description="covered / at_risk / stockout, or unknown when no inventory "
         "assumption was supplied.",
     )
-    method: Literal["heuristic"] = Field(
+    method: Literal["heuristic", "model_exogenous"] = Field(
         ...,
-        description="Always 'heuristic' — the result is a deterministic post-forecast "
-        "multiplier, not a re-trained causal model.",
+        description="How the scenario was produced: 'heuristic' (a deterministic "
+        "post-forecast multiplier) or 'model_exogenous' (a re-forecast through a "
+        "feature-consuming regression model).",
     )
     disclaimer: str = Field(
         ...,
-        description="Plain-language caveat that the numbers are heuristic estimates.",
+        description="Plain-language caveat appropriate to the method that produced the comparison.",
     )
     generated_at: datetime = Field(..., description="When the comparison was computed (UTC).")
 

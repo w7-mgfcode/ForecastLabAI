@@ -22,7 +22,9 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
+import numpy as np
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,7 +33,8 @@ from app.core.logging import get_logger
 from app.features.data_platform.models import SalesDaily
 from app.features.forecasting.persistence import ModelBundle, load_model_bundle
 from app.features.scenarios import adjustments
-from app.features.scenarios.models import SCENARIO_METHOD_HEURISTIC, ScenarioPlan
+from app.features.scenarios.feature_frame import build_future_frame
+from app.features.scenarios.models import ScenarioPlan
 from app.features.scenarios.schemas import (
     CreateScenarioRequest,
     ScenarioAssumptions,
@@ -52,6 +55,14 @@ HEURISTIC_DISCLAIMER = (
     "factors to a baseline forecast — it is not a re-trained, causal model. "
     "Treat the demand and revenue deltas as directional planning signals, not "
     "precise predictions."
+)
+
+# Caveat for the model-driven path — a re-forecast IS model-causal, but a model
+# estimate is still an estimate (NIST-AI-RMF transparency control).
+MODEL_EXOGENOUS_DISCLAIMER = (
+    "Model estimate: this scenario re-forecasts demand through a feature-driven "
+    "model using the assumptions as future inputs. It reflects learned patterns "
+    "but remains an estimate under uncertainty — not a guarantee."
 )
 
 # Fallback unit price when a (store, product) has no sales history.
@@ -91,6 +102,12 @@ class ScenarioService:
             )
         store_id = int(str(store_id_raw))
         product_id = int(str(product_id_raw))
+
+        # A regression baseline answers the what-if by genuinely re-forecasting
+        # through the future feature frame; every other model type uses the
+        # deterministic heuristic multiplier below (PRP-27 DECISIONS LOCKED #1).
+        if bundle.config.model_type == "regression":
+            return await self._simulate_model_exogenous(db, request, bundle, store_id, product_id)
 
         # Replicate the ForecastingService.predict body (DECISIONS LOCKED #2).
         raw_forecast = bundle.model.predict(request.horizon)
@@ -159,6 +176,149 @@ class ScenarioService:
             generated_at=datetime.now(UTC),
         )
 
+    async def _simulate_model_exogenous(
+        self,
+        db: AsyncSession,
+        request: SimulateScenarioRequest,
+        bundle: ModelBundle,
+        store_id: int,
+        product_id: int,
+    ) -> ScenarioComparison:
+        """Re-forecast a regression baseline through the future feature frame.
+
+        Builds two leakage-safe future frames — one carrying the scenario
+        assumptions, one with none — feeds both to the model, and compares the
+        re-forecasts. Unlike the heuristic path the deltas come from the model
+        itself, so the result is stamped ``method="model_exogenous"``.
+
+        Args:
+            db: Database session.
+            request: The baseline ``run_id``, horizon, and assumptions.
+            bundle: The already-loaded regression model bundle.
+            store_id: Store the baseline model targets.
+            product_id: Product the baseline model targets.
+
+        Returns:
+            A model-driven baseline-vs-scenario comparison.
+
+        Raises:
+            ValueError: When the bundle lacks the feature metadata a scenario
+                forecast needs (an older artifact trained before PRP-27).
+        """
+        feature_columns_raw = bundle.metadata.get("feature_columns")
+        history_tail_raw = bundle.metadata.get("history_tail")
+        if not isinstance(feature_columns_raw, list) or not isinstance(history_tail_raw, list):
+            raise ValueError(
+                f"Model artifact for run_id '{request.run_id}' is a regression "
+                "model without the feature metadata a scenario forecast needs — "
+                "retrain it with the current pipeline."
+            )
+        feature_columns = [str(column) for column in cast("list[str]", feature_columns_raw)]
+        history_tail = [float(value) for value in cast("list[float]", history_tail_raw)]
+
+        # The forecast origin T is the day before the first forecast day.
+        origin = self._forecast_start_date(bundle.metadata.get("train_end_date")) - timedelta(
+            days=1
+        )
+        launch_raw = bundle.metadata.get("launch_date")
+        launch_date = date.fromisoformat(launch_raw) if isinstance(launch_raw, str) else None
+
+        scenario_frame = await build_future_frame(
+            db,
+            store_id=store_id,
+            product_id=product_id,
+            forecast_origin=origin,
+            horizon=request.horizon,
+            feature_columns=feature_columns,
+            history_tail=history_tail,
+            assumptions=request.assumptions,
+            launch_date=launch_date,
+        )
+        # The baseline is the SAME frame with the assumptions stripped.
+        baseline_frame = await build_future_frame(
+            db,
+            store_id=store_id,
+            product_id=product_id,
+            forecast_origin=origin,
+            horizon=request.horizon,
+            feature_columns=feature_columns,
+            history_tail=history_tail,
+            assumptions=ScenarioAssumptions(),
+            launch_date=launch_date,
+        )
+
+        scenario_x = np.array(scenario_frame.matrix, dtype=np.float64)
+        baseline_x = np.array(baseline_frame.matrix, dtype=np.float64)
+        # Demand can never be negative — floor the model output at 0.
+        scenario_values = [
+            max(0.0, float(value)) for value in bundle.model.predict(request.horizon, scenario_x)
+        ]
+        baseline_values = [
+            max(0.0, float(value)) for value in bundle.model.predict(request.horizon, baseline_x)
+        ]
+
+        points = [
+            ScenarioPoint(
+                date=scenario_frame.dates[offset],
+                baseline=baseline_values[offset],
+                scenario=scenario_values[offset],
+                delta=scenario_values[offset] - baseline_values[offset],
+                # The realised per-day multiplier the model implied (1.0 == no
+                # change); guards a zero-baseline day.
+                applied_factor=(
+                    scenario_values[offset] / baseline_values[offset]
+                    if baseline_values[offset] > 0.0
+                    else 1.0
+                ),
+            )
+            for offset in range(request.horizon)
+        ]
+
+        baseline_total = sum(baseline_values)
+        scenario_total = sum(scenario_values)
+        units_delta = scenario_total - baseline_total
+        units_delta_pct = (units_delta / baseline_total * 100.0) if baseline_total > 0 else 0.0
+
+        unit_price = await self._latest_unit_price(db, store_id, product_id)
+        baseline_revenue = baseline_total * unit_price
+        scenario_revenue = scenario_total * unit_price
+
+        inventory = request.assumptions.inventory
+        on_hand = inventory.on_hand_units if inventory is not None else None
+        verdict = adjustments.coverage_verdict(scenario_total, on_hand)
+
+        logger.info(
+            "scenarios.simulated",
+            run_id=request.run_id,
+            store_id=store_id,
+            product_id=product_id,
+            horizon=request.horizon,
+            model_type=bundle.config.model_type,
+            method="model_exogenous",
+            units_delta=round(units_delta, 4),
+            coverage_verdict=verdict,
+        )
+
+        return ScenarioComparison(
+            store_id=store_id,
+            product_id=product_id,
+            model_type=bundle.config.model_type,
+            horizon=request.horizon,
+            points=points,
+            baseline_total_units=baseline_total,
+            scenario_total_units=scenario_total,
+            units_delta=units_delta,
+            units_delta_pct=units_delta_pct,
+            unit_price_used=unit_price,
+            baseline_revenue=baseline_revenue,
+            scenario_revenue=scenario_revenue,
+            revenue_delta=scenario_revenue - baseline_revenue,
+            coverage_verdict=verdict,
+            method="model_exogenous",
+            disclaimer=MODEL_EXOGENOUS_DISCLAIMER,
+            generated_at=datetime.now(UTC),
+        )
+
     # -- Persistence -------------------------------------------------------
 
     async def create_plan(
@@ -197,7 +357,9 @@ class ScenarioService:
             # JSONB cannot store Python date/datetime — dump in JSON mode.
             assumptions=request.assumptions.model_dump(mode="json"),
             comparison=comparison.model_dump(mode="json"),
-            method=SCENARIO_METHOD_HEURISTIC,
+            # heuristic or model_exogenous — taken from the comparison the
+            # baseline model actually produced.
+            method=comparison.method,
         )
         db.add(plan)
         await db.commit()
