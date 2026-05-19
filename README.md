@@ -397,7 +397,7 @@ curl -X POST http://localhost:8123/backtesting/run \
 When `include_baselines=true`, automatically compares against naive and seasonal_naive models.
 
 **Feature-Aware Models:**
-`regression`, `lightgbm`, and `xgboost` models can be backtested too — set
+`regression`, `lightgbm`, `xgboost`, and `prophet_like` models can be backtested too — set
 `model_config_main.model_type` accordingly. Each fold builds a leakage-safe
 per-fold feature matrix (`min_train_size >= 30` required); the result carries
 `feature_aware: true` and `exogenous_policy: "observed"`.
