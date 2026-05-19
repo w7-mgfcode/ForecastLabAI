@@ -80,6 +80,25 @@ async def test_train_lightgbm_rejected_when_disabled(client: AsyncClient) -> Non
 
 
 @pytest.mark.integration
+async def test_train_xgboost_rejected_when_disabled(client: AsyncClient) -> None:
+    """XGBoost training is refused with 400 while the feature flag is off.
+
+    ``forecast_enable_xgboost`` defaults to ``False``; the route gate returns a
+    400 before any DB or model work (PRP-MLZOO-C1).
+    """
+    payload = {
+        "store_id": 1,
+        "product_id": 2,
+        "train_start_date": "2024-01-01",
+        "train_end_date": "2024-01-31",
+        "config": {"model_type": "xgboost"},
+    }
+    response = await client.post("/forecasting/train", json=payload)
+    assert response.status_code == 400
+    assert "xgboost" in response.text.lower()
+
+
+@pytest.mark.integration
 async def test_predict_accepts_request(client: AsyncClient) -> None:
     # PredictRequest has no date fields; this is a smoke test for completeness
     # so a future contributor who adds a date field is forced to confirm the

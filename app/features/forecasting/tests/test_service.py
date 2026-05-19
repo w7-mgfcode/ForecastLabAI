@@ -351,7 +351,7 @@ class TestFeatureAwareContract:
 
     def test_requires_features_flag(self):
         """Baseline forecasters require no features; feature-aware ones do."""
-        from app.features.forecasting.models import LightGBMForecaster
+        from app.features.forecasting.models import LightGBMForecaster, XGBoostForecaster
         from app.features.forecasting.schemas import (
             ProphetLikeModelConfig,
             RegressionModelConfig,
@@ -367,6 +367,8 @@ class TestFeatureAwareContract:
         # LightGBM is feature-aware too — assert the ClassVar directly so this
         # needs neither the factory flag nor the optional lightgbm dependency.
         assert LightGBMForecaster.requires_features is True
+        # XGBoost is feature-aware too — same import-free ClassVar assertion.
+        assert XGBoostForecaster.requires_features is True
 
     def test_lightgbm_factory_respects_flag(self):
         """model_factory gates LightGBM behind forecast_enable_lightgbm.
@@ -390,6 +392,29 @@ class TestFeatureAwareContract:
         with patch("app.core.config.get_settings", return_value=enabled):
             model = model_factory(LightGBMModelConfig())
         assert isinstance(model, LightGBMForecaster)
+
+    def test_xgboost_factory_respects_flag(self):
+        """model_factory gates XGBoost behind forecast_enable_xgboost.
+
+        Construction is flag-gated but import-free (``xgboost`` is imported
+        lazily inside ``fit``), so neither branch needs the optional extra.
+        """
+        from app.features.forecasting.models import XGBoostForecaster
+        from app.features.forecasting.schemas import XGBoostModelConfig
+
+        disabled = MagicMock()
+        disabled.forecast_enable_xgboost = False
+        with (
+            patch("app.core.config.get_settings", return_value=disabled),
+            pytest.raises(ValueError, match="not enabled"),
+        ):
+            model_factory(XGBoostModelConfig())
+
+        enabled = MagicMock()
+        enabled.forecast_enable_xgboost = True
+        with patch("app.core.config.get_settings", return_value=enabled):
+            model = model_factory(XGBoostModelConfig())
+        assert isinstance(model, XGBoostForecaster)
 
     def test_canonical_columns_match_regression_contract(self):
         """The canonical column set is the exact 14-name regression contract.

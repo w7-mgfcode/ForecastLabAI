@@ -27,6 +27,7 @@ from app.features.forecasting.schemas import (
     ProphetLikeModelConfig,
     RegressionModelConfig,
     TrainResponse,
+    XGBoostModelConfig,
 )
 from app.features.forecasting.service import ForecastingService
 from app.features.jobs.service import JobService, _finite, _shape_backtest_result
@@ -241,6 +242,27 @@ async def test_execute_train_builds_lightgbm_config() -> None:
     assert result["model_type"] == "lightgbm"
 
 
+async def test_execute_train_builds_xgboost_config() -> None:
+    """A train job with model_type='xgboost' builds an XGBoostModelConfig (#247).
+
+    ``train_model`` is mocked, so ``model_factory`` (and its feature-flag gate)
+    is never reached and ``XGBoostModelConfig`` is a pure Pydantic schema —
+    this test needs neither the flag nor the optional xgboost dependency.
+    """
+    fake = _fake_train_response("xgboost")
+    with patch.object(
+        ForecastingService, "train_model", new=AsyncMock(return_value=fake)
+    ) as mock_train:
+        result = await JobService()._execute_train(
+            db=cast(AsyncSession, AsyncMock()),
+            params={**_REGRESSION_PARAMS, "model_type": "xgboost"},
+        )
+    assert mock_train.call_args is not None
+    config = mock_train.call_args.kwargs["config"]
+    assert isinstance(config, XGBoostModelConfig)
+    assert result["model_type"] == "xgboost"
+
+
 async def test_execute_train_builds_prophet_like_config() -> None:
     """A train job with model_type='prophet_like' builds a ProphetLikeModelConfig (#248).
 
@@ -322,6 +344,26 @@ async def test_execute_backtest_builds_lightgbm_config() -> None:
     config = mock_run.call_args.kwargs["config"]
     assert isinstance(config.model_config_main, LightGBMModelConfig)
     assert result["model_type"] == "lightgbm"
+
+
+async def test_execute_backtest_builds_xgboost_config() -> None:
+    """A backtest job with model_type='xgboost' builds an XGBoostModelConfig.
+
+    ``run_backtest`` is mocked, so ``model_factory``'s feature-flag gate is
+    never reached and the optional xgboost dependency is not required.
+    """
+    response = _make_response()
+    with patch.object(
+        BacktestingService, "run_backtest", new=AsyncMock(return_value=response)
+    ) as mock_run:
+        result = await JobService()._execute_backtest(
+            db=cast(AsyncSession, AsyncMock()),
+            params={**_BACKTEST_PARAMS, "model_type": "xgboost"},
+        )
+    assert mock_run.call_args is not None
+    config = mock_run.call_args.kwargs["config"]
+    assert isinstance(config.model_config_main, XGBoostModelConfig)
+    assert result["model_type"] == "xgboost"
 
 
 async def test_execute_backtest_builds_prophet_like_config() -> None:

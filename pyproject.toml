@@ -45,6 +45,9 @@ dev = [
 # dependency list so a single-host install stays dependency-light; CI
 # installs it via `uv sync --frozen --all-extras --dev`.
 ml-lightgbm = ["lightgbm>=4.5.0"]
+# Opt-in advanced forecasting model (MLZOO-C1). Same optional-extra
+# pattern as ml-lightgbm; CI installs it via --all-extras.
+ml-xgboost = ["xgboost>=2.1.0"]
 
 [build-system]
 requires = ["hatchling"]

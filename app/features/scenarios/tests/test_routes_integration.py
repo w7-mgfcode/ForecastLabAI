@@ -193,6 +193,30 @@ class TestSimulateModelExogenous:
         # a fixed multiplier, and the modelled price response lifts demand.
         assert data["units_delta"] > 0.0
 
+    async def test_xgboost_baseline_returns_model_exogenous(
+        self, client: AsyncClient, trained_xgboost_model: str
+    ) -> None:
+        """An XGBoost baseline is feature-aware — it re-forecasts (PRP-MLZOO-C1).
+
+        Pins the capability-based dispatch in ``ScenarioService.simulate`` —
+        the branch is ``bundle.model.requires_features``, not a hard-coded
+        ``model_type == "regression"`` string.
+        """
+        response = await client.post(
+            "/scenarios/simulate",
+            json={
+                "run_id": trained_xgboost_model,
+                "horizon": 14,
+                "assumptions": _PRICE_ASSUMPTION,
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["method"] == "model_exogenous"
+        assert data["disclaimer"], "every comparison must carry a non-empty disclaimer"
+        assert len(data["points"]) == 14
+
     async def test_prophet_like_baseline_returns_model_exogenous(
         self, client: AsyncClient, trained_prophet_like_model: str
     ) -> None:

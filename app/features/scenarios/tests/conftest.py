@@ -27,6 +27,7 @@ from app.features.forecasting.models import (
     NaiveForecaster,
     ProphetLikeForecaster,
     RegressionForecaster,
+    XGBoostForecaster,
 )
 from app.features.forecasting.persistence import ModelBundle, save_model_bundle
 from app.features.forecasting.schemas import (
@@ -34,6 +35,7 @@ from app.features.forecasting.schemas import (
     NaiveModelConfig,
     ProphetLikeModelConfig,
     RegressionModelConfig,
+    XGBoostModelConfig,
 )
 from app.features.scenarios.models import ScenarioPlan
 from app.main import app
@@ -141,6 +143,56 @@ def trained_lightgbm_model() -> Generator[str, None, None]:
     bundle = ModelBundle(
         model=model,
         config=LightGBMModelConfig(),
+        metadata={
+            "store_id": TEST_STORE_ID,
+            "product_id": TEST_PRODUCT_ID,
+            "train_end_date": TEST_TRAIN_END_DATE,
+            "n_observations": n_rows,
+            "feature_columns": columns,
+            "history_tail": [12.0] * 90,
+            "history_tail_dates": [
+                (history_start + timedelta(days=offset)).isoformat() for offset in range(90)
+            ],
+            "launch_date": "2025-01-01",
+        },
+    )
+    save_model_bundle(bundle, artifacts_dir / f"model_{run_id}")
+
+    yield run_id
+
+    (artifacts_dir / f"model_{run_id}.joblib").unlink(missing_ok=True)
+
+
+@pytest.fixture
+def trained_xgboost_model() -> Generator[str, None, None]:
+    """Save a real fitted ``XGBoostForecaster`` bundle on disk; yield run_id.
+
+    SKIPs when the optional ``ml-xgboost`` dependency is absent. The bundle
+    carries the full PRP-27 feature metadata so the model-exogenous simulate
+    path can build a future feature frame and genuinely re-forecast — exactly
+    as it does for a regression bundle (PRP-MLZOO-C1).
+    """
+    pytest.importorskip("xgboost")
+
+    settings = get_settings()
+    artifacts_dir = Path(settings.forecast_model_artifacts_dir)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    run_id = uuid.uuid4().hex[:12]
+    columns = canonical_feature_columns()
+    rng = np.random.default_rng(7)
+    n_rows = 200
+    features = rng.normal(size=(n_rows, len(columns)))
+    price_index = columns.index("price_factor")
+    target = 40.0 - 20.0 * features[:, price_index] + rng.normal(scale=0.5, size=n_rows)
+
+    model = XGBoostForecaster(random_state=7)
+    model.fit(target.astype(np.float64), features.astype(np.float64))
+
+    history_start = date(2026, 4, 1)
+    bundle = ModelBundle(
+        model=model,
+        config=XGBoostModelConfig(),
         metadata={
             "store_id": TEST_STORE_ID,
             "product_id": TEST_PRODUCT_ID,

@@ -430,6 +430,7 @@ class JobService:
             ProphetLikeModelConfig,
             RegressionModelConfig,
             SeasonalNaiveModelConfig,
+            XGBoostModelConfig,
         )
         from app.features.forecasting.service import ForecastingService
 
@@ -470,6 +471,14 @@ class JobService:
             # The forecast_enable_lightgbm gate lives in model_factory — a
             # lightgbm job with the flag off fails loud at train time.
             config = LightGBMModelConfig(
+                n_estimators=params.get("n_estimators", 100),
+                learning_rate=params.get("learning_rate", 0.1),
+                max_depth=params.get("max_depth", 6),
+            )
+        elif model_type == "xgboost":
+            # The forecast_enable_xgboost gate lives in model_factory — an
+            # xgboost job with the flag off fails loud at train time.
+            config = XGBoostModelConfig(
                 n_estimators=params.get("n_estimators", 100),
                 learning_rate=params.get("learning_rate", 0.1),
                 max_depth=params.get("max_depth", 6),
@@ -619,6 +628,7 @@ class JobService:
             ProphetLikeModelConfig,
             RegressionModelConfig,
             SeasonalNaiveModelConfig,
+            XGBoostModelConfig,
         )
 
         service = BacktestingService()
@@ -658,6 +668,10 @@ class JobService:
             # Feature-aware — still gated by forecast_enable_lightgbm inside
             # model_factory; a disabled flag surfaces as a loud failed job.
             model_config = LightGBMModelConfig()
+        elif model_type == "xgboost":
+            # Feature-aware — still gated by forecast_enable_xgboost inside
+            # model_factory; a disabled flag surfaces as a loud failed job.
+            model_config = XGBoostModelConfig()
         elif model_type == "prophet_like":
             # Feature-aware — the backtest builds per-fold leakage-safe X.
             model_config = ProphetLikeModelConfig()

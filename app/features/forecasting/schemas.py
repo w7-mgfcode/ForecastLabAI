@@ -144,6 +144,49 @@ class LightGBMModelConfig(ModelConfigBase):
     )
 
 
+class XGBoostModelConfig(ModelConfigBase):
+    """Configuration for the XGBoost regressor (feature-flagged).
+
+    XGBoost is an advanced, feature-aware gradient-boosted-tree model. Like
+    ``LightGBMModelConfig`` the field set is deliberately conservative —
+    ``n_estimators`` / ``max_depth`` / ``learning_rate`` only — so the schema
+    surface stays small and training stays deterministic (no stochastic
+    subsampling).
+
+    CRITICAL: Only available when forecast_enable_xgboost=True in settings.
+
+    Attributes:
+        n_estimators: Number of boosting rounds.
+        max_depth: Maximum depth of trees.
+        learning_rate: Learning rate for gradient boosting.
+        feature_config_hash: Hash of FeatureSetConfig used for training.
+    """
+
+    model_type: Literal["xgboost"] = "xgboost"
+    n_estimators: int = Field(
+        default=100,
+        ge=10,
+        le=1000,
+        description="Number of boosting rounds",
+    )
+    max_depth: int = Field(
+        default=6,
+        ge=1,
+        le=20,
+        description="Maximum depth of trees",
+    )
+    learning_rate: float = Field(
+        default=0.1,
+        ge=0.001,
+        le=1.0,
+        description="Learning rate for gradient boosting",
+    )
+    feature_config_hash: str | None = Field(
+        default=None,
+        description="Hash of FeatureSetConfig used for training",
+    )
+
+
 class RegressionModelConfig(ModelConfigBase):
     """Configuration for the exogenous-regressor forecaster (PRP-27).
 
@@ -226,6 +269,7 @@ ModelConfig = (
     | SeasonalNaiveModelConfig
     | MovingAverageModelConfig
     | LightGBMModelConfig
+    | XGBoostModelConfig
     | RegressionModelConfig
     | ProphetLikeModelConfig
 )
