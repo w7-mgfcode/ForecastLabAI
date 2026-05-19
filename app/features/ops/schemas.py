@@ -244,3 +244,93 @@ class RetrainingCandidatesResponse(BaseModel):
         description="Total (store, product) grains evaluated before applying the limit.",
     )
     generated_at: datetime = Field(..., description="When this queue was computed (UTC).")
+
+
+# =============================================================================
+# Model health & drift
+# =============================================================================
+
+
+# Forecast-error trend verdict for a (store, product) grain.
+DriftDirection = Literal["improving", "stable", "degrading", "unknown"]
+
+
+class WapePoint(BaseModel):
+    """One run's WAPE observation in a grain's chronological history."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    run_id: str = Field(..., description="External run_id of the observed run.")
+    created_at: datetime = Field(..., description="When the run was created (UTC).")
+    wape: float | None = Field(
+        None,
+        description="WAPE of the run, when present in its metrics; null otherwise.",
+    )
+
+
+class ModelHealthEntry(BaseModel):
+    """Forecast-error health and drift verdict for one (store, product) grain."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    store_id: int = Field(..., description="Store the grain covers.")
+    product_id: int = Field(..., description="Product the grain covers.")
+    run_count: int = Field(
+        ...,
+        ge=0,
+        description="Number of successful runs evaluated for this grain.",
+    )
+    latest_run_id: str | None = Field(
+        None,
+        description="External run_id of the most recent successful run.",
+    )
+    latest_run_status: str | None = Field(
+        None,
+        description="Status of that run (always 'success' for evaluated grains).",
+    )
+    latest_wape: float | None = Field(
+        None,
+        description="Most recent numeric WAPE in the grain's history; null when none.",
+    )
+    previous_wape: float | None = Field(
+        None,
+        description="The prior numeric WAPE, used as the drift baseline; null when none.",
+    )
+    wape_delta: float | None = Field(
+        None,
+        description="latest_wape minus previous_wape; null when fewer than two numeric WAPEs.",
+    )
+    drift_direction: DriftDirection = Field(
+        ...,
+        description="Forecast-error trend: improving / stable / degrading / unknown.",
+    )
+    last_trained_at: datetime | None = Field(
+        None,
+        description="created_at of the latest successful run; null when none.",
+    )
+    staleness_days: int = Field(
+        ...,
+        ge=0,
+        description="Days since the latest run's training-data window ended.",
+    )
+    wape_history: list[WapePoint] = Field(
+        ...,
+        description="Chronological WAPE observations; may carry null gaps.",
+    )
+
+
+class ModelHealthResponse(BaseModel):
+    """Per-grain forecast-error health, degrading grains first."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    entries: list[ModelHealthEntry] = Field(
+        ...,
+        description="Grains sorted degrading-first, then by |wape_delta| descending.",
+    )
+    total_evaluated: int = Field(
+        ...,
+        ge=0,
+        description="Total grains evaluated before applying the limit.",
+    )
+    generated_at: datetime = Field(..., description="When this report was computed (UTC).")

@@ -7,10 +7,15 @@ retraining-candidate queue. Has no models and no migration — it only reads.
 """
 
 from app.features.ops.routes import router
-from app.features.ops.schemas import OpsSummaryResponse, RetrainingCandidatesResponse
+from app.features.ops.schemas import (
+    ModelHealthResponse,
+    OpsSummaryResponse,
+    RetrainingCandidatesResponse,
+)
 from app.features.ops.service import OpsService
 
 __all__ = [
+    "ModelHealthResponse",
     "OpsService",
     "OpsSummaryResponse",
     "RetrainingCandidatesResponse",

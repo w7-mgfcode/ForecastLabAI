@@ -2,7 +2,7 @@
 // separate from the page component so they are cheap to unit-test (see
 // ops-utils.test.ts) — mirrors the knowledge-utils.ts / status-utils.ts precedent.
 import { ROUTES } from '@/lib/constants'
-import type { AttentionItem, RetrainingCandidate, SystemHealth } from '@/types/api'
+import type { AttentionItem, DriftDirection, RetrainingCandidate, SystemHealth } from '@/types/api'
 
 /**
  * System-health badge variant: 'success' only when the API and database are
@@ -48,4 +48,33 @@ export function formatStaleness(days: number): string {
  */
 export function sortRetrainingCandidates(rows: RetrainingCandidate[]): RetrainingCandidate[] {
   return [...rows].sort((a, b) => b.priority_score - a.priority_score)
+}
+
+/**
+ * Badge variant for a drift verdict — 'degrading' is an error, 'improving' a
+ * success, 'stable' an info, and 'unknown' a neutral default.
+ */
+export function driftBadgeVariant(
+  direction: DriftDirection,
+): 'success' | 'error' | 'info' | 'default' {
+  switch (direction) {
+    case 'degrading':
+      return 'error'
+    case 'improving':
+      return 'success'
+    case 'stable':
+      return 'info'
+    default:
+      return 'default'
+  }
+}
+
+/**
+ * Signed, one-decimal WAPE delta for display ("+14.0" / "-9.3"); '—' when the
+ * grain has fewer than two numeric WAPEs (delta is null).
+ */
+export function formatWapeDelta(delta: number | null): string {
+  if (delta === null) return '—'
+  const sign = delta > 0 ? '+' : ''
+  return `${sign}${delta.toFixed(1)}`
 }

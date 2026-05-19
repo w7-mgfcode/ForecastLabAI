@@ -1,11 +1,17 @@
+import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { Activity, AlertTriangle, CheckCircle2, Clock } from 'lucide-react'
-import { useOpsSummary, useRetrainingCandidates } from '@/hooks/use-ops'
+import { Activity, AlertTriangle, CheckCircle2, Clock, Download, RefreshCw } from 'lucide-react'
+import { toast } from 'sonner'
+import { useModelHealth, useOpsSummary, useRetrainingCandidates } from '@/hooks/use-ops'
 import { useProviderHealth } from '@/hooks/use-config'
+import { useCreateJob } from '@/hooks/use-jobs'
+import { useCreateAlias } from '@/hooks/use-runs'
 import {
   attentionBadgeVariant,
   attentionItemLink,
+  driftBadgeVariant,
   formatStaleness,
+  formatWapeDelta,
   sortRetrainingCandidates,
   summaryHealthVariant,
 } from '@/lib/ops-utils'
@@ -23,8 +29,38 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { formatPercent } from '@/lib/api'
+import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Input } from '@/components/ui/input'
+import { downloadCsv, toCsv } from '@/lib/csv-export'
+import { attentionCsvColumns, buildIncidentMarkdown, downloadMarkdown } from '@/lib/incident-report'
+import { buildRetrainJob } from '@/lib/ops-actions'
+import { api, formatPercent, getErrorMessage } from '@/lib/api'
 import { ROUTES } from '@/lib/constants'
+import type { ModelRun } from '@/types/api'
+
+/** The run + grain a "Promote to alias" dialog is currently targeting. */
+interface PromoteTarget {
+  runId: string
+  storeId: number
+  productId: number
+}
 
 /** Format an ISO timestamp / date string for display; '—' when null. */
 function formatWhen(value: string | null): string {
@@ -60,7 +96,15 @@ export default function OpsPage() {
   const navigate = useNavigate()
   const summaryQuery = useOpsSummary()
   const candidatesQuery = useRetrainingCandidates()
+  const modelHealthQuery = useModelHealth()
   const providerQuery = useProviderHealth()
+  const createJob = useCreateJob()
+  const createAlias = useCreateAlias()
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [retrainConfirmOpen, setRetrainConfirmOpen] = useState(false)
+  const [actionBusy, setActionBusy] = useState(false)
+  const [promoteTarget, setPromoteTarget] = useState<PromoteTarget | null>(null)
+  const [aliasName, setAliasName] = useState('')
 
   if (summaryQuery.error) {
     return (
@@ -86,15 +130,120 @@ export default function OpsPage() {
   const totalRuns = summary.runs.counts.reduce((sum, c) => sum + c.count, 0)
   const staleAliases = summary.aliases.filter((a) => a.is_stale).length
   const candidates = sortRetrainingCandidates(candidatesQuery.data?.candidates ?? [])
+  const modelHealthEntries = modelHealthQuery.data?.entries ?? []
+
+  /** Download the needs-attention list as a CSV, built client-side. */
+  function handleExportCsv() {
+    downloadCsv('ops-attention-items.csv', toCsv(summary.attention_items, attentionCsvColumns))
+  }
+
+  /** Download the full operational snapshot as a Markdown incident report. */
+  function handleExportMarkdown() {
+    downloadMarkdown(
+      'ops-incident-report.md',
+      buildIncidentMarkdown(summary, candidates, modelHealthEntries),
+    )
+  }
+
+  /** Stable selection key for a (store, product) grain. */
+  const grainKey = (storeId: number, productId: number) => `${storeId}-${productId}`
+
+  /** Toggle one grain in the bulk-retrain selection set. */
+  function toggleSelected(key: string) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) {
+        next.delete(key)
+      } else {
+        next.add(key)
+      }
+      return next
+    })
+  }
+
+  // Selected candidates that carry a source run — the bulk-retrain work list.
+  const selectedCandidates = candidates.filter(
+    (candidate) =>
+      selected.has(grainKey(candidate.store_id, candidate.product_id)) &&
+      candidate.latest_run_id !== null,
+  )
+
+  /**
+   * Bulk-retrain every selected grain. POST /jobs runs synchronously
+   * server-side, so jobs are fired SEQUENTIALLY (never Promise.all) with a
+   * per-item toast; the action layer reuses the existing /jobs endpoint.
+   */
+  async function runBulkRetrain() {
+    setRetrainConfirmOpen(false)
+    setActionBusy(true)
+    let succeeded = 0
+    let failed = 0
+    for (const candidate of selectedCandidates) {
+      const runId = candidate.latest_run_id
+      if (runId === null) continue
+      const where = `store ${candidate.store_id} / product ${candidate.product_id}`
+      try {
+        const run = await api<ModelRun>(`/registry/runs/${runId}`)
+        await createJob.mutateAsync(buildRetrainJob(run, summary.freshness.latest_sales_date))
+        succeeded += 1
+        toast.success(`Retrain queued — ${where}`)
+      } catch (error) {
+        failed += 1
+        toast.error(`Retrain failed — ${where}: ${getErrorMessage(error)}`)
+      }
+    }
+    setSelected(new Set())
+    setActionBusy(false)
+    toast.message(`Bulk retrain complete — ${succeeded} queued, ${failed} failed`)
+  }
+
+  /** Open the promote-to-alias dialog for a grain's latest successful run. */
+  function openPromote(runId: string | null, storeId: number, productId: number) {
+    if (runId === null) return
+    setAliasName('')
+    setPromoteTarget({ runId, storeId, productId })
+  }
+
+  /** Promote the targeted run to a deployment alias via POST /registry/aliases. */
+  async function runPromote() {
+    if (promoteTarget === null) return
+    const target = promoteTarget
+    const name = aliasName.trim()
+    setActionBusy(true)
+    try {
+      await createAlias.mutateAsync({ alias_name: name, run_id: target.runId })
+      toast.success(`Promoted run to alias '${name}'`)
+    } catch (error) {
+      toast.error(`Promote failed: ${getErrorMessage(error)}`)
+    }
+    setActionBusy(false)
+    setPromoteTarget(null)
+  }
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold">Control Center</h1>
-        <p className="text-sm text-muted-foreground">
-          One operational view across jobs, model runs, deployment aliases, and data
-          freshness — surfacing what needs attention before it affects decisions.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold">Control Center</h1>
+          <p className="text-sm text-muted-foreground">
+            One operational view across jobs, model runs, deployment aliases, and data
+            freshness — surfacing what needs attention before it affects decisions.
+          </p>
+        </div>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm">
+              <Download className="mr-2 h-4 w-4" />
+              Export report
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={handleExportCsv}>CSV — attention items</DropdownMenuItem>
+            <DropdownMenuItem onClick={handleExportMarkdown}>
+              Markdown — full report
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {totalJobs === 0 && totalRuns === 0 ? (
@@ -268,14 +417,94 @@ export default function OpsPage() {
             </CardContent>
           </Card>
 
-          {/* Section 5 — Retraining Queue */}
+          {/* Section 5 — Model Health */}
           <Card>
             <CardHeader>
-              <CardTitle>Retraining Queue</CardTitle>
+              <CardTitle>Model Health</CardTitle>
               <CardDescription>
-                Store / product pairs ranked by a retraining-priority score that blends
-                staleness with forecast error (WAPE).
+                Forecast-error (WAPE) drift per store / product, classified from each grain's
+                successful-run history. Degrading grains are listed first.
               </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {modelHealthQuery.isLoading ? (
+                <LoadingState message="Loading model health..." />
+              ) : modelHealthEntries.length === 0 ? (
+                <p className="py-6 text-center text-sm text-muted-foreground">
+                  No model health to evaluate — no successful model runs yet.
+                </p>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Store</TableHead>
+                      <TableHead>Product</TableHead>
+                      <TableHead>Drift</TableHead>
+                      <TableHead className="text-right">Latest WAPE</TableHead>
+                      <TableHead className="text-right">Δ WAPE</TableHead>
+                      <TableHead className="text-right">Runs</TableHead>
+                      <TableHead className="text-right">Action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {modelHealthEntries.map((entry) => (
+                      <TableRow key={`${entry.store_id}-${entry.product_id}`}>
+                        <TableCell className="font-mono text-xs">{entry.store_id}</TableCell>
+                        <TableCell className="font-mono text-xs">{entry.product_id}</TableCell>
+                        <TableCell>
+                          <StatusBadge variant={driftBadgeVariant(entry.drift_direction)}>
+                            {entry.drift_direction}
+                          </StatusBadge>
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {entry.latest_wape === null ? '—' : entry.latest_wape.toFixed(1)}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {formatWapeDelta(entry.wape_delta)}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {entry.run_count}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={entry.latest_run_id === null || actionBusy}
+                            onClick={() =>
+                              openPromote(entry.latest_run_id, entry.store_id, entry.product_id)
+                            }
+                          >
+                            Promote
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Section 6 — Retraining Queue */}
+          <Card>
+            <CardHeader>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle>Retraining Queue</CardTitle>
+                  <CardDescription>
+                    Store / product pairs ranked by a retraining-priority score that blends
+                    staleness with forecast error (WAPE). Select rows to retrain in bulk.
+                  </CardDescription>
+                </div>
+                <Button
+                  size="sm"
+                  disabled={selectedCandidates.length === 0 || actionBusy}
+                  onClick={() => setRetrainConfirmOpen(true)}
+                >
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Retrain selected ({selectedCandidates.length})
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               {candidatesQuery.isLoading ? (
@@ -288,33 +517,68 @@ export default function OpsPage() {
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-10">
+                        <span className="sr-only">Select</span>
+                      </TableHead>
                       <TableHead>Store</TableHead>
                       <TableHead>Product</TableHead>
                       <TableHead className="text-right">Priority</TableHead>
                       <TableHead className="text-right">Staleness</TableHead>
                       <TableHead className="text-right">WAPE</TableHead>
                       <TableHead>Reason</TableHead>
+                      <TableHead className="text-right">Action</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {candidates.map((c) => (
-                      <TableRow key={`${c.store_id}-${c.product_id}`}>
-                        <TableCell className="font-mono text-xs">{c.store_id}</TableCell>
-                        <TableCell className="font-mono text-xs">{c.product_id}</TableCell>
-                        <TableCell className="text-right font-medium tabular-nums">
-                          {c.priority_score.toFixed(2)}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {formatStaleness(c.staleness_days)}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {c.wape === null ? '—' : c.wape.toFixed(1)}
-                        </TableCell>
-                        <TableCell className="text-sm text-muted-foreground">
-                          {c.reason}
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {candidates.map((candidate) => {
+                      const key = grainKey(candidate.store_id, candidate.product_id)
+                      return (
+                        <TableRow key={key}>
+                          <TableCell>
+                            <Checkbox
+                              checked={selected.has(key)}
+                              disabled={candidate.latest_run_id === null}
+                              onCheckedChange={() => toggleSelected(key)}
+                              aria-label={`Select store ${candidate.store_id} product ${candidate.product_id}`}
+                            />
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">
+                            {candidate.store_id}
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">
+                            {candidate.product_id}
+                          </TableCell>
+                          <TableCell className="text-right font-medium tabular-nums">
+                            {candidate.priority_score.toFixed(2)}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {formatStaleness(candidate.staleness_days)}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {candidate.wape === null ? '—' : candidate.wape.toFixed(1)}
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {candidate.reason}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={candidate.latest_run_id === null || actionBusy}
+                              onClick={() =>
+                                openPromote(
+                                  candidate.latest_run_id,
+                                  candidate.store_id,
+                                  candidate.product_id,
+                                )
+                              }
+                            >
+                              Promote
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
                   </TableBody>
                 </Table>
               )}
@@ -322,6 +586,67 @@ export default function OpsPage() {
           </Card>
         </>
       )}
+
+      {/* Confirm gate — bulk retrain of the selected grains. */}
+      <AlertDialog open={retrainConfirmOpen} onOpenChange={setRetrainConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Retrain {selectedCandidates.length} grain
+              {selectedCandidates.length === 1 ? '' : 's'}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This creates one training job per selected store / product via the existing
+              POST /jobs endpoint. Jobs run sequentially and each may take a moment; the
+              outcome of every job is reported individually.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void runBulkRetrain()}>Retrain</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Confirm gate — promote a run to a deployment alias. */}
+      <AlertDialog
+        open={promoteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setPromoteTarget(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Promote to alias</AlertDialogTitle>
+            <AlertDialogDescription>
+              {promoteTarget
+                ? `Point a deployment alias at the latest successful run for store ${promoteTarget.storeId} / product ${promoteTarget.productId}. An existing alias of the same name is repointed.`
+                : ''}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-2">
+            <label htmlFor="promote-alias-name" className="text-sm font-medium">
+              Alias name
+            </label>
+            <Input
+              id="promote-alias-name"
+              value={aliasName}
+              onChange={(event) => setAliasName(event.target.value)}
+              placeholder="e.g. production"
+              autoComplete="off"
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={aliasName.trim() === '' || actionBusy}
+              onClick={() => void runPromote()}
+            >
+              Promote
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

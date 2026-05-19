@@ -13,12 +13,15 @@ from app.features.ops.schemas import (
     AttentionItem,
     DataFreshness,
     JobHealth,
+    ModelHealthEntry,
+    ModelHealthResponse,
     OpsSummaryResponse,
     RetrainingCandidate,
     RetrainingCandidatesResponse,
     RunHealth,
     StatusCount,
     SystemHealth,
+    WapePoint,
 )
 
 _NOW = datetime(2026, 5, 19, 12, 0, tzinfo=UTC)
@@ -180,3 +183,90 @@ def test_data_freshness_accepts_date() -> None:
     """latest_sales_date accepts a date value."""
     freshness = DataFreshness(latest_sales_date=date(2026, 5, 1))
     assert freshness.latest_sales_date == date(2026, 5, 1)
+
+
+# =============================================================================
+# Model health & drift
+# =============================================================================
+
+
+def test_wape_point_construct() -> None:
+    """WapePoint carries a run_id, timestamp, and an optional WAPE."""
+    point = WapePoint(run_id="r1", created_at=_NOW, wape=14.0)
+    assert point.wape == 14.0
+    null_point = WapePoint(run_id="r2", created_at=_NOW)
+    assert null_point.wape is None
+
+
+def test_model_health_entry_construct() -> None:
+    """A valid ModelHealthEntry accepts a known drift direction and history."""
+    entry = ModelHealthEntry(
+        store_id=1,
+        product_id=2,
+        run_count=3,
+        latest_run_id="r3",
+        latest_run_status="success",
+        latest_wape=25.0,
+        previous_wape=11.0,
+        wape_delta=14.0,
+        drift_direction="degrading",
+        last_trained_at=_NOW,
+        staleness_days=30,
+        wape_history=[WapePoint(run_id="r3", created_at=_NOW, wape=25.0)],
+    )
+    assert entry.drift_direction == "degrading"
+    assert entry.wape_delta == 14.0
+
+
+def test_model_health_entry_rejects_negative_run_count() -> None:
+    """run_count violates the ge=0 constraint when negative."""
+    with pytest.raises(ValidationError):
+        ModelHealthEntry(
+            store_id=1,
+            product_id=2,
+            run_count=-1,
+            drift_direction="unknown",
+            staleness_days=0,
+            wape_history=[],
+        )
+
+
+def test_model_health_entry_rejects_negative_staleness() -> None:
+    """staleness_days violates the ge=0 constraint when negative."""
+    with pytest.raises(ValidationError):
+        ModelHealthEntry(
+            store_id=1,
+            product_id=2,
+            run_count=0,
+            drift_direction="unknown",
+            staleness_days=-1,
+            wape_history=[],
+        )
+
+
+def test_model_health_entry_rejects_unknown_drift_direction() -> None:
+    """drift_direction is constrained to the four known literals."""
+    with pytest.raises(ValidationError):
+        ModelHealthEntry(
+            store_id=1,
+            product_id=2,
+            run_count=0,
+            drift_direction="exploding",  # type: ignore[arg-type]
+            staleness_days=0,
+            wape_history=[],
+        )
+
+
+def test_model_health_response_construct() -> None:
+    """ModelHealthResponse wraps entries with a total and timestamp."""
+    entry = ModelHealthEntry(
+        store_id=1,
+        product_id=2,
+        run_count=2,
+        drift_direction="stable",
+        staleness_days=5,
+        wape_history=[],
+    )
+    response = ModelHealthResponse(entries=[entry], total_evaluated=1, generated_at=_NOW)
+    assert response.total_evaluated == 1
+    assert response.entries[0].drift_direction == "stable"

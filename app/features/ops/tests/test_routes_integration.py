@@ -16,6 +16,7 @@ from app.features.registry.models import DeploymentAlias, ModelRun, RunStatus
 
 _JOB_STATUSES = {s.value for s in JobStatus}
 _RUN_STATUSES = {s.value for s in RunStatus}
+_DRIFT_RANK = {"degrading": 0, "improving": 1, "stable": 2, "unknown": 3}
 
 
 @pytest.mark.integration
@@ -129,4 +130,67 @@ class TestRetrainingCandidates:
     async def test_candidates_limit_too_high_rejected(self, client: AsyncClient) -> None:
         """limit=200 is above the le=100 bound and returns 422."""
         response = await client.get("/ops/retraining-candidates", params={"limit": 200})
+        assert response.status_code == 422
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestModelHealth:
+    """Integration tests for GET /ops/model-health."""
+
+    async def test_model_health_happy_path(
+        self,
+        client: AsyncClient,
+        sample_health_runs: list[ModelRun],
+    ) -> None:
+        """The seeded 3-run degrading grain surfaces with a drift verdict."""
+        response = await client.get("/ops/model-health", params={"limit": 100})
+
+        assert response.status_code == 200
+        data = response.json()
+
+        entry = next(
+            e for e in data["entries"] if e["store_id"] == 9101 and e["product_id"] == 8101
+        )
+        assert entry["drift_direction"] == "degrading"
+        assert entry["run_count"] == 3
+        assert entry["latest_wape"] == 25.0
+        assert entry["previous_wape"] == 11.0
+        assert entry["wape_delta"] == 14.0
+        assert len(entry["wape_history"]) == 3
+        assert data["total_evaluated"] >= 1
+
+    async def test_model_health_degrading_first_sort(
+        self,
+        client: AsyncClient,
+        sample_health_runs: list[ModelRun],
+    ) -> None:
+        """Entries are ordered degrading-first (drift rank non-decreasing)."""
+        response = await client.get("/ops/model-health", params={"limit": 100})
+
+        assert response.status_code == 200
+        ranks = [_DRIFT_RANK[e["drift_direction"]] for e in response.json()["entries"]]
+        assert ranks == sorted(ranks), "entries must be sorted degrading-first"
+
+    async def test_model_health_resilient_structural(self, client: AsyncClient) -> None:
+        """Without seeded fixtures the endpoint still returns 200, never 500."""
+        response = await client.get("/ops/model-health")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data["entries"], list)
+        assert data["total_evaluated"] >= 0
+        for entry in data["entries"]:
+            assert entry["drift_direction"] in _DRIFT_RANK
+            assert entry["run_count"] >= 0
+            assert entry["staleness_days"] >= 0
+
+    async def test_model_health_limit_zero_rejected(self, client: AsyncClient) -> None:
+        """limit=0 is below the ge=1 bound and returns 422."""
+        response = await client.get("/ops/model-health", params={"limit": 0})
+        assert response.status_code == 422
+
+    async def test_model_health_limit_too_high_rejected(self, client: AsyncClient) -> None:
+        """limit=200 is above the le=100 bound and returns 422."""
+        response = await client.get("/ops/model-health", params={"limit": 200})
         assert response.status_code == 422

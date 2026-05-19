@@ -1,14 +1,19 @@
 """API routes for the ForecastOps Control Center.
 
-Two read-only aggregation endpoints backing the ``/ops`` Control Center page:
-operational summary and the ranked retraining-candidate queue.
+Three read-only aggregation endpoints backing the ``/ops`` Control Center page:
+operational summary, the ranked retraining-candidate queue, and per-grain
+forecast-error health with a drift verdict.
 """
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.features.ops.schemas import OpsSummaryResponse, RetrainingCandidatesResponse
+from app.features.ops.schemas import (
+    ModelHealthResponse,
+    OpsSummaryResponse,
+    RetrainingCandidatesResponse,
+)
 from app.features.ops.service import OpsService
 
 router = APIRouter(prefix="/ops", tags=["ops"])
@@ -81,3 +86,43 @@ async def get_retraining_candidates(
         Candidates sorted by priority score (highest first).
     """
     return await OpsService().get_retraining_candidates(db, limit)
+
+
+@router.get(
+    "/model-health",
+    response_model=ModelHealthResponse,
+    summary="Per-(store, product) forecast-error health and drift",
+    description="""
+Classify forecast-error **performance drift** for every `(store, product)` grain.
+
+For each grain the endpoint reads the **full** successful-run history, extracts
+each run's WAPE, and compares the latest WAPE against the mean of the prior
+WAPEs within a ±10% relative band — yielding a drift verdict
+(`improving` / `stable` / `degrading` / `unknown`).
+
+Entries are sorted **degrading-first**, then by the magnitude of the WAPE
+change, and capped at `limit`. Returns HTTP 200 even on an empty database.
+
+This is a performance-drift signal, not data drift — it needs no feature
+snapshots and adds no new table or migration.
+""",
+)
+async def get_model_health(
+    limit: int = Query(
+        default=20,
+        ge=1,
+        le=100,
+        description="Maximum number of grains to return (1-100, default 20).",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> ModelHealthResponse:
+    """Return per-grain forecast-error health and drift.
+
+    Args:
+        limit: Maximum number of grains to return.
+        db: Database session.
+
+    Returns:
+        Grains sorted degrading-first, then by absolute WAPE change.
+    """
+    return await OpsService().get_model_health(db, limit)

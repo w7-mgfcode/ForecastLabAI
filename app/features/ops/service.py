@@ -8,6 +8,7 @@ to the verified, read-only ORM surface (see PRP-24, decision #1).
 """
 
 from datetime import UTC, datetime
+from itertools import groupby
 from typing import Any
 
 from sqlalchemy import func, select, text
@@ -20,13 +21,17 @@ from app.features.ops.schemas import (
     AliasHealth,
     AttentionItem,
     DataFreshness,
+    DriftDirection,
     JobHealth,
+    ModelHealthEntry,
+    ModelHealthResponse,
     OpsSummaryResponse,
     RetrainingCandidate,
     RetrainingCandidatesResponse,
     RunHealth,
     StatusCount,
     SystemHealth,
+    WapePoint,
 )
 from app.features.registry.models import DeploymentAlias, ModelRun, RunStatus
 
@@ -38,6 +43,8 @@ _STALENESS_CAP_DAYS = 90
 _WAPE_CAP = 100.0
 # How many recent failed jobs / runs to surface in the attention list.
 _ATTENTION_LIMIT = 10
+# Relative WAPE-change band: forecast-error drift is only flagged outside ±10%.
+_DRIFT_BAND = 0.10
 
 
 # =============================================================================
@@ -89,6 +96,42 @@ def score_retraining_candidate(staleness_days: int, wape: float | None) -> float
     staleness_norm = min(max(staleness_days, 0), _STALENESS_CAP_DAYS) / _STALENESS_CAP_DAYS
     error_norm = min(max(wape, 0.0), _WAPE_CAP) / _WAPE_CAP if wape is not None else 0.0
     return round(0.6 * staleness_norm + 0.4 * error_norm, 4)
+
+
+def classify_drift(
+    wape_history: list[float | None],
+) -> tuple[DriftDirection, float | None]:
+    """Classify a grain's forecast-error (WAPE) trend.
+
+    Pure and total: never raises, tolerates None gaps and sparse history.
+    Compares the latest numeric WAPE against the mean of all prior numeric
+    WAPEs, applying a ±10% relative band — the heuristic drift tolerance from
+    MLOps monitoring guidance (a universal threshold does not exist).
+
+    Args:
+        wape_history: Chronological WAPE values; None marks a run with no WAPE.
+
+    Returns:
+        A ``(direction, delta)`` tuple. ``direction`` is improving / stable /
+        degrading / unknown; ``delta`` is the latest numeric WAPE minus the
+        previous numeric WAPE, or None when fewer than two numeric values exist.
+    """
+    numeric = [wape for wape in wape_history if wape is not None]
+    if len(numeric) < 2:
+        return "unknown", None
+    latest = numeric[-1]
+    prior = numeric[:-1]
+    baseline = sum(prior) / len(prior)
+    delta = round(latest - prior[-1], 4)
+    if baseline <= 0:
+        # Avoid div-by-zero on a zero baseline: any positive error is degrading.
+        return ("degrading" if latest > 0 else "stable"), delta
+    relative = (latest - baseline) / baseline
+    if relative > _DRIFT_BAND:
+        return "degrading", delta
+    if relative < -_DRIFT_BAND:
+        return "improving", delta
+    return "stable", delta
 
 
 def _alias_staleness(
@@ -415,5 +458,86 @@ class OpsService:
         return RetrainingCandidatesResponse(
             candidates=candidates[:limit],
             total_evaluated=len(candidates),
+            generated_at=datetime.now(UTC),
+        )
+
+    async def get_model_health(self, db: AsyncSession, limit: int) -> ModelHealthResponse:
+        """Classify per-grain forecast-error drift from full run history.
+
+        Unlike the retraining queue, this needs the *full* WAPE history per
+        grain (not just the latest run), so it queries every successful run
+        ordered by grain then creation time and groups in Python with
+        ``itertools.groupby`` — NOT ``DISTINCT ON``.
+
+        Args:
+            db: Database session.
+            limit: Maximum grains to return (bounded 1..100 by the route).
+
+        Returns:
+            Grains sorted degrading-first, then by ``|wape_delta|`` descending,
+            capped at ``limit``. Never raises on an empty database.
+        """
+        today = datetime.now(UTC).date()
+
+        # FULL history — NOT DISTINCT ON. Ordered by (store, product, created_at)
+        # so itertools.groupby batches each grain in chronological order.
+        success_runs = (
+            (
+                await db.execute(
+                    select(ModelRun)
+                    .where(ModelRun.status == RunStatus.SUCCESS.value)
+                    .order_by(
+                        ModelRun.store_id,
+                        ModelRun.product_id,
+                        ModelRun.created_at,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        entries: list[ModelHealthEntry] = []
+        for (store_id, product_id), grain_iter in groupby(
+            success_runs, key=lambda run: (run.store_id, run.product_id)
+        ):
+            grain_runs = list(grain_iter)  # already chronological
+            history = [
+                WapePoint(
+                    run_id=run.run_id,
+                    created_at=run.created_at,
+                    wape=extract_wape(run.metrics),
+                )
+                for run in grain_runs
+            ]
+            direction, delta = classify_drift([point.wape for point in history])
+            numeric = [point.wape for point in history if point.wape is not None]
+            latest_run = grain_runs[-1]
+            entries.append(
+                ModelHealthEntry(
+                    store_id=store_id,
+                    product_id=product_id,
+                    run_count=len(grain_runs),
+                    latest_run_id=latest_run.run_id,
+                    latest_run_status=latest_run.status,
+                    latest_wape=(numeric[-1] if numeric else None),
+                    previous_wape=(numeric[-2] if len(numeric) > 1 else None),
+                    wape_delta=delta,
+                    drift_direction=direction,
+                    last_trained_at=latest_run.created_at,
+                    staleness_days=max((today - latest_run.data_window_end).days, 0),
+                    wape_history=history,
+                )
+            )
+
+        # Degrading grains first; within a tier, the largest WAPE move leads.
+        rank: dict[str, int] = {"degrading": 0, "improving": 1, "stable": 2, "unknown": 3}
+        entries.sort(key=lambda entry: (rank[entry.drift_direction], -abs(entry.wape_delta or 0.0)))
+
+        logger.info("ops.model_health_computed", grains=len(entries))
+
+        return ModelHealthResponse(
+            entries=entries[:limit],
+            total_evaluated=len(entries),
             generated_at=datetime.now(UTC),
         )
