@@ -312,6 +312,34 @@ export interface RetrieveResponse {
   total_chunks_searched: number
 }
 
+// Request for POST /rag/index/project-docs. All flags default to true
+// server-side (extra="forbid"), so the UI posts an empty {}.
+export interface IndexProjectDocsRequest {
+  include_docs?: boolean
+  include_prps?: boolean
+  include_root?: boolean
+}
+
+// One file's outcome in a project-docs index run.
+export interface ProjectDocResult {
+  source_path: string
+  status: 'indexed' | 'updated' | 'unchanged' | 'failed'
+  chunks_created: number
+  error: string | null
+}
+
+// Aggregate result of POST /rag/index/project-docs.
+export interface IndexProjectDocsResponse {
+  results: ProjectDocResult[]
+  total_files: number
+  indexed: number
+  updated: number
+  unchanged: number
+  failed: number
+  total_chunks: number
+  duration_ms: number
+}
+
 // === Agents WebSocket ===
 export type AgentEventType =
   | 'text_delta'

@@ -7,12 +7,14 @@ These tests require:
 Note: These tests mock the OpenAI embedding service to avoid API calls.
 """
 
+from functools import partial
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import AsyncClient
 
-from app.features.rag.embeddings import EmbeddingService
+from app.features.rag.embeddings import EmbeddingError, EmbeddingService
+from app.features.rag.service import RAGService
 
 # =============================================================================
 # Mock Embedding Service for Integration Tests
@@ -431,3 +433,135 @@ class TestOpenAPIIndexing:
         data = response.json()
         # Should have at least: info chunk + 2 endpoint chunks
         assert data["chunks_created"] >= 3
+
+
+# =============================================================================
+# Index Project Docs Endpoint Tests
+# =============================================================================
+
+
+@pytest.mark.integration
+class TestIndexProjectDocsEndpoint:
+    """Integration tests for POST /rag/index/project-docs endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_indexes_discovered_docs(self, client: AsyncClient, tmp_path):
+        """Test that discovered docs are indexed and re-runs are idempotent."""
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "PRPs").mkdir()
+        # Non-empty content; `test-` token so conftest cleanup catches the rows.
+        (tmp_path / "docs" / "test-proj-1.md").write_text(
+            "# Alpha\n\nAlpha content.", encoding="utf-8"
+        )
+        (tmp_path / "PRPs" / "test-proj-2.md").write_text(
+            "# Beta\n\nBeta content.", encoding="utf-8"
+        )
+        mock_service = create_mock_embedding_service()
+
+        with (
+            patch(
+                "app.features.rag.routes.RAGService",
+                partial(RAGService, base_dir=str(tmp_path)),
+            ),
+            patch(
+                "app.features.rag.service.get_embedding_service",
+                return_value=mock_service,
+            ),
+        ):
+            response1 = await client.post("/rag/index/project-docs", json={})
+            assert response1.status_code == 200
+            data1 = response1.json()
+            assert data1["total_files"] == 2
+            assert data1["indexed"] == 2
+            assert data1["failed"] == 0
+            assert data1["total_chunks"] >= 2
+
+            # Idempotent re-run — every file unchanged, no new chunks.
+            response2 = await client.post("/rag/index/project-docs", json={})
+            assert response2.status_code == 200
+            assert response2.json()["unchanged"] == 2
+
+    @pytest.mark.asyncio
+    async def test_empty_roots_returns_zero(self, client: AsyncClient, tmp_path):
+        """Test that an empty doc tree returns zero files without error."""
+        mock_service = create_mock_embedding_service()
+
+        with (
+            patch(
+                "app.features.rag.routes.RAGService",
+                partial(RAGService, base_dir=str(tmp_path)),
+            ),
+            patch(
+                "app.features.rag.service.get_embedding_service",
+                return_value=mock_service,
+            ),
+        ):
+            response = await client.post("/rag/index/project-docs", json={})
+
+        assert response.status_code == 200
+        assert response.json()["total_files"] == 0
+
+    @pytest.mark.asyncio
+    async def test_toggles_select_roots(self, client: AsyncClient, tmp_path):
+        """Test that include_* toggles restrict discovery."""
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "PRPs").mkdir()
+        (tmp_path / "docs" / "test-toggle-1.md").write_text(
+            "# Docs\n\nDocs content.", encoding="utf-8"
+        )
+        (tmp_path / "PRPs" / "test-toggle-2.md").write_text(
+            "# Prp\n\nPrp content.", encoding="utf-8"
+        )
+        mock_service = create_mock_embedding_service()
+
+        with (
+            patch(
+                "app.features.rag.routes.RAGService",
+                partial(RAGService, base_dir=str(tmp_path)),
+            ),
+            patch(
+                "app.features.rag.service.get_embedding_service",
+                return_value=mock_service,
+            ),
+        ):
+            response = await client.post(
+                "/rag/index/project-docs",
+                json={"include_prps": False, "include_root": False},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_files"] == 1
+        assert data["results"][0]["source_path"] == "docs/test-toggle-1.md"
+
+    @pytest.mark.asyncio
+    async def test_unknown_field_rejected(self, client: AsyncClient):
+        """Test that an unknown body field is rejected (extra='forbid')."""
+        response = await client.post("/rag/index/project-docs", json={"bogus": True})
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_embedding_failure_returns_502(self, client: AsyncClient, tmp_path):
+        """Test that an embedding-provider failure is batch-fatal (502)."""
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "docs" / "test-proj-3.md").write_text(
+            "# Gamma\n\nGamma content.", encoding="utf-8"
+        )
+        # Build a mock whose embed_texts raises — a MagicMock var (not the
+        # EmbeddingService-typed factory return) so mypy permits the assignment.
+        mock_service = MagicMock(spec=EmbeddingService)
+        mock_service.embed_texts = AsyncMock(side_effect=EmbeddingError("no key"))
+
+        with (
+            patch(
+                "app.features.rag.routes.RAGService",
+                partial(RAGService, base_dir=str(tmp_path)),
+            ),
+            patch(
+                "app.features.rag.service.get_embedding_service",
+                return_value=mock_service,
+            ),
+        ):
+            response = await client.post("/rag/index/project-docs", json={})
+
+        assert response.status_code == 502

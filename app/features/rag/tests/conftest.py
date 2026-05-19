@@ -41,9 +41,10 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
         finally:
-            # Clean up test data (delete sources with test- prefix)
+            # Clean up test data (delete sources whose path contains a test- token,
+            # including nested project-doc fixture paths like docs/test-*.md)
             test_source_ids = delete(DocumentSource).where(
-                DocumentSource.source_path.like("test-%")
+                DocumentSource.source_path.like("%test-%")
             )
             await session.execute(test_source_ids)
             await session.commit()
