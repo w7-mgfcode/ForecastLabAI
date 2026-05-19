@@ -578,3 +578,94 @@ export interface ProviderHealth {
   detail: string
   models: string[]
 }
+
+// =============================================================================
+// ForecastOps Control Center — GET /ops/summary, GET /ops/retraining-candidates
+// =============================================================================
+
+// Liveness snapshot for the Control Center header.
+export interface SystemHealth {
+  api_ok: boolean
+  database_connected: boolean
+  latest_successful_job_at: string | null
+}
+
+// One bucket of a status histogram.
+export interface StatusCount {
+  status: string
+  count: number
+}
+
+// Aggregated job-execution health.
+export interface JobHealth {
+  counts: StatusCount[]
+  completed_today: number
+  failed_total: number
+  active_total: number
+}
+
+// Aggregated model-run health.
+export interface RunHealth {
+  counts: StatusCount[]
+  success_rate: number | null
+  failed_total: number
+}
+
+// Deployment-alias health with a staleness verdict.
+export interface AliasHealth {
+  alias_name: string
+  run_id: string
+  run_status: string
+  model_type: string
+  store_id: number
+  product_id: number
+  is_stale: boolean
+  stale_reason: string | null
+  wape: number | null
+}
+
+// How current the underlying data and model state are.
+export interface DataFreshness {
+  latest_sales_date: string | null
+  latest_job_completed_at: string | null
+  latest_run_completed_at: string | null
+}
+
+// One entry in the "needs attention" list.
+export interface AttentionItem {
+  item_type: 'failed_job' | 'failed_run' | 'stale_alias'
+  entity_id: string
+  label: string
+  detail: string
+  occurred_at: string | null
+}
+
+// Aggregated operational summary — GET /ops/summary.
+export interface OpsSummaryResponse {
+  system: SystemHealth
+  jobs: JobHealth
+  runs: RunHealth
+  aliases: AliasHealth[]
+  freshness: DataFreshness
+  attention_items: AttentionItem[]
+  generated_at: string
+}
+
+// One (store, product) pair ranked for retraining.
+export interface RetrainingCandidate {
+  store_id: number
+  product_id: number
+  priority_score: number
+  staleness_days: number
+  wape: number | null
+  latest_run_id: string | null
+  latest_run_status: string | null
+  reason: string
+}
+
+// Ranked retraining-candidate queue — GET /ops/retraining-candidates.
+export interface RetrainingCandidatesResponse {
+  candidates: RetrainingCandidate[]
+  total_evaluated: number
+  generated_at: string
+}
