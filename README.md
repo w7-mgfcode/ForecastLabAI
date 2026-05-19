@@ -342,6 +342,7 @@ curl -X POST http://localhost:8123/forecasting/predict \
 - `moving_average` - Mean of last N observations
 - `regression` - Gradient-boosted exogenous-feature regressor (feature-aware)
 - `lightgbm` - LightGBM feature-aware regressor — opt-in: install the `ml-lightgbm` extra and set `forecast_enable_lightgbm=True`
+- `prophet_like` - Prophet-like additive linear model (trend / seasonality / regressor decomposition); pure scikit-learn, always available, no extra to install
 
 See [examples/models/](examples/models/) for baseline model examples.
 

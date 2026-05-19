@@ -166,6 +166,29 @@ A **feature-aware** model (`requires_features = True`) wrapping
 `forecast_enable_lightgbm=true`. It consumes the same canonical feature frame as
 `regression` — see [`feature_frame_contract.md`](feature_frame_contract.md).
 
+### ProphetLikeModelConfig
+
+```python
+{
+    "schema_version": "1.0",
+    "model_type": "prophet_like",
+    "alpha": 1.0    # 0.0-10000.0  (Ridge L2 regularization strength)
+}
+```
+
+A **feature-aware** model (`requires_features = True`) — a deterministic,
+regularized **additive linear** model (MLZOO-C2). It is a scikit-learn
+`Pipeline` of a `SimpleImputer(median)` + a `Ridge(solver="cholesky")` over the
+same canonical 14-column feature frame as `regression`. Unlike the tree models
+it ships **always-enabled**: pure scikit-learn, no optional extra, no feature
+flag. It exposes a model-specific `decompose()` method that splits any forecast
+into its additive trend / seasonality / holiday-regressor contributions.
+
+It is "Prophet-**like**", not Prophet: it approximates Prophet's additive shape
+with a linear model over engineered features. It does **not** add the real
+`prophet`/Stan dependency and does **not** model changepoint trend, posterior
+uncertainty intervals, or automatic seasonality discovery.
+
 ---
 
 ## Model Formulas
@@ -215,6 +238,30 @@ is `lightgbm.LGBMRegressor` — gradient-boosted leaf-wise trees. Feature-aware
 (`requires_features = True`), deterministic (`n_jobs=1`, `deterministic=True`,
 `force_col_wise=True`, fixed `random_state`), and NaN-tolerant. Optional —
 behind the `ml-lightgbm` extra and the `forecast_enable_lightgbm` flag.
+
+### Prophet-like Forecaster
+
+```
+ŷ[t+h] = intercept + trend[t+h] + seasonality[t+h] + holiday_regressor[t+h]
+```
+
+An **additive** linear forecast: a `Ridge` fit gives `ŷ = intercept + Σ coefᵢ·xᵢ`,
+and that sum is grouped into three Prophet-style components, each the partial
+sum over its columns of the canonical 14-column frame:
+
+| Component | Canonical columns |
+|-----------|-------------------|
+| `trend` | `lag_1`, `lag_7`, `lag_14`, `lag_28`, `days_since_launch` |
+| `seasonality` | `dow_sin`, `dow_cos`, `month_sin`, `month_cos`, `is_weekend`, `is_month_end` |
+| `holiday_regressor` | `price_factor`, `promo_active`, `is_holiday` |
+
+The three column sets partition all 14 columns exactly, so the **additive
+invariant** holds: `decompose(X)`'s four parts sum (within float tolerance) to
+`predict(...)`. Feature-aware (`requires_features = True`), deterministic
+(`Ridge(solver="cholesky")` closed-form, `SimpleImputer(median)`), and
+NaN-tolerant via the imputer. Pure scikit-learn — always available, no extra,
+no flag. The `decompose()` method (model-specific, not on `BaseForecaster`)
+returns the four-way breakdown.
 
 ---
 
