@@ -117,6 +117,40 @@ class TestBacktestingServiceRunModelBacktest:
             # But metrics should still be present
             assert fold.metrics is not None
 
+    def test_feature_aware_model_fails_loud_in_backtest(
+        self,
+        sample_dates_120: list[date],
+        sample_values_120: np.ndarray,
+        sample_split_config_expanding: SplitConfig,
+    ) -> None:
+        """A feature-aware model must fail LOUD in a backtest, never run silently.
+
+        The fold loop calls ``model.fit(y_train)`` target-only; a
+        ``RegressionForecaster`` (``requires_features=True``) raises ``ValueError``
+        there because no exogenous ``X`` was supplied. Feature-aware backtesting
+        is wired in PRP-MLZOO-B — until then this loud, non-leaky failure is the
+        contract (PRP-29 DECISIONS LOCKED #7).
+        """
+        from app.features.backtesting.splitter import TimeSeriesSplitter
+        from app.features.forecasting.schemas import RegressionModelConfig
+
+        service = BacktestingService()
+        series_data = SeriesData(
+            dates=sample_dates_120,
+            values=sample_values_120,
+            store_id=1,
+            product_id=1,
+        )
+        splitter = TimeSeriesSplitter(sample_split_config_expanding)
+
+        with pytest.raises(ValueError, match="requires exogenous features X"):
+            service._run_model_backtest(
+                series_data=series_data,
+                splitter=splitter,
+                model_config=RegressionModelConfig(),
+                store_fold_details=True,
+            )
+
 
 class TestBacktestingServiceBaselineComparisons:
     """Tests for baseline comparison functionality."""

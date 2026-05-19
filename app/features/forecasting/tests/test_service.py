@@ -344,3 +344,41 @@ class TestForecastingServiceTrain:
                 assert Path(response.model_path).exists()
                 assert response.n_observations == 30
                 assert response.model_type == "naive"
+
+
+class TestFeatureAwareContract:
+    """Tests for the feature-aware model contract (MLZOO-A / PRP-29)."""
+
+    def test_requires_features_flag(self):
+        """Baseline forecasters require no features; regression requires them."""
+        from app.features.forecasting.schemas import RegressionModelConfig
+
+        assert model_factory(NaiveModelConfig()).requires_features is False
+        assert model_factory(SeasonalNaiveModelConfig()).requires_features is False
+        assert model_factory(MovingAverageModelConfig()).requires_features is False
+        assert model_factory(RegressionModelConfig()).requires_features is True
+
+    def test_canonical_columns_match_regression_contract(self):
+        """The canonical column set is the exact 14-name regression contract.
+
+        Pins the contract after the local duplicated column-list constant
+        was deleted in favour of the shared single source of truth.
+        """
+        from app.shared.feature_frames import canonical_feature_columns
+
+        assert canonical_feature_columns() == [
+            "lag_1",
+            "lag_7",
+            "lag_14",
+            "lag_28",
+            "dow_sin",
+            "dow_cos",
+            "month_sin",
+            "month_cos",
+            "is_weekend",
+            "is_month_end",
+            "price_factor",
+            "promo_active",
+            "is_holiday",
+            "days_since_launch",
+        ]

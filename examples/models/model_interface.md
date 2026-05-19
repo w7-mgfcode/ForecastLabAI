@@ -86,6 +86,14 @@ Check if the model has been fitted.
 **Returns:**
 - `True` if `fit()` has been called successfully
 
+#### `requires_features: ClassVar[bool]`
+
+Class attribute — `True` when `fit()`/`predict()` REQUIRE a non-`None` `X`
+feature frame. Baseline (target-only) models leave it `False`; feature-aware
+models (e.g. the regression forecaster) override it to `True`. The forecasting
+service branches on this flag instead of an `isinstance` check or a
+`model_type` string comparison.
+
 ---
 
 ## Model Configurations
@@ -121,6 +129,24 @@ Each model type has a corresponding configuration schema:
 }
 ```
 
+### RegressionModelConfig
+
+```python
+{
+    "schema_version": "1.0",
+    "model_type": "regression",
+    "max_iter": 200,        # 10-1000  (boosting iterations)
+    "learning_rate": 0.05,  # 0.001-1.0
+    "max_depth": 6          # 1-20
+}
+```
+
+A **feature-aware** model (`requires_features = True`): it wraps scikit-learn's
+`HistGradientBoostingRegressor` and consumes a per-day exogenous feature frame.
+The feature-frame contract — the canonical column set, the historical vs future
+frame shapes, and the leakage taxonomy — is documented in
+[`feature_frame_contract.md`](feature_frame_contract.md).
+
 ---
 
 ## Model Formulas
@@ -148,6 +174,16 @@ Predicts the value from the same position in the previous seasonal cycle.
 ```
 
 Predicts the average of the last `window_size` observations.
+
+### Regression Forecaster
+
+```
+ŷ[t+h] = HistGradientBoostingRegressor.predict(X[t+h])
+```
+
+Predicts each horizon day from its exogenous feature row `X[t+h]` (target
+long-lags, calendar, and posited price/promotion inputs). Unlike the baselines
+it REQUIRES a feature frame — see [`feature_frame_contract.md`](feature_frame_contract.md).
 
 ---
 

@@ -1,8 +1,15 @@
-"""Leakage spec for the future feature frame — LOAD-BEARING (PRP-27 Phase A).
+"""Leakage spec for the scenarios future frame — LOAD-BEARING (PRP-27 Phase A).
 
 This file IS the spec, mirroring ``app/features/featuresets/tests/test_leakage.py``
 and ``app/features/scenarios/tests/test_leakage.py``: it must NEVER be weakened
 to make a feature pass (AGENTS.md § Safety).
+
+Its scope is the parts of the future frame the **scenarios slice** owns: the
+assumption-driven exogenous columns (``build_exogenous_columns``) and the
+end-to-end assembled frame (``assemble_future_frame``). The shared pure builders
+(``build_calendar_columns``, ``build_long_lag_columns``) moved to
+``app/shared/feature_frames`` in MLZOO-A and are spec'd by the load-bearing
+``app/shared/feature_frames/tests/test_leakage.py``.
 
 The model-driven scenario path re-forecasts demand through a feature-consuming
 regressor, which means it builds a *future feature frame*. A horizon day has no
@@ -16,15 +23,9 @@ observed target, so the invariant is:
 
 Concretely this spec asserts:
 
-1. ``build_long_lag_columns`` returns only values drawn from ``history_tail``
-   (entirely ``<= T``) or ``NaN`` — never a value from the future target
-   series.
-2. A lag cell whose source day lies at or after the first horizon day is
-   ``NaN`` — the generator never fabricates or recursively predicts it.
-3. Calendar columns are independent of the target series entirely.
-4. An assumption window that falls before the forecast origin contributes
+1. An assumption window that falls before the forecast origin contributes
    nothing — every horizon day lies strictly after ``T``.
-5. Every non-``NaN`` ``lag_*`` cell in an assembled frame is a member of
+2. Every non-``NaN`` ``lag_*`` cell in an assembled frame is a member of
    ``history_tail``.
 """
 
@@ -34,14 +35,11 @@ import math
 from datetime import date, timedelta
 
 from app.features.scenarios.feature_frame import (
-    EXOGENOUS_LAGS,
     assemble_future_frame,
-    build_calendar_columns,
     build_exogenous_columns,
-    build_long_lag_columns,
-    canonical_feature_columns,
 )
 from app.features.scenarios.schemas import PriceAssumption, ScenarioAssumptions
+from app.shared.feature_frames import EXOGENOUS_LAGS, canonical_feature_columns
 
 # The forecast origin T is the last observed day; the horizon runs T+1 … T+H.
 _ORIGIN = date(2026, 6, 30)
@@ -54,70 +52,6 @@ _HISTORY_TAIL = [1000.0 + float(i) for i in range(90)]
 # A DISJOINT "future target" series the generator must never be able to read.
 # Any of these values appearing in a feature cell is a leak.
 _FUTURE_TARGETS = {9000.0 + float(i) for i in range(_HORIZON)}
-
-
-def test_long_lag_columns_never_emit_a_future_target() -> None:
-    """Every non-NaN long-lag cell is drawn from the observed history.
-
-    ``build_long_lag_columns`` takes ONLY ``history_tail`` as data input — it
-    is structurally incapable of reading the future target series. This spec
-    pins that: no value disjoint from ``history_tail`` may ever appear.
-    """
-    history_values = set(_HISTORY_TAIL)
-    columns = build_long_lag_columns(_HISTORY_TAIL, _HORIZON)
-
-    for name, values in columns.items():
-        for cell in values:
-            if math.isnan(cell):
-                continue
-            assert cell in history_values, (
-                f"{name} emitted {cell}, which is not an observed history value"
-            )
-            assert cell not in _FUTURE_TARGETS, f"{name} leaked a future target value {cell}"
-
-
-def test_long_lag_source_index_is_never_at_or_after_the_horizon() -> None:
-    """A lag cell is populated only when its source day lies at/before ``T``.
-
-    For lag ``k`` and horizon day ``j`` the source index into ``history_tail``
-    is ``(j-1)-k``. A non-NaN cell REQUIRES that index to be negative — i.e.
-    the source target lies at or before the origin ``T``. A non-negative index
-    would point at a future horizon day and MUST yield ``NaN``.
-    """
-    columns = build_long_lag_columns(_HISTORY_TAIL, _HORIZON)
-    for lag in EXOGENOUS_LAGS:
-        column = columns[f"lag_{lag}"]
-        for j in range(1, _HORIZON + 1):
-            source_index = (j - 1) - lag
-            cell = column[j - 1]
-            if source_index >= 0:
-                assert math.isnan(cell), (
-                    f"lag_{lag} day {j}: source index {source_index} is in the "
-                    "future but the cell is not NaN"
-                )
-            else:
-                assert not math.isnan(cell), (
-                    f"lag_{lag} day {j}: source index {source_index} is in "
-                    "history but the cell is NaN"
-                )
-
-
-def test_calendar_columns_are_independent_of_the_target_series() -> None:
-    """Calendar columns read only the dates — they cannot leak the target.
-
-    ``build_calendar_columns`` does not accept the target series at all; this
-    spec pins that structural fact by asserting its output is identical no
-    matter what history precedes it.
-    """
-    calendar_a = build_calendar_columns(_HORIZON_DATES)
-    calendar_b = build_calendar_columns(_HORIZON_DATES)
-    assert calendar_a == calendar_b
-    # No calendar value coincides with a history or future target value.
-    history_values = set(_HISTORY_TAIL)
-    for values in calendar_a.values():
-        for cell in values:
-            assert cell not in history_values
-            assert cell not in _FUTURE_TARGETS
 
 
 def test_assumption_window_before_origin_has_no_effect() -> None:

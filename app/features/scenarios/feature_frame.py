@@ -17,33 +17,35 @@ target* — so this module is governed by one rule:
     It may NEVER read an observed target at a horizon day.
 
 ``app/features/scenarios/tests/test_future_frame_leakage.py`` is the
-load-bearing spec for that rule — it must never be weakened (AGENTS.md
-§ Safety), mirroring ``app/features/featuresets/tests/test_leakage.py``.
+load-bearing spec for the assumption-driven columns and the assembled frame; the
+shared pure builders are spec'd by
+``app/shared/feature_frames/tests/test_leakage.py``. Neither may be weakened
+(AGENTS.md § Safety), mirroring ``app/features/featuresets/tests/test_leakage.py``.
 
 DECISIONS LOCKED (PRP-27):
 * #3 — no cross-slice ``service.py`` import. This module imports only the
-  ``data_platform`` ORM (a sanctioned read-only ORM import) and same-slice
-  schema value-objects; it replicates the small slice of leakage-safe
-  lag/calendar logic it needs rather than importing
-  ``FeatureEngineeringService``.
+  ``data_platform`` ORM (a sanctioned read-only ORM import), the shared
+  feature-frame contract (``app/shared/feature_frames`` — a leaf-level
+  package, the allowed ``app/features -> app/shared`` direction), and
+  same-slice schema value-objects.
 * #4 — long-lag + calendar + assumption-driven columns ONLY; no recursion.
   A target lag value for horizon day ``T+j`` is the observed ``y[T+j-k]``;
   when ``T+j-k > T`` (a future target) the cell is ``NaN`` — the model
   (``HistGradientBoostingRegressor``) handles ``NaN`` natively. No recursion
   ever fills those gaps in v1.
-* #10/#11/#12 — the PINNED constants ``EXOGENOUS_LAGS``,
-  ``HISTORY_TAIL_DAYS`` and ``MAX_COMPARE_SCENARIOS`` live here.
+* #12 — ``MAX_COMPARE_SCENARIOS`` (the Phase-C comparison cap) lives here.
 
-Feature-column contract: ``canonical_feature_columns()`` is the single source
-of truth for the regression feature set and column order. The Phase B training
-path persists exactly this list in the bundle metadata, and the future frame
-reproduces it column-for-column, so a model trained today re-forecasts cleanly.
+Feature-column contract: ``app/shared/feature_frames`` is the single source of
+truth for the regression feature set, its column order, the pinned constants
+(``EXOGENOUS_LAGS``, ``HISTORY_TAIL_DAYS``), and the leakage-safe pure builders
+(``build_calendar_columns``, ``build_long_lag_columns``). This module imports —
+and re-exports, for back-compat — those names; it owns only the
+assumption-driven, DB-touching parts of the future frame.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
@@ -51,6 +53,16 @@ from sqlalchemy import select
 
 from app.core.logging import get_logger
 from app.features.data_platform.models import Calendar
+from app.shared.feature_frames import (
+    CALENDAR_COLUMNS,
+    EXOGENOUS_COLUMNS,
+    EXOGENOUS_LAGS,
+    HISTORY_TAIL_DAYS,
+    FutureFeatureFrame,
+    build_calendar_columns,
+    build_long_lag_columns,
+    canonical_feature_columns,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,72 +71,30 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# ── PINNED modelling constants (PRP-27 DECISIONS LOCKED #10/#11/#12) ──
-# Lag offsets (days) for the target long-lag columns: daily, weekly,
-# fortnightly, and a four-week lag covering the dominant retail seasonality.
-EXOGENOUS_LAGS: tuple[int, ...] = (1, 7, 14, 28)
-# Observed-target tail (days, ending at the forecast origin T) fed to the
-# generator — 90 comfortably exceeds the largest lag offset (28).
-HISTORY_TAIL_DAYS: int = 90
+# Public surface of this module. The first block is the future-frame contract
+# re-exported from ``app/shared/feature_frames`` so existing importers of this
+# module keep resolving (back-compat); listing them in ``__all__`` marks the
+# re-export as intentional for both ruff (F401) and pyright (reportUnusedImport).
+__all__ = [
+    "CALENDAR_COLUMNS",
+    "EXOGENOUS_COLUMNS",
+    "EXOGENOUS_LAGS",
+    "HISTORY_TAIL_DAYS",
+    "MAX_COMPARE_SCENARIOS",
+    "FutureFeatureFrame",
+    "assemble_future_frame",
+    "build_calendar_columns",
+    "build_exogenous_columns",
+    "build_future_frame",
+    "build_long_lag_columns",
+    "canonical_feature_columns",
+]
+
 # Upper bound on the multi-scenario comparison (Phase C) so the chart stays
-# legible; defined here as the slice's single modelling-constants home.
+# legible; defined here as the scenarios slice's single modelling-constants
+# home (PRP-27 DECISIONS LOCKED #12). NOT a feature-frame concept, so it stays
+# in this slice rather than moving to ``app/shared/feature_frames``.
 MAX_COMPARE_SCENARIOS: int = 5
-
-# Fixed calendar columns — each a pure function of the date, never a leak.
-CALENDAR_COLUMNS: tuple[str, ...] = (
-    "dow_sin",
-    "dow_cos",
-    "month_sin",
-    "month_cos",
-    "is_weekend",
-    "is_month_end",
-)
-# Fixed current-day exogenous columns — driven by the scenario assumptions
-# (the planner's posited future inputs) and by timeless attributes (the
-# calendar, the product launch date). Every value is knowable at origin T.
-EXOGENOUS_COLUMNS: tuple[str, ...] = (
-    "price_factor",
-    "promo_active",
-    "is_holiday",
-    "days_since_launch",
-)
-
-
-@dataclass
-class FutureFeatureFrame:
-    """A horizon-length feature matrix for one ``(store, product)`` series.
-
-    Attributes:
-        dates: The horizon days ``T+1 … T+horizon`` (chronological).
-        feature_columns: Column order — matches the trained bundle exactly.
-        matrix: Row-major ``[horizon][n_features]``; ``NaN`` is allowed and
-            expected (a long-lag cell whose source target lies in the future,
-            or ``days_since_launch`` when the product has no launch date).
-    """
-
-    dates: list[date]
-    feature_columns: list[str]
-    matrix: list[list[float]]
-
-
-def canonical_feature_columns(lags: tuple[int, ...] = EXOGENOUS_LAGS) -> list[str]:
-    """Return the fixed, ordered regression feature-column list.
-
-    This is the single source of truth for the regression feature set. The
-    Phase B training path persists exactly this list in the model bundle's
-    metadata; the future frame reproduces it column-for-column. The column
-    set is deliberately *fixed* (not horizon-dependent): for a long horizon
-    some target-lag columns are mostly ``NaN``, which the NaN-tolerant
-    estimator handles — far safer than a horizon-varying column set.
-
-    Args:
-        lags: Target long-lag offsets (defaults to the pinned ``EXOGENOUS_LAGS``).
-
-    Returns:
-        Ordered column names: target lags, then calendar, then exogenous.
-    """
-    target_lags = [f"lag_{k}" for k in lags]
-    return [*target_lags, *CALENDAR_COLUMNS, *EXOGENOUS_COLUMNS]
 
 
 def _in_window(point_date: date, start: date, end: date) -> bool:
@@ -136,84 +106,6 @@ def _in_window(point_date: date, start: date, end: date) -> bool:
     """
     lo, hi = (start, end) if start <= end else (end, start)
     return lo <= point_date <= hi
-
-
-def _is_month_end(point_date: date) -> bool:
-    """True when ``point_date`` is the last day of its month."""
-    return (point_date + timedelta(days=1)).month != point_date.month
-
-
-def build_calendar_columns(dates: list[date]) -> dict[str, list[float]]:
-    """Build the calendar feature columns — a pure function of each date.
-
-    Calendar features carry zero leakage risk: they read only the date
-    itself, never the target series. Day-of-week and month use cyclical
-    (sin/cos) encoding so the estimator sees their periodic structure.
-
-    Args:
-        dates: The horizon days.
-
-    Returns:
-        A mapping of every name in :data:`CALENDAR_COLUMNS` to its per-day
-        values.
-    """
-    columns: dict[str, list[float]] = {name: [] for name in CALENDAR_COLUMNS}
-    for point_date in dates:
-        dow = point_date.weekday()  # 0 = Monday … 6 = Sunday
-        month = point_date.month
-        columns["dow_sin"].append(math.sin(2.0 * math.pi * dow / 7.0))
-        columns["dow_cos"].append(math.cos(2.0 * math.pi * dow / 7.0))
-        columns["month_sin"].append(math.sin(2.0 * math.pi * month / 12.0))
-        columns["month_cos"].append(math.cos(2.0 * math.pi * month / 12.0))
-        columns["is_weekend"].append(1.0 if dow >= 5 else 0.0)
-        columns["is_month_end"].append(1.0 if _is_month_end(point_date) else 0.0)
-    return columns
-
-
-def build_long_lag_columns(
-    history_tail: list[float],
-    horizon: int,
-    lags: tuple[int, ...] = EXOGENOUS_LAGS,
-) -> dict[str, list[float]]:
-    """Build the target long-lag columns — the leakage-critical helper.
-
-    ``history_tail`` is the observed target series ending at the forecast
-    origin ``T``: ``history_tail[-1] == y[T]``, ``history_tail[-2] == y[T-1]``,
-    and so on. The lag-``k`` column at horizon day ``T+j`` (``j`` in
-    ``1 … horizon``) is the observed target ``y[T+j-k]``.
-
-    SAFETY (PRP-27 DECISIONS LOCKED #4): the source index into
-    ``history_tail`` is ``idx = (j - 1) - k``. The cell is populated **only
-    when ``idx < 0``** — i.e. the source day ``T+j-k`` lies at or before the
-    origin ``T`` and therefore inside ``history_tail``. When ``idx >= 0`` the
-    source day is a *future* horizon day with no observed target, so the cell
-    is ``NaN`` — never a recursive prediction, never a fabricated value. This
-    function structurally **cannot** read a future target: its only data
-    input is ``history_tail`` (entirely ``<= T``).
-
-    Args:
-        history_tail: Observed target values ending at the origin ``T``.
-        horizon: Number of horizon days.
-        lags: Lag offsets (defaults to the pinned ``EXOGENOUS_LAGS``).
-
-    Returns:
-        A mapping ``"lag_{k}" -> [horizon values]``; out-of-range cells are
-        ``NaN``.
-    """
-    tail_len = len(history_tail)
-    columns: dict[str, list[float]] = {}
-    for lag in lags:
-        column: list[float] = []
-        for j in range(1, horizon + 1):
-            # Negative index from the end of history_tail. idx < 0 means the
-            # source day T+j-k is at/before the origin T — safe to read.
-            idx = (j - 1) - lag
-            if idx < 0 and -tail_len <= idx:
-                column.append(float(history_tail[idx]))
-            else:
-                column.append(math.nan)
-        columns[f"lag_{lag}"] = column
-    return columns
 
 
 def build_exogenous_columns(

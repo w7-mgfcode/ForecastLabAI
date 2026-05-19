@@ -14,7 +14,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import date as date_type
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
 from sklearn.ensemble import (  # type: ignore[import-untyped]
@@ -57,6 +57,16 @@ class BaseForecaster(ABC):
 
     Attributes:
         random_state: Random seed for reproducibility.
+        requires_features: True when ``fit``/``predict`` require a non-None
+            ``X`` feature frame; baseline (target-only) models leave it False.
+    """
+
+    requires_features: ClassVar[bool] = False
+    """True when ``fit()``/``predict()`` REQUIRE a non-None ``X`` feature frame.
+
+    Baseline (target-only) models leave this ``False``; feature-aware models
+    override it to ``True``. ``ForecastingService`` branches on this flag
+    rather than an ``isinstance`` check or a ``model_type`` string comparison.
     """
 
     def __init__(self, random_state: int = 42) -> None:
@@ -444,6 +454,9 @@ class RegressionForecaster(BaseForecaster):
         learning_rate: Gradient-boosting learning rate.
         max_depth: Maximum depth of each tree.
     """
+
+    requires_features: ClassVar[bool] = True
+    """A feature-aware model — ``fit``/``predict`` REQUIRE a non-None ``X``."""
 
     def __init__(
         self,
