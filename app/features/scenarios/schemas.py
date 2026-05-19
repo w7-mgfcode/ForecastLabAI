@@ -212,6 +212,48 @@ class CreateScenarioRequest(BaseModel):
     )
 
 
+class SaveScenarioRequest(BaseModel):
+    """What the ``save_scenario`` agent tool persists once HITL-approved.
+
+    Unlike ``CreateScenarioRequest`` this carries ``store_id`` / ``product_id``
+    explicitly — the agent proposed the scenario for a known grain, so the
+    identity travels with the request rather than being re-derived. The
+    persisted ``scenario_plan`` row is stamped ``source='agent'`` plus the
+    originating ``agent_session_id`` (PRP-27 Phase D, DECISIONS LOCKED #13).
+    """
+
+    model_config = ConfigDict(strict=True)
+
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="Human-readable name for the saved plan.",
+    )
+    assumptions: ScenarioAssumptions = Field(
+        ...,
+        description="The what-if assumptions the agent proposed.",
+    )
+    store_id: int = Field(..., ge=1, description="Store the proposed scenario targets.")
+    product_id: int = Field(..., ge=1, description="Product the proposed scenario targets.")
+    horizon: int = Field(..., ge=1, le=90, description="Number of days to simulate.")
+    run_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        description="Artifact key of the baseline model.",
+    )
+    source: Literal["user", "agent"] = Field(
+        default="agent",
+        description="Provenance of the plan — an agent save defaults to 'agent'.",
+    )
+    agent_session_id: str | None = Field(
+        default=None,
+        max_length=32,
+        description="The originating agent session id, when agent-created.",
+    )
+
+
 # =============================================================================
 # Response models
 # =============================================================================
@@ -297,11 +339,22 @@ class ScenarioPlanResponse(BaseModel):
     comparison: ScenarioComparison = Field(
         ..., description="The full baseline-vs-scenario snapshot, re-rendered without recompute."
     )
-    tags: list[str] = Field(
-        default_factory=list, description="Library tags attached to the plan."
-    )
+    tags: list[str] = Field(default_factory=list, description="Library tags attached to the plan.")
     cloned_from: str | None = Field(
         default=None, description="scenario_id this plan was cloned from, if any."
+    )
+    source: str = Field(default="user", description="Who created the plan — 'user' or 'agent'.")
+    agent_session_id: str | None = Field(
+        default=None, description="Originating agent session id, when agent-created."
+    )
+    approved_by: str | None = Field(
+        default=None, description="Who approved an agent-created plan, if any."
+    )
+    approved_at: datetime | None = Field(
+        default=None, description="When an agent-created plan was approved (UTC)."
+    )
+    approval_decision: str | None = Field(
+        default=None, description="The HITL decision — 'approved' or 'rejected'."
     )
 
 
@@ -318,8 +371,19 @@ class ScenarioListItem(BaseModel):
     units_delta: float = Field(..., description="Summed scenario-minus-baseline demand.")
     revenue_delta: float = Field(..., description="Scenario-minus-baseline revenue.")
     created_at: datetime = Field(..., description="When the plan was saved (UTC).")
-    tags: list[str] = Field(
-        default_factory=list, description="Library tags attached to the plan."
+    tags: list[str] = Field(default_factory=list, description="Library tags attached to the plan.")
+    source: str = Field(default="user", description="Who created the plan — 'user' or 'agent'.")
+    agent_session_id: str | None = Field(
+        default=None, description="Originating agent session id, when agent-created."
+    )
+    approved_by: str | None = Field(
+        default=None, description="Who approved an agent-created plan, if any."
+    )
+    approved_at: datetime | None = Field(
+        default=None, description="When an agent-created plan was approved (UTC)."
+    )
+    approval_decision: str | None = Field(
+        default=None, description="The HITL decision — 'approved' or 'rejected'."
     )
 
 

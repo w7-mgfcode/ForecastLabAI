@@ -34,7 +34,7 @@ from app.features.data_platform.models import SalesDaily
 from app.features.forecasting.persistence import ModelBundle, load_model_bundle
 from app.features.scenarios import adjustments
 from app.features.scenarios.feature_frame import build_future_frame
-from app.features.scenarios.models import ScenarioPlan
+from app.features.scenarios.models import SCENARIO_SOURCE_USER, ScenarioPlan
 from app.features.scenarios.schemas import (
     CompareScenariosRequest,
     CreateScenarioRequest,
@@ -325,13 +325,30 @@ class ScenarioService:
     # -- Persistence -------------------------------------------------------
 
     async def create_plan(
-        self, db: AsyncSession, request: CreateScenarioRequest
+        self,
+        db: AsyncSession,
+        request: CreateScenarioRequest,
+        *,
+        source: str = SCENARIO_SOURCE_USER,
+        agent_session_id: str | None = None,
+        approved_by: str | None = None,
+        approval_decision: str | None = None,
     ) -> ScenarioPlanResponse:
         """Run a simulation and persist it as a named scenario plan.
+
+        The provenance keyword arguments default to a plain user-created plan,
+        so the MVP create path stays backward-compatible. An agent-saved plan
+        (PRP-27 Phase D) passes ``source='agent'`` plus the originating
+        ``agent_session_id`` and the HITL approval audit trail; ``approved_at``
+        is stamped automatically whenever ``approval_decision`` is supplied.
 
         Args:
             db: Database session.
             request: Plan name plus the baseline / horizon / assumptions.
+            source: Who created the plan — 'user' (default) or 'agent'.
+            agent_session_id: Originating agent session id, when agent-created.
+            approved_by: Who approved an agent-created plan, if any.
+            approval_decision: The HITL decision — 'approved' or 'rejected'.
 
         Returns:
             The saved plan with its embedded comparison snapshot.
@@ -350,6 +367,10 @@ class ScenarioService:
             ),
         )
 
+        # An approval decision implies an approval moment — stamp it here so
+        # callers never have to thread a timestamp through.
+        approved_at = datetime.now(UTC) if approval_decision is not None else None
+
         plan = ScenarioPlan(
             scenario_id=uuid.uuid4().hex,
             name=request.name,
@@ -365,6 +386,11 @@ class ScenarioService:
             method=comparison.method,
             tags=list(request.tags),
             cloned_from=request.cloned_from,
+            source=source,
+            agent_session_id=agent_session_id,
+            approved_by=approved_by,
+            approved_at=approved_at,
+            approval_decision=approval_decision,
         )
         db.add(plan)
         await db.commit()
@@ -375,6 +401,8 @@ class ScenarioService:
             scenario_id=plan.scenario_id,
             store_id=plan.store_id,
             product_id=plan.product_id,
+            source=source,
+            agent_session_id=agent_session_id,
         )
         return self._to_plan_response(plan)
 
@@ -599,6 +627,11 @@ class ScenarioService:
             comparison=ScenarioComparison.model_validate(plan.comparison),
             tags=list(plan.tags),
             cloned_from=plan.cloned_from,
+            source=plan.source,
+            agent_session_id=plan.agent_session_id,
+            approved_by=plan.approved_by,
+            approved_at=plan.approved_at,
+            approval_decision=plan.approval_decision,
         )
 
     @staticmethod
@@ -614,4 +647,9 @@ class ScenarioService:
             revenue_delta=float(plan.comparison.get("revenue_delta", 0.0)),
             created_at=plan.created_at,
             tags=list(plan.tags),
+            source=plan.source,
+            agent_session_id=plan.agent_session_id,
+            approved_by=plan.approved_by,
+            approved_at=plan.approved_at,
+            approval_decision=plan.approval_decision,
         )

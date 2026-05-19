@@ -12,9 +12,10 @@ JSONB columns are therefore named ``assumptions`` and ``comparison``.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, Index, Integer, String, text
+from sqlalchemy import CheckConstraint, DateTime, Index, Integer, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,6 +27,10 @@ from app.shared.models import TimestampMixin
 # feature-consuming regression model.
 SCENARIO_METHOD_HEURISTIC = "heuristic"
 SCENARIO_METHOD_MODEL_EXOGENOUS = "model_exogenous"
+
+# Provenance — who or what created a scenario plan (PRP-27 Phase D).
+SCENARIO_SOURCE_USER = "user"
+SCENARIO_SOURCE_AGENT = "agent"
 
 
 class ScenarioPlan(TimestampMixin, Base):
@@ -71,6 +76,17 @@ class ScenarioPlan(TimestampMixin, Base):
     )
     cloned_from: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
+    # Provenance + approval-audit columns (PRP-27 Phase D). ``source`` defaults
+    # to 'user'; an agent-saved plan carries 'agent' plus the originating
+    # session id and the human approval audit trail.
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=SCENARIO_SOURCE_USER, server_default=text("'user'")
+    )
+    agent_session_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    approval_decision: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
     __table_args__ = (
         # GIN indexes for JSONB containment queries on either blob.
         Index("ix_scenario_plan_assumptions_gin", "assumptions", postgresql_using="gin"),
@@ -79,10 +95,22 @@ class ScenarioPlan(TimestampMixin, Base):
         Index("ix_scenario_plan_store_product", "store_id", "product_id"),
         # GIN index so the saved-plans list can filter by tag containment.
         Index("ix_scenario_plan_tags_gin", "tags", postgresql_using="gin"),
+        # Index on source for the "show me agent-proposed plans" query.
+        Index("ix_scenario_plan_source", "source"),
         # heuristic (MVP) or model_exogenous (PRP-27) — kept in lock-step with
         # the alembic migration that widened this CHECK.
         CheckConstraint(
             "method IN ('heuristic', 'model_exogenous')",
             name="ck_scenario_plan_method",
+        ),
+        # Provenance + approval-audit CHECKs — kept in lock-step with the
+        # alembic migration that added these columns.
+        CheckConstraint(
+            "source IN ('user', 'agent')",
+            name="ck_scenario_plan_source",
+        ),
+        CheckConstraint(
+            "approval_decision IS NULL OR approval_decision IN ('approved', 'rejected')",
+            name="ck_scenario_plan_approval_decision",
         ),
     )
