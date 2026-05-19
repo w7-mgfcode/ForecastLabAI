@@ -116,7 +116,9 @@ def create_app() -> FastAPI:
             r"localhost|127\.0\.0\.1|"
             r"10\.\d+\.\d+\.\d+|"
             r"192\.168\.\d+\.\d+|"
-            r"172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+"
+            r"172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+|"
+            # Tailscale CGNAT range (100.64.0.0/10) — dev-only remote access
+            r"100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+"
             r")(:\d+)?$"
             if settings.is_development
             else None
