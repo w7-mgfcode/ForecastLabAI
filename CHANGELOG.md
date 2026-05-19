@@ -1,5 +1,65 @@
 # Changelog
 
+## [0.2.15](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.14...v0.2.15) (2026-05-19)
+
+
+### Features
+
+* **agents:** add agent-proposed and hitl-gated save scenario tools ([#223](https://github.com/w7-mgfcode/ForecastLabAI/issues/223)) ([9245c92](https://github.com/w7-mgfcode/ForecastLabAI/commit/9245c92d0154eb8b1e4ea0feae10ea9e7f60b5e5))
+* **api,db:** add model-driven scenario simulation path ([#223](https://github.com/w7-mgfcode/ForecastLabAI/issues/223)) ([69b707a](https://github.com/w7-mgfcode/ForecastLabAI/commit/69b707ab33318336be483336c0feb8d4c6b36d98))
+* **api,db:** add scenario library and multi-scenario comparison ([#223](https://github.com/w7-mgfcode/ForecastLabAI/issues/223)) ([75446ee](https://github.com/w7-mgfcode/ForecastLabAI/commit/75446ee9205f01eb778e8688952b65c12ace04ff))
+* **api,db:** add scenario provenance and audit columns ([#223](https://github.com/w7-mgfcode/ForecastLabAI/issues/223)) ([64c16ef](https://github.com/w7-mgfcode/ForecastLabAI/commit/64c16efee38de88f9c6375c20af0c72eb3724232))
+* **api,db:** add scenario simulation slice with what-if endpoints ([#221](https://github.com/w7-mgfcode/ForecastLabAI/issues/221)) ([e3db2e7](https://github.com/w7-mgfcode/ForecastLabAI/commit/e3db2e76e23dcfef10668729df96424ca60cd37f))
+* **api,ui:** add forecast explainability & driver attribution slice ([#224](https://github.com/w7-mgfcode/ForecastLabAI/issues/224)) ([e82d9e0](https://github.com/w7-mgfcode/ForecastLabAI/commit/e82d9e0d781230ffc763374943d3df2fe42d1c5c))
+* **api,ui:** add forecastops control center slice and page ([#217](https://github.com/w7-mgfcode/ForecastLabAI/issues/217)) ([04841d0](https://github.com/w7-mgfcode/ForecastLabAI/commit/04841d045b61a51e390ec37338268a7f9a87ca59))
+* **api,ui:** add ops control center model health, export, and actions ([#219](https://github.com/w7-mgfcode/ForecastLabAI/issues/219)) ([9173163](https://github.com/w7-mgfcode/ForecastLabAI/commit/91731631d7027553b08c0edb0d126414531ab794))
+* **api,ui:** forecast explainability & driver attribution slice ([#224](https://github.com/w7-mgfcode/ForecastLabAI/issues/224)) ([af1a5be](https://github.com/w7-mgfcode/ForecastLabAI/commit/af1a5beee5ee8f392bfe39205a83b4e078f112bb))
+* **api,ui:** ForecastOps Control Center — read-only ops slice + /ops page ([aac7735](https://github.com/w7-mgfcode/ForecastLabAI/commit/aac773537cf94c03039a6f3243204e8fb395bbde))
+* **api:** add leakage-safe future feature-frame generator ([#223](https://github.com/w7-mgfcode/ForecastLabAI/issues/223)) ([4036f1c](https://github.com/w7-mgfcode/ForecastLabAI/commit/4036f1cc98db9b580fef98d9cf66e3a9a4a7bd57))
+* **api:** key scenario compare chart series by scenario_id ([#223](https://github.com/w7-mgfcode/ForecastLabAI/issues/223)) ([1a1c84a](https://github.com/w7-mgfcode/ForecastLabAI/commit/1a1c84af9d11a7b921fa188fb91eec52e0f911fa))
+* **forecast:** add exogenous-regressor forecaster and regression training path ([#223](https://github.com/w7-mgfcode/ForecastLabAI/issues/223)) ([b0e4b9d](https://github.com/w7-mgfcode/ForecastLabAI/commit/b0e4b9d2f30c1e0853c2496c02c504d93d739399))
+* ForecastOps Control Center — Full Version (model health, incident export, action layer) ([1f65ffc](https://github.com/w7-mgfcode/ForecastLabAI/commit/1f65ffcc3320392571e80ec93f2cc08117d585d5))
+* **rag,ui:** index bundled project docs into the RAG corpus ([#214](https://github.com/w7-mgfcode/ForecastLabAI/issues/214)) ([4b1d56b](https://github.com/w7-mgfcode/ForecastLabAI/commit/4b1d56b71db07377976b4654c8321e0bab98b231))
+* **rag,ui:** index bundled project docs into the RAG corpus ([#214](https://github.com/w7-mgfcode/ForecastLabAI/issues/214)) ([5d8a804](https://github.com/w7-mgfcode/ForecastLabAI/commit/5d8a8047503787d4b76238456c732e21b312528e))
+* **release:** cut v0.2.15 for explainability, scenario simulation & ops control center ([#232](https://github.com/w7-mgfcode/ForecastLabAI/issues/232)) ([aa9babf](https://github.com/w7-mgfcode/ForecastLabAI/commit/aa9babfd36dc9160ba5aceba709353a886ed7aee))
+* Scenario Simulation / What-If Planning (MVP) — new scenarios slice ([#221](https://github.com/w7-mgfcode/ForecastLabAI/issues/221)) ([9a5f8c1](https://github.com/w7-mgfcode/ForecastLabAI/commit/9a5f8c114de99c6a779a1da7cb85b4753077d9f9))
+* scenario simulation what-if planning full version ([#223](https://github.com/w7-mgfcode/ForecastLabAI/issues/223)) ([5467a20](https://github.com/w7-mgfcode/ForecastLabAI/commit/5467a20b5e4a76bffccf26373b3d9514bce8767a))
+* **ui:** add what-if planner multi-scenario comparison view ([#223](https://github.com/w7-mgfcode/ForecastLabAI/issues/223)) ([b2bd480](https://github.com/w7-mgfcode/ForecastLabAI/commit/b2bd4809e58d5e54089e629e92d89ace485cfea1))
+* **ui:** add what-if planner page and scenario data layer ([#221](https://github.com/w7-mgfcode/ForecastLabAI/issues/221)) ([19492a9](https://github.com/w7-mgfcode/ForecastLabAI/commit/19492a91b2849c0987cc586f318e9bc2396f1a2e))
+* **ui:** redesign light and dark theme for cohesion and accessibility ([#210](https://github.com/w7-mgfcode/ForecastLabAI/issues/210)) ([fb5e70c](https://github.com/w7-mgfcode/ForecastLabAI/commit/fb5e70c3fb9c60711af449532c672e3cca2cbb41))
+* **ui:** redesign light and dark theme for cohesion and accessibility ([#210](https://github.com/w7-mgfcode/ForecastLabAI/issues/210)) ([0c37a07](https://github.com/w7-mgfcode/ForecastLabAI/commit/0c37a07922d417547dbde8dfba8d2ed13ebb6dc9))
+
+
+### Bug Fixes
+
+* address CodeRabbit findings from the v0.2.14 release review ([#205](https://github.com/w7-mgfcode/ForecastLabAI/issues/205)) ([2045811](https://github.com/w7-mgfcode/ForecastLabAI/commit/2045811181bbe6bcce2c3999f19a6634a7a6b28e))
+* **analytics:** return RFC 7807 envelope on date-range errors and clamp id params ([#205](https://github.com/w7-mgfcode/ForecastLabAI/issues/205)) ([dfddd4f](https://github.com/w7-mgfcode/ForecastLabAI/commit/dfddd4ffd7e82b0bee91160ee791843e10b34e1a))
+* **api:** add deterministic tie-breaker to paginated list endpoints ([#205](https://github.com/w7-mgfcode/ForecastLabAI/issues/205)) ([d3624d1](https://github.com/w7-mgfcode/ForecastLabAI/commit/d3624d1b43fba78d17bbba5e4de056300a152ad3))
+* **data:** anchor run_demo seed window to the shared end-date helper ([#205](https://github.com/w7-mgfcode/ForecastLabAI/issues/205)) ([35d4ad5](https://github.com/w7-mgfcode/ForecastLabAI/commit/35d4ad549347817af2721583266246107bd8288e))
+* **db:** register scenario_plan model in alembic env for drift check ([#221](https://github.com/w7-mgfcode/ForecastLabAI/issues/221)) ([9e7a9e1](https://github.com/w7-mgfcode/ForecastLabAI/commit/9e7a9e1e6a25c800d48f43c1fe6fd5ad71cf4697))
+* **ui:** add keyboard accessibility to clickable rows and sort headers ([#205](https://github.com/w7-mgfcode/ForecastLabAI/issues/205)) ([e2b8512](https://github.com/w7-mgfcode/ForecastLabAI/commit/e2b85120c9c4ccc0cd410888320ddc1f72ea9b4d))
+* **ui:** correct demand-planner reorder rounding and inventory selection ([#205](https://github.com/w7-mgfcode/ForecastLabAI/issues/205)) ([fcf1fa5](https://github.com/w7-mgfcode/ForecastLabAI/commit/fcf1fa527206aa7fc7507bae5fe447566dad21ec))
+* **ui:** handle job-cancel promise rejection with a toast ([#205](https://github.com/w7-mgfcode/ForecastLabAI/issues/205)) ([12bd28b](https://github.com/w7-mgfcode/ForecastLabAI/commit/12bd28b1b79e7d51ce4c72cb88628649c08c091b))
+* **ui:** harden visualize pages and hooks barrel from review ([#205](https://github.com/w7-mgfcode/ForecastLabAI/issues/205)) ([5671bc3](https://github.com/w7-mgfcode/ForecastLabAI/commit/5671bc34d56fe8b8e4ec8f2f373e1f186b75b6e6))
+* **ui:** neutralize CSV formula injection in export ([#205](https://github.com/w7-mgfcode/ForecastLabAI/issues/205)) ([b27c047](https://github.com/w7-mgfcode/ForecastLabAI/commit/b27c0476b338f897ee6f40b658c0e81536f48f2a))
+* **ui:** parse application/problem+json error bodies ([#230](https://github.com/w7-mgfcode/ForecastLabAI/issues/230)) ([4f23f68](https://github.com/w7-mgfcode/ForecastLabAI/commit/4f23f687143c6491d859ef1a09791bc6fa2a426c))
+* **ui:** use inline style for dynamic chart height ([#205](https://github.com/w7-mgfcode/ForecastLabAI/issues/205)) ([0f25c01](https://github.com/w7-mgfcode/ForecastLabAI/commit/0f25c01ce36c00e515c36e1c1b959d9007eb01c1))
+* **ui:** validate explorer URL query params ([#205](https://github.com/w7-mgfcode/ForecastLabAI/issues/205)) ([875307c](https://github.com/w7-mgfcode/ForecastLabAI/commit/875307cf6a3e863437af1c2bf20cb47ca71c9b9a))
+
+
+### Documentation
+
+* add forecastlab user-facing guides ([#216](https://github.com/w7-mgfcode/ForecastLabAI/issues/216)) ([c2c37b6](https://github.com/w7-mgfcode/ForecastLabAI/commit/c2c37b6e8524c122a2a95d315d23f3df3cfa79d5))
+* add PRP-24 forecastops control center plan ([#217](https://github.com/w7-mgfcode/ForecastLabAI/issues/217)) ([c71d786](https://github.com/w7-mgfcode/ForecastLabAI/commit/c71d78638fbcc81ec2e2f6485032b1a064f06675))
+* add PRP-25 forecastops control center full plan ([#219](https://github.com/w7-mgfcode/ForecastLabAI/issues/219)) ([df30ded](https://github.com/w7-mgfcode/ForecastLabAI/commit/df30ded40ad4bcad5dbe1438b97d1822d3f30f5c))
+* add PRP-26 scenario simulation what-if planning ([#221](https://github.com/w7-mgfcode/ForecastLabAI/issues/221)) ([b65d713](https://github.com/w7-mgfcode/ForecastLabAI/commit/b65d7131390d87e34396fd7893521a1505496e76))
+* add PRP-27 scenario simulation full version ([#223](https://github.com/w7-mgfcode/ForecastLabAI/issues/223)) ([95ab5ea](https://github.com/w7-mgfcode/ForecastLabAI/commit/95ab5eaefc444269117a01e0afed670b5ce0ad31))
+* add PRP-27 scenario simulation full version ([#223](https://github.com/w7-mgfcode/ForecastLabAI/issues/223)) ([c863485](https://github.com/w7-mgfcode/ForecastLabAI/commit/c863485f3f47972864e5692ecb3c3c113eca3a23))
+* add PRP-28 forecast explainability driver attribution ([#224](https://github.com/w7-mgfcode/ForecastLabAI/issues/224)) ([a756bc8](https://github.com/w7-mgfcode/ForecastLabAI/commit/a756bc80699fe0c15e8bdd709c20c171f27e38ea))
+* add PRP-28 forecast explainability driver attribution ([#224](https://github.com/w7-mgfcode/ForecastLabAI/issues/224)) ([023e044](https://github.com/w7-mgfcode/ForecastLabAI/commit/023e044bac37909eebf9812223966eae7fdfc816))
+* **docs:** document model-driven scenarios, library, and agent tools ([#223](https://github.com/w7-mgfcode/ForecastLabAI/issues/223)) ([3f87ec1](https://github.com/w7-mgfcode/ForecastLabAI/commit/3f87ec1737164bc0996f3dd3af0d703d61e23d43))
+* **docs:** document scenario simulation slice and planner page ([#221](https://github.com/w7-mgfcode/ForecastLabAI/issues/221)) ([74e1544](https://github.com/w7-mgfcode/ForecastLabAI/commit/74e154451befcb87ab5cf4da702ec214b676588f))
+
 ## [0.2.14](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.13...v0.2.14) (2026-05-18)
 
 
