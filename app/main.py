@@ -24,6 +24,7 @@ from app.features.featuresets.routes import router as featuresets_router
 from app.features.forecasting.routes import router as forecasting_router
 from app.features.ingest.routes import router as ingest_router
 from app.features.jobs.routes import router as jobs_router
+from app.features.ops.routes import router as ops_router
 from app.features.rag.routes import router as rag_router
 from app.features.registry.routes import router as registry_router
 from app.features.seeder.routes import router as seeder_router
@@ -131,6 +132,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(dimensions_router)
     app.include_router(analytics_router)
+    app.include_router(ops_router)
     app.include_router(jobs_router)
     app.include_router(ingest_router)
     app.include_router(featuresets_router)

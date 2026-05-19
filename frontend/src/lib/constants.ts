@@ -2,6 +2,7 @@
 export const ROUTES = {
   DASHBOARD: '/',
   SHOWCASE: '/showcase',
+  OPS: '/ops',
   EXPLORER: {
     SALES: '/explorer/sales',
     STORES: '/explorer/stores',
@@ -33,6 +34,7 @@ export const ROUTES = {
 export const NAV_ITEMS = [
   { label: 'Dashboard', href: ROUTES.DASHBOARD },
   { label: 'Showcase', href: ROUTES.SHOWCASE },
+  { label: 'Control Center', href: ROUTES.OPS },
   {
     label: 'Explorer',
     items: [
