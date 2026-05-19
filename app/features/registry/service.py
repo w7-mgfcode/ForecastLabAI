@@ -128,6 +128,14 @@ class RegistryService:
         except ImportError:
             pass
 
+        # XGBoost is an optional dependency — only recorded when installed.
+        try:
+            import xgboost
+
+            runtime_info["xgboost_version"] = xgboost.__version__
+        except ImportError:
+            pass
+
         return runtime_info
 
     def _compute_config_hash(self, config: dict[str, Any]) -> str:

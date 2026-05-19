@@ -166,6 +166,25 @@ A **feature-aware** model (`requires_features = True`) wrapping
 `forecast_enable_lightgbm=true`. It consumes the same canonical feature frame as
 `regression` — see [`feature_frame_contract.md`](feature_frame_contract.md).
 
+### XGBoostModelConfig
+
+```python
+{
+    "schema_version": "1.0",
+    "model_type": "xgboost",
+    "n_estimators": 100,    # 10-1000  (boosting rounds)
+    "max_depth": 6,         # 1-20
+    "learning_rate": 0.1    # 0.001-1.0
+}
+```
+
+A **feature-aware** model (`requires_features = True`) wrapping
+`xgboost.XGBRegressor` — the second *advanced* tree model in the MLZOO sequence
+(PRP-MLZOO-C1). XGBoost is an **optional dependency**: install the
+`ml-xgboost` extra (`uv sync --extra dev --extra ml-xgboost`) and enable
+`forecast_enable_xgboost=true`. It consumes the same canonical feature frame as
+`regression` and `lightgbm` — see [`feature_frame_contract.md`](feature_frame_contract.md).
+
 ---
 
 ## Model Formulas
@@ -216,6 +235,19 @@ is `lightgbm.LGBMRegressor` — gradient-boosted leaf-wise trees. Feature-aware
 `force_col_wise=True`, fixed `random_state`), and NaN-tolerant. Optional —
 behind the `ml-lightgbm` extra and the `forecast_enable_lightgbm` flag.
 
+### XGBoost Forecaster
+
+```
+ŷ[t+h] = XGBRegressor.predict(X[t+h])
+```
+
+Same exogenous-feature contract as the regression and LightGBM forecasters, but
+the estimator is `xgboost.XGBRegressor` — gradient-boosted trees. Feature-aware
+(`requires_features = True`), deterministic (`n_jobs=1`, `tree_method="hist"`,
+fixed `random_state`, no stochastic subsampling), and NaN-tolerant
+(`missing=np.nan`). Optional — behind the `ml-xgboost` extra and the
+`forecast_enable_xgboost` flag.
+
 ---
 
 ## Persistence (ModelBundle)
@@ -232,6 +264,7 @@ class ModelBundle:
     python_version: str        # Python version
     sklearn_version: str       # Scikit-learn version
     lightgbm_version: str | None  # LightGBM version (None if extra not installed)
+    xgboost_version: str | None   # XGBoost version (None if extra not installed)
     bundle_hash: str           # Deterministic hash
 ```
 

@@ -47,8 +47,9 @@ docker-compose up -d
 ```bash
 uv sync --extra dev
 # or: pip install -e ".[dev]"
-# LightGBM is an opt-in advanced model — add the extra to enable it:
+# LightGBM and XGBoost are opt-in advanced models — add the extra to enable each:
 # uv sync --extra dev --extra ml-lightgbm   (then set forecast_enable_lightgbm=true)
+# uv sync --extra dev --extra ml-xgboost    (then set forecast_enable_xgboost=true)
 ```
 
 4. **Run database migrations**
@@ -342,6 +343,7 @@ curl -X POST http://localhost:8123/forecasting/predict \
 - `moving_average` - Mean of last N observations
 - `regression` - Gradient-boosted exogenous-feature regressor (feature-aware)
 - `lightgbm` - LightGBM feature-aware regressor — opt-in: install the `ml-lightgbm` extra and set `forecast_enable_lightgbm=True`
+- `xgboost` - XGBoost feature-aware regressor — opt-in: install the `ml-xgboost` extra and set `forecast_enable_xgboost=True`
 
 See [examples/models/](examples/models/) for baseline model examples.
 
@@ -394,7 +396,7 @@ curl -X POST http://localhost:8123/backtesting/run \
 When `include_baselines=true`, automatically compares against naive and seasonal_naive models.
 
 **Feature-Aware Models:**
-`regression` and `lightgbm` models can be backtested too — set
+`regression`, `lightgbm`, and `xgboost` models can be backtested too — set
 `model_config_main.model_type` accordingly. Each fold builds a leakage-safe
 per-fold feature matrix (`min_train_size >= 30` required); the result carries
 `feature_aware: true` and `exogenous_policy: "observed"`.

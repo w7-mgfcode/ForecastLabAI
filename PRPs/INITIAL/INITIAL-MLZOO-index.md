@@ -18,8 +18,15 @@ Recommended PRP sequence:
 | 1 | `INITIAL-MLZOO-A-foundation-feature-frames.md` | PRP-29 | Feature-aware forecasting foundation and leakage-safe frame contracts |
 | 2 | `INITIAL-MLZOO-B-lightgbm-first-model.md` | PRP-30 | First advanced model path with LightGBM (optional `ml-lightgbm` extra) |
 | 2.5 | `INITIAL-MLZOO-B.2-feature-aware-backtesting.md` | PRP-MLZOO-B.2 | Wire feature-aware models into the backtesting fold loop (per-fold leakage-safe `X_train` / `X_future`) |
-| 3 | `INITIAL-MLZOO-C-xgboost-prophet-extensions.md` | Future PRP | XGBoost and Prophet-like extensions |
+| 3a | `INITIAL-MLZOO-C-xgboost-prophet-extensions.md` (XGBoost half) | PRP-MLZOO-C1 | XGBoost feature-aware model — a low-risk follow-up mirroring the merged LightGBM design (optional `ml-xgboost` extra) |
+| 3b | `INITIAL-MLZOO-C-xgboost-prophet-extensions.md` (Prophet-like half) | PRP-MLZOO-C2 | Prophet-like additive model — a distinct model-family design (pure scikit-learn; trend / seasonality / regressor decomposition) |
 | 4 | `INITIAL-MLZOO-D-frontend-registry-explainability.md` | Future PRP | UI, registry surfacing, and explanation polish |
+
+**C is two PRPs, not one.** `INITIAL-MLZOO-C` briefs both XGBoost and a Prophet-like model,
+but they are deliberately split into **two separate PRPs, branches, and review units** —
+`PRP-MLZOO-C1` (XGBoost) and `PRP-MLZOO-C2` (Prophet-like). They are additive and
+order-independent; whichever merges second rebases cleanly. Do **not** combine them into a
+single branch or a single review unit (this honours the "one reviewable unit" rule below).
 
 Dependency graph:
 
@@ -27,7 +34,8 @@ Dependency graph:
 A. Foundation feature frames
   -> B. LightGBM first model
       -> B.2 Feature-aware backtesting
-          -> C. XGBoost / Prophet-like extensions
+          -> C1. XGBoost model           (separate review unit)
+          -> C2. Prophet-like model      (separate review unit; parallel to C1)
           -> D. Frontend / registry / explainability
 ```
 
@@ -74,5 +82,7 @@ Read these before creating any MLZOO PRP:
 - Do not implement LightGBM before the feature-frame contracts and leakage tests are stable.
 - Do not implement XGBoost or Prophet-like models before the first advanced model path proves the architecture.
 - Do not add frontend/explainability scope before backend metadata and persistence contracts are stable.
-- Keep each PRP to one branch and one reviewable unit.
+- Keep each PRP to one branch and one reviewable unit. In particular, `INITIAL-MLZOO-C`'s
+  two models (XGBoost, Prophet-like) are **two PRPs** — `PRP-MLZOO-C1` and `PRP-MLZOO-C2` —
+  never one combined branch.
 

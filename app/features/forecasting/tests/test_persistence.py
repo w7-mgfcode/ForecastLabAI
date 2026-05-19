@@ -141,6 +141,29 @@ class TestSaveLoadBundle:
         assert isinstance(bundle.lightgbm_version, str)
         assert bundle.lightgbm_version
 
+    def test_xgboost_version_recorded(
+        self, sample_naive_config, sample_time_series, tmp_model_path
+    ):
+        """save_model_bundle records the XGBoost version best-effort (PRP-MLZOO-C1).
+
+        The version is captured regardless of model type whenever the optional
+        ``ml-xgboost`` dependency is importable — here a baseline naive bundle.
+        """
+        pytest.importorskip("xgboost")
+        model = NaiveForecaster()
+        model.fit(sample_time_series)
+
+        bundle = ModelBundle(
+            model=model,
+            config=sample_naive_config,
+            metadata={},
+        )
+
+        save_model_bundle(bundle, tmp_model_path)
+
+        assert isinstance(bundle.xgboost_version, str)
+        assert bundle.xgboost_version
+
     def test_save_creates_directory(self, sample_naive_config, sample_time_series):
         """Test that save creates parent directories if needed."""
         with TemporaryDirectory() as tmpdir:
