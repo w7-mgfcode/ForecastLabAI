@@ -1,13 +1,15 @@
 import { useState } from 'react'
-import { AlertTriangle, Download, Loader2, Play, Save, Trash2 } from 'lucide-react'
+import { AlertTriangle, BarChart3, Download, Loader2, Play, Save, Trash2 } from 'lucide-react'
 import { useJob } from '@/hooks/use-jobs'
 import {
+  useCompareScenarios,
   useCreateScenario,
   useDeleteScenario,
   useScenario,
   useScenarios,
   useSimulateScenario,
 } from '@/hooks/use-scenarios'
+import { MultiSeriesChart } from '@/components/charts/multi-series-chart'
 import { TimeSeriesChart } from '@/components/charts/time-series-chart'
 import { JobPicker } from '@/components/common/job-picker'
 import { Button } from '@/components/ui/button'
@@ -33,13 +35,16 @@ import {
 import { downloadCsv, toCsv } from '@/lib/csv-export'
 import { formatCurrency, formatNumber, getErrorMessage } from '@/lib/api'
 import {
+  buildMultiSeries,
   coverageLabel,
   coverageVariant,
   deltaCsvColumns,
   formatDelta,
   mergeComparisonSeries,
+  methodLabel,
 } from '@/lib/scenario-utils'
 import type {
+  MultiScenarioComparison,
   PromotionAssumption,
   ScenarioAssumptions,
   ScenarioComparison,
@@ -98,9 +103,15 @@ export default function WhatIfPlannerPage() {
   const [runError, setRunError] = useState<string | null>(null)
   const [reloadId, setReloadId] = useState('')
 
+  // -- Multi-scenario comparison state -----------------------------------
+  const [selectedPlanIds, setSelectedPlanIds] = useState<Set<string>>(new Set())
+  const [multiComparison, setMultiComparison] = useState<MultiScenarioComparison | null>(null)
+  const [compareError, setCompareError] = useState<string | null>(null)
+
   const simulate = useSimulateScenario()
   const createScenario = useCreateScenario()
   const deleteScenario = useDeleteScenario()
+  const compareScenarios = useCompareScenarios()
   const scenariosQuery = useScenarios()
   const reloadedPlan = useScenario(reloadId, !!reloadId)
 
@@ -178,6 +189,31 @@ export default function WhatIfPlannerPage() {
     downloadCsv('scenario-deltas.csv', toCsv(comparison.points, deltaCsvColumns))
   }
 
+  /** Toggle a saved plan in the multi-scenario comparison selection. */
+  function togglePlanSelection(scenarioId: string) {
+    setSelectedPlanIds((current) => {
+      const next = new Set(current)
+      if (next.has(scenarioId)) next.delete(scenarioId)
+      else next.add(scenarioId)
+      return next
+    })
+  }
+
+  async function handleCompare() {
+    if (selectedPlanIds.size < 2) return
+    setCompareError(null)
+    try {
+      const result = await compareScenarios.mutateAsync({
+        scenario_ids: [...selectedPlanIds],
+        rank_by: 'revenue_delta',
+      })
+      setMultiComparison(result)
+    } catch (caught) {
+      setCompareError(getErrorMessage(caught))
+      setMultiComparison(null)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -193,11 +229,12 @@ export default function WhatIfPlannerPage() {
         <CardContent className="flex gap-3 pt-6">
           <AlertTriangle className="h-5 w-5 shrink-0 text-warning" />
           <div className="text-sm">
-            <p className="font-semibold">Heuristic estimates — not a causal model</p>
+            <p className="font-semibold">Scenario estimates — directional planning signals</p>
             <p className="text-muted-foreground">
-              Scenario results apply fixed, deterministic adjustment factors to a baseline
-              forecast. Treat the demand and revenue deltas as directional planning signals,
-              not precise predictions.
+              A baseline forecaster yields a heuristic estimate (fixed adjustment factors); a
+              regression baseline is genuinely re-forecast through the model. Either way, treat
+              the demand and revenue deltas as planning signals, not precise predictions — each
+              result states the method that produced it.
             </p>
           </div>
         </CardContent>
@@ -446,7 +483,8 @@ export default function WhatIfPlannerPage() {
               <CardTitle>Scenario impact</CardTitle>
               <CardDescription>
                 {comparison.model_type} model · store {comparison.store_id} · product{' '}
-                {comparison.product_id} · {comparison.horizon}-day horizon
+                {comparison.product_id} · {comparison.horizon}-day horizon ·{' '}
+                {methodLabel(comparison.method)} estimate
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
@@ -573,51 +611,88 @@ export default function WhatIfPlannerPage() {
       {/* Saved plans */}
       <Card>
         <CardHeader>
-          <CardTitle>Saved plans</CardTitle>
-          <CardDescription>
-            Reload a saved plan to re-render its comparison, or delete one.
-          </CardDescription>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <CardTitle>Saved plans</CardTitle>
+              <CardDescription>
+                Reload a plan to re-render its comparison, or select 2-5 plans to
+                compare them side by side.
+              </CardDescription>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCompare}
+              disabled={selectedPlanIds.size < 2 || compareScenarios.isPending}
+            >
+              {compareScenarios.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <BarChart3 className="mr-2 h-4 w-4" />
+              )}
+              Compare selected ({selectedPlanIds.size})
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
+          {compareError && <p className="mb-3 text-sm text-destructive">{compareError}</p>}
           {scenariosQuery.data && scenariosQuery.data.scenarios.length > 0 ? (
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-10" />
                   <TableHead>Name</TableHead>
+                  <TableHead>Tags</TableHead>
                   <TableHead className="text-right">Units delta</TableHead>
                   <TableHead className="text-right">Revenue delta</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {scenariosQuery.data.scenarios.map((plan) => (
-                  <TableRow key={plan.scenario_id}>
-                    <TableCell className="font-medium">{plan.name}</TableCell>
-                    <TableCell className="text-right">{formatDelta(plan.units_delta)}</TableCell>
-                    <TableCell className="text-right">
-                      {formatCurrency(plan.revenue_delta)}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setReloadId(plan.scenario_id)}
-                        >
-                          Reload
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => deleteScenario.mutate(plan.scenario_id)}
-                          disabled={deleteScenario.isPending}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {scenariosQuery.data.scenarios.map((plan) => {
+                  const selected = selectedPlanIds.has(plan.scenario_id)
+                  return (
+                    <TableRow key={plan.scenario_id}>
+                      <TableCell>
+                        <Checkbox
+                          checked={selected}
+                          disabled={!selected && selectedPlanIds.size >= 5}
+                          onCheckedChange={() => togglePlanSelection(plan.scenario_id)}
+                          aria-label={`Select ${plan.name}`}
+                        />
+                      </TableCell>
+                      <TableCell className="font-medium">{plan.name}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {plan.tags.length > 0 ? plan.tags.join(', ') : '—'}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {formatDelta(plan.units_delta)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {formatCurrency(plan.revenue_delta)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setReloadId(plan.scenario_id)}
+                          >
+                            Reload
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => deleteScenario.mutate(plan.scenario_id)}
+                            disabled={deleteScenario.isPending}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
               </TableBody>
             </Table>
           ) : (
@@ -627,6 +702,55 @@ export default function WhatIfPlannerPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Multi-scenario comparison result */}
+      {multiComparison && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Scenario comparison</CardTitle>
+            <CardDescription>
+              {multiComparison.scenarios.length} plans ranked by{' '}
+              {multiComparison.rank_by === 'revenue_delta' ? 'revenue delta' : 'units delta'}.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-14 text-right">Rank</TableHead>
+                  <TableHead>Plan</TableHead>
+                  <TableHead className="text-right">Units delta</TableHead>
+                  <TableHead className="text-right">Revenue delta</TableHead>
+                  <TableHead>Coverage</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {multiComparison.scenarios.map((row) => (
+                  <TableRow key={row.scenario_id}>
+                    <TableCell className="text-right font-mono">{row.rank}</TableCell>
+                    <TableCell className="font-medium">{row.name}</TableCell>
+                    <TableCell className="text-right">{formatDelta(row.units_delta)}</TableCell>
+                    <TableCell className="text-right">
+                      {formatCurrency(row.revenue_delta)}
+                    </TableCell>
+                    <TableCell>
+                      <StatusBadge variant={coverageVariant(row.coverage_verdict)}>
+                        {coverageLabel(row.coverage_verdict)}
+                      </StatusBadge>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            <MultiSeriesChart
+              title="Baseline vs. scenarios"
+              description="Demand per day — the shared baseline plus every compared scenario"
+              data={multiComparison.chart_series}
+              series={buildMultiSeries(multiComparison)}
+            />
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }

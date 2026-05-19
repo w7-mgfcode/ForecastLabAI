@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type {
+  CompareScenariosRequest,
   CreateScenarioRequest,
+  MultiScenarioComparison,
   ScenarioComparison,
   ScenarioListResponse,
   ScenarioPlanResponse,
@@ -19,11 +21,18 @@ export function useSimulateScenario() {
   })
 }
 
-/** List saved scenario plans, newest first. */
-export function useScenarios(enabled = true) {
+/**
+ * List saved scenario plans, newest first. Pass one or more `tags` to filter
+ * to plans carrying every listed tag.
+ */
+export function useScenarios(tags: string[] = [], enabled = true) {
+  const query =
+    tags.length > 0
+      ? `?${tags.map((tag) => `tags=${encodeURIComponent(tag)}`).join('&')}`
+      : ''
   return useQuery({
-    queryKey: ['scenarios'],
-    queryFn: () => api<ScenarioListResponse>('/scenarios'),
+    queryKey: ['scenarios', { tags }],
+    queryFn: () => api<ScenarioListResponse>(`/scenarios${query}`),
     enabled,
   })
 }
@@ -58,5 +67,16 @@ export function useDeleteScenario() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['scenarios'] })
     },
+  })
+}
+
+/**
+ * Compare 2-5 saved scenario plans. A mutation, not a query — the comparison
+ * is an explicit user action and the result is held in component state.
+ */
+export function useCompareScenarios() {
+  return useMutation({
+    mutationFn: (data: CompareScenariosRequest) =>
+      api<MultiScenarioComparison>('/scenarios/compare', { method: 'POST', body: data }),
   })
 }

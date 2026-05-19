@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildMultiSeries,
   coverageLabel,
   coverageVariant,
   formatDelta,
   mergeComparisonSeries,
+  methodLabel,
   summariseAssumptions,
 } from './scenario-utils'
-import type { ScenarioAssumptions, ScenarioPoint } from '@/types/api'
+import type {
+  MultiScenarioComparison,
+  ScenarioAssumptions,
+  ScenarioComparisonRow,
+  ScenarioPoint,
+} from '@/types/api'
 
 function makePoint(date: string, baseline: number, scenario: number): ScenarioPoint {
   return {
@@ -88,5 +95,51 @@ describe('summariseAssumptions', () => {
     expect(lines[2]).toContain('1 holiday/event day')
     expect(lines[3]).toContain('500 units')
     expect(lines[4]).toContain('growth')
+  })
+})
+
+function makeRow(scenarioId: string, name: string, rank: number): ScenarioComparisonRow {
+  return {
+    scenario_id: scenarioId,
+    name,
+    units_delta: 0,
+    revenue_delta: 0,
+    coverage_verdict: 'unknown',
+    rank,
+  }
+}
+
+describe('buildMultiSeries', () => {
+  it('puts baseline first, then one line per scenario keyed by scenario_id', () => {
+    const comparison: MultiScenarioComparison = {
+      baseline_total_units: 100,
+      baseline_revenue: 1000,
+      rank_by: 'revenue_delta',
+      scenarios: [makeRow('sid-a', 'Cut', 1), makeRow('sid-b', 'Rise', 2)],
+      chart_series: [],
+    }
+    expect(buildMultiSeries(comparison)).toEqual([
+      { key: 'baseline', label: 'Baseline' },
+      { key: 'sid-a', label: 'Cut' },
+      { key: 'sid-b', label: 'Rise' },
+    ])
+  })
+
+  it('returns only the baseline line when there are no scenarios', () => {
+    const comparison: MultiScenarioComparison = {
+      baseline_total_units: 0,
+      baseline_revenue: 0,
+      rank_by: 'units_delta',
+      scenarios: [],
+      chart_series: [],
+    }
+    expect(buildMultiSeries(comparison)).toEqual([{ key: 'baseline', label: 'Baseline' }])
+  })
+})
+
+describe('methodLabel', () => {
+  it('labels each comparison method', () => {
+    expect(methodLabel('heuristic')).toBe('Heuristic')
+    expect(methodLabel('model_exogenous')).toBe('Model-driven')
   })
 })
