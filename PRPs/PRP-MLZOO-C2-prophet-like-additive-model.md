@@ -20,7 +20,7 @@ regressor contributions.
 > are intentionally **separate branches and separate review units** — never combine them.
 > They are additive and order-independent; whichever merges second rebases cleanly (see
 > "Sibling-PRP integration" below).
-
+>
 > **Naming honesty.** The model is "Prophet-**like**", never "Prophet". It deliberately
 > approximates Prophet's *additive decomposition* shape using a linear model over
 > already-engineered features. It does **not** add the real `prophet`/Stan dependency and
