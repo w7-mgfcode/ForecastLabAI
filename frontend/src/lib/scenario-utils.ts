@@ -135,3 +135,41 @@ export function buildMultiSeries(comparison: MultiScenarioComparison): MultiSeri
 export function methodLabel(method: 'heuristic' | 'model_exogenous'): string {
   return method === 'model_exogenous' ? 'Model-driven' : 'Heuristic'
 }
+
+/** Form state for the date-bearing assumptions (price, promotion). */
+export interface AssumptionDateState {
+  priceEnabled: boolean
+  priceStart: string
+  priceEnd: string
+  promoEnabled: boolean
+  promoStart: string
+  promoEnd: string
+}
+
+/** Which enabled assumption date inputs are still blank. */
+export interface AssumptionDateErrors {
+  priceStart: boolean
+  priceEnd: boolean
+  promoStart: boolean
+  promoEnd: boolean
+  hasErrors: boolean
+}
+
+/**
+ * Flag every enabled Price/Promotion assumption whose From/To date is blank.
+ * The planner blocks Run/Save while `hasErrors` is true so the backend never
+ * receives an empty-string date (which fails Pydantic date validation → 422).
+ */
+export function assumptionDateErrors(state: AssumptionDateState): AssumptionDateErrors {
+  const priceStart = state.priceEnabled && !state.priceStart
+  const priceEnd = state.priceEnabled && !state.priceEnd
+  const promoStart = state.promoEnabled && !state.promoStart
+  const promoEnd = state.promoEnabled && !state.promoEnd
+  return {
+    priceStart,
+    priceEnd,
+    promoStart,
+    promoEnd,
+    hasErrors: priceStart || priceEnd || promoStart || promoEnd,
+  }
+}

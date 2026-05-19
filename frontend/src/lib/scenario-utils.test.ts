@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  assumptionDateErrors,
   buildMultiSeries,
   coverageLabel,
   coverageVariant,
@@ -141,5 +142,63 @@ describe('methodLabel', () => {
   it('labels each comparison method', () => {
     expect(methodLabel('heuristic')).toBe('Heuristic')
     expect(methodLabel('model_exogenous')).toBe('Model-driven')
+  })
+})
+
+describe('assumptionDateErrors', () => {
+  const NONE = {
+    priceEnabled: false,
+    priceStart: '',
+    priceEnd: '',
+    promoEnabled: false,
+    promoStart: '',
+    promoEnd: '',
+  }
+
+  it('reports no errors when nothing is enabled', () => {
+    expect(assumptionDateErrors(NONE).hasErrors).toBe(false)
+  })
+
+  it('flags both price dates when price is enabled and blank', () => {
+    const e = assumptionDateErrors({ ...NONE, priceEnabled: true })
+    expect(e.priceStart).toBe(true)
+    expect(e.priceEnd).toBe(true)
+    expect(e.hasErrors).toBe(true)
+  })
+
+  it('clears price errors once both dates are filled', () => {
+    const e = assumptionDateErrors({
+      ...NONE,
+      priceEnabled: true,
+      priceStart: '2026-07-01',
+      priceEnd: '2026-07-14',
+    })
+    expect(e.hasErrors).toBe(false)
+  })
+
+  it('flags only the blank promotion date', () => {
+    const e = assumptionDateErrors({
+      ...NONE,
+      promoEnabled: true,
+      promoStart: '2026-07-01',
+      promoEnd: '',
+    })
+    expect(e.promoStart).toBe(false)
+    expect(e.promoEnd).toBe(true)
+    expect(e.hasErrors).toBe(true)
+  })
+
+  it('isolates errors per assumption (price ok, promo blank)', () => {
+    const e = assumptionDateErrors({
+      priceEnabled: true,
+      priceStart: '2026-07-01',
+      priceEnd: '2026-07-14',
+      promoEnabled: true,
+      promoStart: '',
+      promoEnd: '',
+    })
+    expect(e.priceStart).toBe(false)
+    expect(e.promoStart).toBe(true)
+    expect(e.hasErrors).toBe(true)
   })
 })

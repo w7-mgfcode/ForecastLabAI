@@ -35,6 +35,7 @@ import {
 import { downloadCsv, toCsv } from '@/lib/csv-export'
 import { formatCurrency, formatNumber, getErrorMessage } from '@/lib/api'
 import {
+  assumptionDateErrors,
   buildMultiSeries,
   coverageLabel,
   coverageVariant,
@@ -100,6 +101,19 @@ export default function WhatIfPlannerPage() {
   const [lifecycleStage, setLifecycleStage] =
     useState<(typeof LIFECYCLE_STAGES)[number]>('maturity')
 
+  // -- Derived validation ------------------------------------------------
+  // Enabling Price/Promotion without filling both dates would submit empty
+  // strings — Pydantic date validation rejects those with an RFC 7807 422.
+  // Gate Run/Save on this so the form can never produce that request (#228).
+  const dateErrors = assumptionDateErrors({
+    priceEnabled,
+    priceStart,
+    priceEnd,
+    promoEnabled,
+    promoStart,
+    promoEnd,
+  })
+
   // -- Results / persistence state ---------------------------------------
   const [simulated, setSimulated] = useState<ScenarioComparison | null>(null)
   const [planName, setPlanName] = useState('')
@@ -155,7 +169,7 @@ export default function WhatIfPlannerPage() {
   }
 
   async function handleRun() {
-    if (!baselineRunId) return
+    if (!baselineRunId || dateErrors.hasErrors) return
     setRunError(null)
     setReloadId('')
     try {
@@ -172,7 +186,7 @@ export default function WhatIfPlannerPage() {
   }
 
   async function handleSave() {
-    if (!baselineRunId || !planName.trim()) return
+    if (!baselineRunId || !planName.trim() || dateErrors.hasErrors) return
     setRunError(null)
     try {
       await createScenario.mutateAsync({
@@ -323,6 +337,9 @@ export default function WhatIfPlannerPage() {
                     value={priceStart}
                     onChange={(event) => setPriceStart(event.target.value)}
                   />
+                  {dateErrors.priceStart && (
+                    <p className="text-xs text-destructive">Required</p>
+                  )}
                 </div>
                 <div className="space-y-1">
                   <span className="text-xs text-muted-foreground">To</span>
@@ -332,6 +349,9 @@ export default function WhatIfPlannerPage() {
                     value={priceEnd}
                     onChange={(event) => setPriceEnd(event.target.value)}
                   />
+                  {dateErrors.priceEnd && (
+                    <p className="text-xs text-destructive">Required</p>
+                  )}
                 </div>
               </div>
             )}
@@ -374,6 +394,9 @@ export default function WhatIfPlannerPage() {
                     value={promoStart}
                     onChange={(event) => setPromoStart(event.target.value)}
                   />
+                  {dateErrors.promoStart && (
+                    <p className="text-xs text-destructive">Required</p>
+                  )}
                 </div>
                 <div className="space-y-1">
                   <span className="text-xs text-muted-foreground">To</span>
@@ -383,6 +406,9 @@ export default function WhatIfPlannerPage() {
                     value={promoEnd}
                     onChange={(event) => setPromoEnd(event.target.value)}
                   />
+                  {dateErrors.promoEnd && (
+                    <p className="text-xs text-destructive">Required</p>
+                  )}
                 </div>
               </div>
             )}
@@ -468,7 +494,10 @@ export default function WhatIfPlannerPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3 border-t pt-4">
-            <Button onClick={handleRun} disabled={!baselineRunId || simulate.isPending}>
+            <Button
+              onClick={handleRun}
+              disabled={!baselineRunId || simulate.isPending || dateErrors.hasErrors}
+            >
               {simulate.isPending ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
@@ -599,7 +628,12 @@ export default function WhatIfPlannerPage() {
                 </div>
                 <Button
                   onClick={handleSave}
-                  disabled={!baselineRunId || !planName.trim() || createScenario.isPending}
+                  disabled={
+                    !baselineRunId ||
+                    !planName.trim() ||
+                    createScenario.isPending ||
+                    dateErrors.hasErrors
+                  }
                 >
                   {createScenario.isPending ? (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
