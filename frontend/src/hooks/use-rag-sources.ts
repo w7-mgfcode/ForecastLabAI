@@ -4,6 +4,8 @@ import type {
   SourceListResponse,
   IndexDocumentRequest,
   IndexDocumentResponse,
+  IndexProjectDocsRequest,
+  IndexProjectDocsResponse,
   RetrieveRequest,
   RetrieveResponse,
 } from '@/types/api'
@@ -33,6 +35,23 @@ export function useIndexDocument() {
       api<IndexDocumentResponse>('/rag/index', {
         method: 'POST',
         body: data,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['rag-sources'] })
+    },
+  })
+}
+
+// Mutation: bulk-index the repo's bundled project docs (POST /rag/index/project-docs).
+// Synchronous server-side — the first run can take ~1-3 min with a real embedding
+// provider. Invalidates ['rag-sources'] so the list + counts refresh on completion.
+export function useIndexProjectDocs() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: IndexProjectDocsRequest) =>
+      api<IndexProjectDocsResponse>('/rag/index/project-docs', {
+        method: 'POST',
+        body,
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['rag-sources'] })

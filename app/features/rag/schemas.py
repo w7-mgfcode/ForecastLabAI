@@ -179,3 +179,63 @@ class DeleteResponse(BaseModel):
     source_id: str
     chunks_deleted: int
     status: Literal["deleted"]
+
+
+class IndexProjectDocsRequest(BaseModel):
+    """Request to bulk-index bundled project documentation.
+
+    All fields default to True so an empty ``{}`` body indexes every root.
+
+    Args:
+        include_docs: Index markdown discovered under docs/**.
+        include_prps: Index markdown discovered under PRPs/**.
+        include_root: Index the root allow-list (README/AGENTS/CHANGELOG).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    include_docs: bool = Field(default=True, description="Index docs/**/*.md")
+    include_prps: bool = Field(default=True, description="Index PRPs/**/*.md")
+    include_root: bool = Field(
+        default=True, description="Index README.md / AGENTS.md / CHANGELOG.md"
+    )
+
+
+class ProjectDocResult(BaseModel):
+    """Per-file outcome of a project-docs index run.
+
+    Args:
+        source_path: Relative POSIX path of the file (the source identifier).
+        status: Outcome — indexed, updated, unchanged, or failed.
+        chunks_created: Number of chunks created (0 when unchanged or failed).
+        error: Error message when status is "failed", otherwise None.
+    """
+
+    source_path: str
+    status: Literal["indexed", "updated", "unchanged", "failed"]
+    chunks_created: int
+    error: str | None = None
+
+
+class IndexProjectDocsResponse(BaseModel):
+    """Aggregate result of POST /rag/index/project-docs.
+
+    Args:
+        results: Per-file outcomes.
+        total_files: Total files discovered and processed.
+        indexed: Count of newly indexed files.
+        updated: Count of re-indexed (changed) files.
+        unchanged: Count of files skipped by the content-hash short-circuit.
+        failed: Count of files that could not be read.
+        total_chunks: Total chunks created across all files.
+        duration_ms: Wall-clock time taken for the batch.
+    """
+
+    results: list[ProjectDocResult]
+    total_files: int
+    indexed: int
+    updated: int
+    unchanged: int
+    failed: int
+    total_chunks: int
+    duration_ms: float

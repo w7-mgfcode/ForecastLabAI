@@ -6,8 +6,11 @@ from pydantic import ValidationError
 from app.features.rag.schemas import (
     ChunkResult,
     DeleteResponse,
+    IndexProjectDocsRequest,
+    IndexProjectDocsResponse,
     IndexRequest,
     IndexResponse,
+    ProjectDocResult,
     RetrieveRequest,
     RetrieveResponse,
     SourceListResponse,
@@ -344,3 +347,115 @@ class TestDeleteResponse:
         )
         assert response.status == "deleted"
         assert response.chunks_deleted == 10
+
+
+class TestIndexProjectDocsRequest:
+    """Tests for IndexProjectDocsRequest schema."""
+
+    def test_defaults_all_true(self):
+        """Test that an empty request defaults every root to True."""
+        request = IndexProjectDocsRequest()
+        assert request.include_docs is True
+        assert request.include_prps is True
+        assert request.include_root is True
+
+    def test_model_validate_empty_dict(self):
+        """Test that an empty {} body validates (the frontend always posts {})."""
+        request = IndexProjectDocsRequest.model_validate({})
+        assert request.include_docs is True
+        assert request.include_prps is True
+        assert request.include_root is True
+
+    def test_toggles_select_roots_independently(self):
+        """Test that each include_* toggle is honored independently."""
+        request = IndexProjectDocsRequest(include_docs=True, include_prps=False, include_root=False)
+        assert request.include_docs is True
+        assert request.include_prps is False
+        assert request.include_root is False
+
+    def test_extra_fields_rejected(self):
+        """Test that an unknown body field is rejected (extra='forbid')."""
+        with pytest.raises(ValidationError) as exc_info:
+            IndexProjectDocsRequest(bogus=True)  # type: ignore[call-arg]
+        assert "bogus" in str(exc_info.value)
+
+
+class TestProjectDocResult:
+    """Tests for ProjectDocResult schema."""
+
+    def test_valid_result(self):
+        """Test a valid per-file result."""
+        result = ProjectDocResult(
+            source_path="docs/ARCHITECTURE.md",
+            status="indexed",
+            chunks_created=7,
+        )
+        assert result.status == "indexed"
+        assert result.chunks_created == 7
+        assert result.error is None
+
+    def test_failed_result_carries_error(self):
+        """Test a failed result carries an error string."""
+        result = ProjectDocResult(
+            source_path="docs/bad.md",
+            status="failed",
+            chunks_created=0,
+            error="not valid UTF-8",
+        )
+        assert result.status == "failed"
+        assert result.error == "not valid UTF-8"
+
+    def test_invalid_status_rejected(self):
+        """Test that an out-of-Literal status is rejected."""
+        with pytest.raises(ValidationError) as exc_info:
+            ProjectDocResult(
+                source_path="docs/x.md",
+                status="bogus",  # type: ignore[arg-type]
+                chunks_created=0,
+            )
+        assert "status" in str(exc_info.value)
+
+
+class TestIndexProjectDocsResponse:
+    """Tests for IndexProjectDocsResponse schema."""
+
+    def test_valid_response_round_trips(self):
+        """Test a populated aggregate response round-trips through validation."""
+        response = IndexProjectDocsResponse(
+            results=[
+                ProjectDocResult(source_path="docs/a.md", status="indexed", chunks_created=3),
+                ProjectDocResult(
+                    source_path="PRPs/b.md",
+                    status="failed",
+                    chunks_created=0,
+                    error="boom",
+                ),
+            ],
+            total_files=2,
+            indexed=1,
+            updated=0,
+            unchanged=0,
+            failed=1,
+            total_chunks=3,
+            duration_ms=42.5,
+        )
+        assert response.total_files == 2
+        assert response.indexed == 1
+        assert response.failed == 1
+        assert response.total_chunks == 3
+        assert len(response.results) == 2
+
+    def test_empty_response(self):
+        """Test an aggregate response with no discovered files."""
+        response = IndexProjectDocsResponse(
+            results=[],
+            total_files=0,
+            indexed=0,
+            updated=0,
+            unchanged=0,
+            failed=0,
+            total_chunks=0,
+            duration_ms=1.0,
+        )
+        assert response.total_files == 0
+        assert len(response.results) == 0

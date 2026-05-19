@@ -37,6 +37,7 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 | jobs | GET | `/jobs/{job_id}` | Status + result JSON |
 | jobs | DELETE | `/jobs/{job_id}` | Cancel pending |
 | rag | POST | `/rag/index` | Index a markdown/openapi document; idempotent via content hash |
+| rag | POST | `/rag/index/project-docs` | Bulk-index bundled `docs/`, `PRPs/`, and root markdown; per-file + aggregate summary; idempotent via content hash; `502` if the embedding provider fails |
 | rag | POST | `/rag/retrieve` | Semantic search (HNSW), top-k with similarity threshold |
 | rag | GET | `/rag/sources` | List indexed sources |
 | rag | DELETE | `/rag/sources/{source_id}` | Delete source + cascaded chunks |

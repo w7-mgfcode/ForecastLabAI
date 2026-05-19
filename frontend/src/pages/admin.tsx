@@ -18,8 +18,14 @@ import {
   History,
   Percent,
   Bot,
+  Library,
 } from 'lucide-react'
-import { useRagSources, useDeleteRagSource, useIndexDocument } from '@/hooks/use-rag-sources'
+import {
+  useRagSources,
+  useDeleteRagSource,
+  useIndexDocument,
+  useIndexProjectDocs,
+} from '@/hooks/use-rag-sources'
 import { useAliases, useDeleteAlias, useCreateAlias } from '@/hooks/use-runs'
 import {
   useSeederStatus,
@@ -117,6 +123,7 @@ function RagSourcesPanel() {
   const { data, isLoading, error, refetch } = useRagSources()
   const deleteSource = useDeleteRagSource()
   const indexDocument = useIndexDocument()
+  const indexProjectDocs = useIndexProjectDocs()
 
   const [newSource, setNewSource] = useState({ type: 'markdown', path: '' })
   const [isDialogOpen, setIsDialogOpen] = useState(false)
@@ -129,6 +136,19 @@ function RagSourcesPanel() {
     })
     setNewSource({ type: 'markdown', path: '' })
     setIsDialogOpen(false)
+  }
+
+  const handleIndexProjectDocs = async () => {
+    try {
+      const r = await indexProjectDocs.mutateAsync({})
+      const summary =
+        `Indexed ${r.indexed}, updated ${r.updated}, unchanged ${r.unchanged}, ` +
+        `${r.failed} failed — ${r.total_chunks} chunks`
+      if (r.failed > 0) toast.warning(summary)
+      else toast.success(summary)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Project-docs indexing failed')
+    }
   }
 
   const handleDelete = async (sourceId: string) => {
@@ -152,6 +172,20 @@ function RagSourcesPanel() {
             {data?.total_sources ?? 0} sources • {data?.total_chunks ?? 0} chunks
           </CardDescription>
         </div>
+        <div className="flex items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleIndexProjectDocs}
+          disabled={indexProjectDocs.isPending}
+        >
+          {indexProjectDocs.isPending ? (
+            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+          ) : (
+            <Library className="h-4 w-4 mr-2" />
+          )}
+          Index Project Docs
+        </Button>
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
           <DialogTrigger asChild>
             <Button size="sm">
@@ -202,6 +236,7 @@ function RagSourcesPanel() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        </div>
       </CardHeader>
       <CardContent>
         {data?.sources.length ? (
