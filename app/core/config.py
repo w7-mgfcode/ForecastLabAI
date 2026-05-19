@@ -161,7 +161,10 @@ class Settings(BaseSettings):
     agent_retry_delay_seconds: float = 1.0
 
     # Human-in-the-Loop Configuration
-    agent_require_approval: list[str] = ["create_alias", "archive_run"]
+    # ``save_scenario`` (PRP-27 Phase D) lets the experiment agent persist a
+    # scenario_plan row — a deliberate mutation-surface widening, so it is
+    # gated here exactly like create_alias / archive_run.
+    agent_require_approval: list[str] = ["create_alias", "archive_run", "save_scenario"]
     agent_approval_timeout_minutes: int = 60
 
     # Session Configuration
