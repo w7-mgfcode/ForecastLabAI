@@ -16,7 +16,7 @@ Recommended PRP sequence:
 | Order | INITIAL | Intended PRP | Purpose |
 | --- | --- | --- | --- |
 | 1 | `INITIAL-MLZOO-A-foundation-feature-frames.md` | PRP-29 | Feature-aware forecasting foundation and leakage-safe frame contracts |
-| 2 | `INITIAL-MLZOO-B-lightgbm-first-model.md` | Future PRP | First advanced model path with LightGBM or sklearn fallback |
+| 2 | `INITIAL-MLZOO-B-lightgbm-first-model.md` | PRP-30 | First advanced model path with LightGBM (optional `ml-lightgbm` extra) |
 | 3 | `INITIAL-MLZOO-C-xgboost-prophet-extensions.md` | Future PRP | XGBoost and Prophet-like extensions |
 | 4 | `INITIAL-MLZOO-D-frontend-registry-explainability.md` | Future PRP | UI, registry surfacing, and explanation polish |
 

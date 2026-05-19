@@ -147,6 +147,25 @@ The feature-frame contract — the canonical column set, the historical vs futur
 frame shapes, and the leakage taxonomy — is documented in
 [`feature_frame_contract.md`](feature_frame_contract.md).
 
+### LightGBMModelConfig
+
+```python
+{
+    "schema_version": "1.0",
+    "model_type": "lightgbm",
+    "n_estimators": 100,    # 10-1000  (boosting rounds)
+    "max_depth": 6,         # 1-20
+    "learning_rate": 0.1    # 0.001-1.0
+}
+```
+
+A **feature-aware** model (`requires_features = True`) wrapping
+`lightgbm.LGBMRegressor` — the first *advanced* model in the MLZOO sequence
+(PRP-30 / MLZOO-B). LightGBM is an **optional dependency**: install the
+`ml-lightgbm` extra (`uv sync --extra dev --extra ml-lightgbm`) and enable
+`forecast_enable_lightgbm=true`. It consumes the same canonical feature frame as
+`regression` — see [`feature_frame_contract.md`](feature_frame_contract.md).
+
 ---
 
 ## Model Formulas
@@ -185,6 +204,18 @@ Predicts each horizon day from its exogenous feature row `X[t+h]` (target
 long-lags, calendar, and posited price/promotion inputs). Unlike the baselines
 it REQUIRES a feature frame — see [`feature_frame_contract.md`](feature_frame_contract.md).
 
+### LightGBM Forecaster
+
+```
+ŷ[t+h] = LGBMRegressor.predict(X[t+h])
+```
+
+Same exogenous-feature contract as the regression forecaster, but the estimator
+is `lightgbm.LGBMRegressor` — gradient-boosted leaf-wise trees. Feature-aware
+(`requires_features = True`), deterministic (`n_jobs=1`, `deterministic=True`,
+`force_col_wise=True`, fixed `random_state`), and NaN-tolerant. Optional —
+behind the `ml-lightgbm` extra and the `forecast_enable_lightgbm` flag.
+
 ---
 
 ## Persistence (ModelBundle)
@@ -200,6 +231,7 @@ class ModelBundle:
     created_at: datetime       # Save timestamp
     python_version: str        # Python version
     sklearn_version: str       # Scikit-learn version
+    lightgbm_version: str | None  # LightGBM version (None if extra not installed)
     bundle_hash: str           # Deterministic hash
 ```
 

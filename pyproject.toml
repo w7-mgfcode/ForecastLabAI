@@ -41,6 +41,10 @@ dev = [
     "mypy>=1.13.0",
     "pyright>=1.1.390",
 ]
+# Opt-in advanced forecasting model (MLZOO-B). Kept out of the core
+# dependency list so a single-host install stays dependency-light; CI
+# installs it via `uv sync --frozen --all-extras --dev`.
+ml-lightgbm = ["lightgbm>=4.5.0"]
 
 [build-system]
 requires = ["hatchling"]
@@ -142,6 +146,10 @@ disallow_incomplete_defs = false
 [[tool.mypy.overrides]]
 module = "alembic.*"
 ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["lightgbm.*"]
+ignore_missing_imports = true
 
 # =============================================================================
 # Pyright Configuration (per docs/validation/pyright-standard.md)

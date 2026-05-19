@@ -47,6 +47,8 @@ docker-compose up -d
 ```bash
 uv sync --extra dev
 # or: pip install -e ".[dev]"
+# LightGBM is an opt-in advanced model — add the extra to enable it:
+# uv sync --extra dev --extra ml-lightgbm   (then set forecast_enable_lightgbm=true)
 ```
 
 4. **Run database migrations**
@@ -338,7 +340,8 @@ curl -X POST http://localhost:8123/forecasting/predict \
 - `naive` - Last observed value (simple baseline)
 - `seasonal_naive` - Same period from previous season
 - `moving_average` - Mean of last N observations
-- `lightgbm` - LightGBM regressor (requires `forecast_enable_lightgbm=True`)
+- `regression` - Gradient-boosted exogenous-feature regressor (feature-aware)
+- `lightgbm` - LightGBM feature-aware regressor — opt-in: install the `ml-lightgbm` extra and set `forecast_enable_lightgbm=True`
 
 See [examples/models/](examples/models/) for baseline model examples.
 

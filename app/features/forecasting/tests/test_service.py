@@ -350,13 +350,40 @@ class TestFeatureAwareContract:
     """Tests for the feature-aware model contract (MLZOO-A / PRP-29)."""
 
     def test_requires_features_flag(self):
-        """Baseline forecasters require no features; regression requires them."""
+        """Baseline forecasters require no features; feature-aware ones do."""
+        from app.features.forecasting.models import LightGBMForecaster
         from app.features.forecasting.schemas import RegressionModelConfig
 
         assert model_factory(NaiveModelConfig()).requires_features is False
         assert model_factory(SeasonalNaiveModelConfig()).requires_features is False
         assert model_factory(MovingAverageModelConfig()).requires_features is False
         assert model_factory(RegressionModelConfig()).requires_features is True
+        # LightGBM is feature-aware too — assert the ClassVar directly so this
+        # needs neither the factory flag nor the optional lightgbm dependency.
+        assert LightGBMForecaster.requires_features is True
+
+    def test_lightgbm_factory_respects_flag(self):
+        """model_factory gates LightGBM behind forecast_enable_lightgbm.
+
+        Construction is flag-gated but import-free (``lightgbm`` is imported
+        lazily inside ``fit``), so neither branch needs the optional extra.
+        """
+        from app.features.forecasting.models import LightGBMForecaster
+        from app.features.forecasting.schemas import LightGBMModelConfig
+
+        disabled = MagicMock()
+        disabled.forecast_enable_lightgbm = False
+        with (
+            patch("app.core.config.get_settings", return_value=disabled),
+            pytest.raises(ValueError, match="not enabled"),
+        ):
+            model_factory(LightGBMModelConfig())
+
+        enabled = MagicMock()
+        enabled.forecast_enable_lightgbm = True
+        with patch("app.core.config.get_settings", return_value=enabled):
+            model = model_factory(LightGBMModelConfig())
+        assert isinstance(model, LightGBMForecaster)
 
     def test_canonical_columns_match_regression_contract(self):
         """The canonical column set is the exact 14-name regression contract.

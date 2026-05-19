@@ -106,10 +106,12 @@ class ScenarioService:
         store_id = int(str(store_id_raw))
         product_id = int(str(product_id_raw))
 
-        # A regression baseline answers the what-if by genuinely re-forecasting
-        # through the future feature frame; every other model type uses the
-        # deterministic heuristic multiplier below (PRP-27 DECISIONS LOCKED #1).
-        if bundle.config.model_type == "regression":
+        # A feature-aware baseline (regression, lightgbm) answers the what-if by
+        # genuinely re-forecasting through the future feature frame; every
+        # target-only model uses the deterministic heuristic multiplier below
+        # (PRP-27 DECISIONS LOCKED #1). The branch is capability-based —
+        # ``requires_features`` — exactly like ``ForecastingService``.
+        if bundle.model.requires_features:
             return await self._simulate_model_exogenous(db, request, bundle, store_id, product_id)
 
         # Replicate the ForecastingService.predict body (DECISIONS LOCKED #2).
@@ -187,7 +189,7 @@ class ScenarioService:
         store_id: int,
         product_id: int,
     ) -> ScenarioComparison:
-        """Re-forecast a regression baseline through the future feature frame.
+        """Re-forecast a feature-aware baseline through the future feature frame.
 
         Builds two leakage-safe future frames — one carrying the scenario
         assumptions, one with none — feeds both to the model, and compares the
@@ -197,7 +199,7 @@ class ScenarioService:
         Args:
             db: Database session.
             request: The baseline ``run_id``, horizon, and assumptions.
-            bundle: The already-loaded regression model bundle.
+            bundle: The already-loaded feature-aware model bundle.
             store_id: Store the baseline model targets.
             product_id: Product the baseline model targets.
 
@@ -212,7 +214,7 @@ class ScenarioService:
         history_tail_raw = bundle.metadata.get("history_tail")
         if not isinstance(feature_columns_raw, list) or not isinstance(history_tail_raw, list):
             raise ValueError(
-                f"Model artifact for run_id '{request.run_id}' is a regression "
+                f"Model artifact for run_id '{request.run_id}' is a feature-aware "
                 "model without the feature metadata a scenario forecast needs — "
                 "retrain it with the current pipeline."
             )
