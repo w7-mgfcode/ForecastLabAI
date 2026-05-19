@@ -163,6 +163,30 @@ class TestSimulateModelExogenous:
         data = response.json()
 
         assert data["method"] == "model_exogenous"
+
+    async def test_lightgbm_baseline_returns_model_exogenous(
+        self, client: AsyncClient, trained_lightgbm_model: str
+    ) -> None:
+        """A LightGBM baseline is feature-aware — it re-forecasts (PRP-30).
+
+        Pins the capability-based dispatch in ``ScenarioService.simulate`` —
+        the branch is ``bundle.model.requires_features``, not a hard-coded
+        ``model_type == "regression"`` string.
+        """
+        response = await client.post(
+            "/scenarios/simulate",
+            json={
+                "run_id": trained_lightgbm_model,
+                "horizon": 14,
+                "assumptions": _PRICE_ASSUMPTION,
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["method"] == "model_exogenous"
+        assert data["disclaimer"], "every comparison must carry a non-empty disclaimer"
+        assert len(data["points"]) == 14
         assert data["disclaimer"], "every comparison must carry a non-empty disclaimer"
         assert len(data["points"]) == 14
         # A price cut moves the re-forecast — the deltas are model-driven, not

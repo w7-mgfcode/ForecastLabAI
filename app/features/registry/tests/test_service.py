@@ -91,6 +91,14 @@ class TestRegistryServiceRuntimeInfo:
         assert "numpy_version" in info
         assert "pandas_version" in info
 
+    def test_capture_runtime_info_has_lightgbm_version(self) -> None:
+        """Captures the LightGBM version when the optional dep is installed (PRP-30)."""
+        pytest.importorskip("lightgbm")
+        service = RegistryService()
+        info = service._capture_runtime_info()
+
+        assert "lightgbm_version" in info
+
 
 class TestRegistryServiceConfigHashDuplicate:
     """Tests for config hash and duplicate detection."""

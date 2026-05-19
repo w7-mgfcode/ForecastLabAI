@@ -1,8 +1,8 @@
 # Feature-Frame Contract
 
-The contract a **feature-aware** forecasting model (the regression forecaster
-today; LightGBM / XGBoost / Prophet-like models in the MLZOO sequence) stands
-on. The single source of truth in code is
+The contract a **feature-aware** forecasting model (the regression and LightGBM
+forecasters today; XGBoost / Prophet-like models later in the MLZOO sequence)
+stands on. The single source of truth in code is
 [`app/shared/feature_frames`](../../app/shared/feature_frames/) — the pinned
 constants, the canonical column set and order, the `FutureFeatureFrame`
 carrier, the leakage-safe pure builders, and the `FeatureSafety` taxonomy.
@@ -112,4 +112,5 @@ Known limitation: **backtesting is not wired for feature-aware models.** The
 backtest fold loop calls `model.fit(y_train)` target-only; a feature-aware model
 raises `ValueError` there — a loud, non-leaky failure, pinned by
 `test_feature_aware_model_fails_loud_in_backtest`. Feature-aware backtesting is
-PRP-MLZOO-B scope.
+deferred to PRP-MLZOO-B.2 — it remains pending after PRP-30 (LightGBM, MLZOO-B)
+shipped the first advanced feature-aware model.

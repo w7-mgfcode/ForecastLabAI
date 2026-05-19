@@ -856,6 +856,9 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
 ]
+ml-lightgbm = [
+    { name = "lightgbm" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -871,6 +874,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28.0" },
     { name = "joblib", specifier = ">=1.5.3" },
+    { name = "lightgbm", marker = "extra == 'ml-lightgbm'", specifier = ">=4.5.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13.0" },
     { name = "numpy", specifier = ">=2.4.1" },
     { name = "openai", specifier = ">=1.40.0" },
@@ -892,7 +896,7 @@ requires-dist = [
     { name = "tiktoken", specifier = ">=0.7.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "ml-lightgbm"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pandas-stubs", specifier = ">=2.3.3.260113" }]
@@ -1593,6 +1597,23 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/22/f0/07fb6ab5c39a4ca9af3e37554f9d42f25c464829254d72e4ebbd81da351c/librt-0.7.8-cp314-cp314t-win32.whl", hash = "sha256:171ca3a0a06c643bd0a2f62a8944e1902c94aa8e5da4db1ea9a8daf872685365", size = 41173, upload-time = "2026-01-14T12:55:59.315Z" },
     { url = "https://files.pythonhosted.org/packages/24/d4/7e4be20993dc6a782639625bd2f97f3c66125c7aa80c82426956811cfccf/librt-0.7.8-cp314-cp314t-win_amd64.whl", hash = "sha256:445b7304145e24c60288a2f172b5ce2ca35c0f81605f5299f3fa567e189d2e32", size = 47668, upload-time = "2026-01-14T12:56:00.261Z" },
     { url = "https://files.pythonhosted.org/packages/fc/85/69f92b2a7b3c0f88ffe107c86b952b397004b5b8ea5a81da3d9c04c04422/librt-0.7.8-cp314-cp314t-win_arm64.whl", hash = "sha256:8766ece9de08527deabcd7cb1b4f1a967a385d26e33e536d6d8913db6ef74f06", size = 40550, upload-time = "2026-01-14T12:56:01.542Z" },
+]
+
+[[package]]
+name = "lightgbm"
+version = "4.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/68/0b/a2e9f5c5da7ef047cc60cef37f86185088845e8433e54d2e7ed439cce8a3/lightgbm-4.6.0.tar.gz", hash = "sha256:cb1c59720eb569389c0ba74d14f52351b573af489f230032a1c9f314f8bab7fe", size = 1703705, upload-time = "2025-02-15T04:03:03.111Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f2/75/cffc9962cca296bc5536896b7e65b4a7cdeb8db208e71b9c0133c08f8f7e/lightgbm-4.6.0-py3-none-macosx_10_15_x86_64.whl", hash = "sha256:b7a393de8a334d5c8e490df91270f0763f83f959574d504c7ccb9eee4aef70ed", size = 2010151, upload-time = "2025-02-15T04:02:50.961Z" },
+    { url = "https://files.pythonhosted.org/packages/21/1b/550ee378512b78847930f5d74228ca1fdba2a7fbdeaac9aeccc085b0e257/lightgbm-4.6.0-py3-none-macosx_12_0_arm64.whl", hash = "sha256:2dafd98d4e02b844ceb0b61450a660681076b1ea6c7adb8c566dfd66832aafad", size = 1592172, upload-time = "2025-02-15T04:02:53.937Z" },
+    { url = "https://files.pythonhosted.org/packages/64/41/4fbde2c3d29e25ee7c41d87df2f2e5eda65b431ee154d4d462c31041846c/lightgbm-4.6.0-py3-none-manylinux2014_aarch64.whl", hash = "sha256:4d68712bbd2b57a0b14390cbf9376c1d5ed773fa2e71e099cac588703b590336", size = 3454567, upload-time = "2025-02-15T04:02:56.443Z" },
+    { url = "https://files.pythonhosted.org/packages/42/86/dabda8fbcb1b00bcfb0003c3776e8ade1aa7b413dff0a2c08f457dace22f/lightgbm-4.6.0-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:cb19b5afea55b5b61cbb2131095f50538bd608a00655f23ad5d25ae3e3bf1c8d", size = 3569831, upload-time = "2025-02-15T04:02:58.925Z" },
+    { url = "https://files.pythonhosted.org/packages/5e/23/f8b28ca248bb629b9e08f877dd2965d1994e1674a03d67cd10c5246da248/lightgbm-4.6.0-py3-none-win_amd64.whl", hash = "sha256:37089ee95664b6550a7189d887dbf098e3eadab03537e411f52c63c121e3ba4b", size = 1451509, upload-time = "2025-02-15T04:03:01.515Z" },
 ]
 
 [[package]]

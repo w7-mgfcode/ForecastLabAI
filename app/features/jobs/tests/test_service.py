@@ -21,7 +21,11 @@ from app.features.backtesting.schemas import (
     SplitBoundary,
     SplitConfig,
 )
-from app.features.forecasting.schemas import RegressionModelConfig, TrainResponse
+from app.features.forecasting.schemas import (
+    LightGBMModelConfig,
+    RegressionModelConfig,
+    TrainResponse,
+)
 from app.features.forecasting.service import ForecastingService
 from app.features.jobs.service import JobService, _finite, _shape_backtest_result
 
@@ -214,10 +218,31 @@ async def test_execute_train_builds_regression_config() -> None:
     assert result["run_id"] == "abc123def456"
 
 
+async def test_execute_train_builds_lightgbm_config() -> None:
+    """A train job with model_type='lightgbm' builds a LightGBMModelConfig (#242).
+
+    ``train_model`` is mocked, so ``model_factory`` (and its feature-flag gate)
+    is never reached and ``LightGBMModelConfig`` is a pure Pydantic schema —
+    this test needs neither the flag nor the optional lightgbm dependency.
+    """
+    fake = _fake_train_response("lightgbm")
+    with patch.object(
+        ForecastingService, "train_model", new=AsyncMock(return_value=fake)
+    ) as mock_train:
+        result = await JobService()._execute_train(
+            db=cast(AsyncSession, AsyncMock()),
+            params={**_REGRESSION_PARAMS, "model_type": "lightgbm"},
+        )
+    assert mock_train.call_args is not None
+    config = mock_train.call_args.kwargs["config"]
+    assert isinstance(config, LightGBMModelConfig)
+    assert result["model_type"] == "lightgbm"
+
+
 async def test_execute_train_rejects_unsupported_model_type() -> None:
-    """_execute_train still rejects a genuinely unsupported model_type (e.g. lightgbm)."""
+    """_execute_train still rejects a genuinely unsupported model_type."""
     with pytest.raises(ValueError, match="Unsupported model_type"):
         await JobService()._execute_train(
             db=cast(AsyncSession, AsyncMock()),
-            params={**_REGRESSION_PARAMS, "model_type": "lightgbm"},
+            params={**_REGRESSION_PARAMS, "model_type": "arima"},
         )

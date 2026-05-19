@@ -424,6 +424,7 @@ class JobService:
         from datetime import date as date_type
 
         from app.features.forecasting.schemas import (
+            LightGBMModelConfig,
             MovingAverageModelConfig,
             NaiveModelConfig,
             RegressionModelConfig,
@@ -462,6 +463,14 @@ class JobService:
             config = RegressionModelConfig(
                 max_iter=params.get("max_iter", 200),
                 learning_rate=params.get("learning_rate", 0.05),
+                max_depth=params.get("max_depth", 6),
+            )
+        elif model_type == "lightgbm":
+            # The forecast_enable_lightgbm gate lives in model_factory — a
+            # lightgbm job with the flag off fails loud at train time.
+            config = LightGBMModelConfig(
+                n_estimators=params.get("n_estimators", 100),
+                learning_rate=params.get("learning_rate", 0.1),
                 max_depth=params.get("max_depth", 6),
             )
         else:
