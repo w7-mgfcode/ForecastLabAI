@@ -30,7 +30,7 @@
 ### Documentation
 
 * **docs:** add MLZOO planning briefs and feature-contract notes ([#238](https://github.com/w7-mgfcode/ForecastLabAI/issues/238)) ([22e39aa](https://github.com/w7-mgfcode/ForecastLabAI/commit/22e39aa538d4aea0ddd188fb570faf9ab8537643))
-* **docs:** add PRP-MLZOO-C1 xgboost model and split the MLZOO-C roadmap ([#247](https://github.com/w7-mgfcode/ForecastLabAI/issues/247)) ([7adc045](https://github.com/w7-mgfcode/ForecastLabAI/commit/7adc045737f847c2e9ebf6034488bf36e8b64e6d))
+* **docs:** add PRP-MLZOO-C1 XGBoost model and split the MLZOO-C roadmap ([#247](https://github.com/w7-mgfcode/ForecastLabAI/issues/247)) ([7adc045](https://github.com/w7-mgfcode/ForecastLabAI/commit/7adc045737f847c2e9ebf6034488bf36e8b64e6d))
 * **docs:** add PRP-MLZOO-C2 prophet-like additive model ([#248](https://github.com/w7-mgfcode/ForecastLabAI/issues/248)) ([0a25a75](https://github.com/w7-mgfcode/ForecastLabAI/commit/0a25a75307aaf37765fd9a67eba7cfbb19208eb1))
 * **docs:** document the Prophet-like additive model ([#248](https://github.com/w7-mgfcode/ForecastLabAI/issues/248)) ([079e0b7](https://github.com/w7-mgfcode/ForecastLabAI/commit/079e0b7965ad98b0635f93f66142ab7545487b97))
 * land MLZOO planning briefs and sync uv.lock ([97d8057](https://github.com/w7-mgfcode/ForecastLabAI/commit/97d80571a63e0812493a18497bd47f0b353c8474))
