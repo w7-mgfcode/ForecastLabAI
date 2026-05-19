@@ -125,11 +125,16 @@ class TestBacktestingServiceRunModelBacktest:
     ) -> None:
         """A feature-aware model must fail LOUD in a backtest, never run silently.
 
-        The fold loop calls ``model.fit(y_train)`` target-only; a
-        ``RegressionForecaster`` (``requires_features=True``) raises ``ValueError``
-        there because no exogenous ``X`` was supplied. Feature-aware backtesting
-        is wired in PRP-MLZOO-B — until then this loud, non-leaky failure is the
-        contract (PRP-29 DECISIONS LOCKED #7).
+        Repurposed by PRP-MLZOO-B.2 (DECISIONS LOCKED #8): feature-aware
+        backtesting is now wired, so a ``regression`` backtest SUCCEEDS once
+        ``run_backtest`` has resolved the exogenous data — the positive
+        assertions live in ``test_feature_aware_backtest.py``. PRP-29 DECISIONS
+        LOCKED #7 and PRP-30 DECISIONS LOCKED #6 are therefore superseded.
+
+        What stays loud — and is pinned here — is the genuinely-unsupported
+        path: a ``requires_features`` model reaching the fold loop with no
+        ``ExogenousFrame`` loaded on ``series_data`` raises ``ValueError``
+        rather than degrading to a silent all-NaN matrix.
         """
         from app.features.backtesting.splitter import TimeSeriesSplitter
         from app.features.forecasting.schemas import RegressionModelConfig
@@ -140,10 +145,10 @@ class TestBacktestingServiceRunModelBacktest:
             values=sample_values_120,
             store_id=1,
             product_id=1,
-        )
+        )  # NOTE: no ExogenousFrame loaded — the unsupported path.
         splitter = TimeSeriesSplitter(sample_split_config_expanding)
 
-        with pytest.raises(ValueError, match="requires exogenous features X"):
+        with pytest.raises(ValueError, match="ExogenousFrame"):
             service._run_model_backtest(
                 series_data=series_data,
                 splitter=splitter,

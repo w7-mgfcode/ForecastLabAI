@@ -173,6 +173,12 @@ class ModelBacktestResult(BaseModel):
         fold_results: Results for each fold.
         aggregated_metrics: Mean metrics across folds.
         metric_std: Standard deviation of metrics across folds.
+        feature_aware: True when the model consumed a per-fold feature matrix
+            (``requires_features``); False for target-only baseline models.
+        exogenous_policy: How the test-window exogenous columns were sourced.
+            ``"observed"`` (the recorded price/promotion plan) for a
+            feature-aware result; ``None`` for a target-only model. Recorded so
+            the metric is read honestly as "accuracy given a known plan".
     """
 
     model_type: str
@@ -180,6 +186,8 @@ class ModelBacktestResult(BaseModel):
     fold_results: list[FoldResult]
     aggregated_metrics: dict[str, float]
     metric_std: dict[str, float]
+    feature_aware: bool = False
+    exogenous_policy: Literal["observed"] | None = None
 
 
 # =============================================================================

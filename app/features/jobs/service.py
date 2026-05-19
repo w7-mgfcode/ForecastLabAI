@@ -609,8 +609,10 @@ class JobService:
         from app.features.backtesting.schemas import BacktestConfig, SplitConfig
         from app.features.backtesting.service import BacktestingService
         from app.features.forecasting.schemas import (
+            LightGBMModelConfig,
             MovingAverageModelConfig,
             NaiveModelConfig,
+            RegressionModelConfig,
             SeasonalNaiveModelConfig,
         )
 
@@ -644,6 +646,13 @@ class JobService:
         elif model_type == "moving_average":
             window_size = params.get("window_size", 7)
             model_config = MovingAverageModelConfig(window_size=window_size)
+        elif model_type == "regression":
+            # Feature-aware — the backtest builds per-fold leakage-safe X.
+            model_config = RegressionModelConfig()
+        elif model_type == "lightgbm":
+            # Feature-aware — still gated by forecast_enable_lightgbm inside
+            # model_factory; a disabled flag surfaces as a loud failed job.
+            model_config = LightGBMModelConfig()
         else:
             msg = f"Unsupported model_type: {model_type}"
             raise ValueError(msg)

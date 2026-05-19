@@ -393,6 +393,12 @@ curl -X POST http://localhost:8123/backtesting/run \
 **Baseline Comparisons:**
 When `include_baselines=true`, automatically compares against naive and seasonal_naive models.
 
+**Feature-Aware Models:**
+`regression` and `lightgbm` models can be backtested too — set
+`model_config_main.model_type` accordingly. Each fold builds a leakage-safe
+per-fold feature matrix (`min_train_size >= 30` required); the result carries
+`feature_aware: true` and `exogenous_policy: "observed"`.
+
 See [examples/backtest/](examples/backtest/) for usage examples.
 
 ### Model Registry

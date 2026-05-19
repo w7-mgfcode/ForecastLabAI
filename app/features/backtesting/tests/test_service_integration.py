@@ -295,3 +295,99 @@ class TestBacktestingServiceIntegration:
             actual_gap = (test_start - train_end).days
             # Gap should be at least gap_days (could be more if data is sparse)
             assert actual_gap >= gap_days, f"Expected gap >= {gap_days}, got {actual_gap}"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestBacktestingServiceFeatureAwareIntegration:
+    """Integration tests for feature-aware backtesting (MLZOO-B.2).
+
+    A ``regression`` model is evaluated end-to-end against the real database:
+    ``run_backtest`` resolves the exogenous frame, the fold loop builds the
+    per-fold leakage-safe ``X_train`` / ``X_future``, and the result is
+    compared head-to-head with the naive / seasonal baselines.
+    """
+
+    async def test_regression_backtest_runs_with_baseline_comparison(
+        self,
+        db_session: AsyncSession,
+        sample_store: Store,
+        sample_product: Product,
+        sample_sales_120: list[SalesDaily],
+    ) -> None:
+        """A regression backtest yields per-fold metrics + a baseline comparison."""
+        from app.features.forecasting.schemas import RegressionModelConfig
+
+        service = BacktestingService()
+        config = BacktestConfig(
+            split_config=SplitConfig(
+                strategy="expanding",
+                n_splits=3,
+                min_train_size=30,
+                gap=0,
+                horizon=14,
+            ),
+            model_config_main=RegressionModelConfig(),
+            include_baselines=True,
+            store_fold_details=True,
+        )
+
+        response = await service.run_backtest(
+            db=db_session,
+            store_id=sample_store.id,
+            product_id=sample_product.id,
+            start_date=date(2024, 1, 1),
+            end_date=date(2024, 4, 29),
+            config=config,
+        )
+
+        main = response.main_model_results
+        assert main.model_type == "regression"
+        assert main.feature_aware is True
+        assert main.exogenous_policy == "observed"
+        assert len(main.fold_results) > 0
+        assert "mae" in main.aggregated_metrics
+        assert response.leakage_check_passed is True
+
+        # Baselines stay target-only and unflagged.
+        assert response.baseline_results is not None
+        baseline_types = {b.model_type for b in response.baseline_results}
+        assert baseline_types == {"naive", "seasonal_naive"}
+        for baseline in response.baseline_results:
+            assert baseline.feature_aware is False
+            assert baseline.exogenous_policy is None
+        assert response.comparison_summary is not None
+
+    async def test_regression_backtest_rejects_small_min_train_size(
+        self,
+        db_session: AsyncSession,
+        sample_store: Store,
+        sample_product: Product,
+        sample_sales_120: list[SalesDaily],
+    ) -> None:
+        """A feature-aware backtest with min_train_size < 30 fails loud."""
+        from app.features.forecasting.schemas import RegressionModelConfig
+
+        service = BacktestingService()
+        config = BacktestConfig(
+            split_config=SplitConfig(
+                strategy="expanding",
+                n_splits=3,
+                min_train_size=20,
+                gap=0,
+                horizon=14,
+            ),
+            model_config_main=RegressionModelConfig(),
+            include_baselines=False,
+            store_fold_details=True,
+        )
+
+        with pytest.raises(ValueError, match="at least 30"):
+            await service.run_backtest(
+                db=db_session,
+                store_id=sample_store.id,
+                product_id=sample_product.id,
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 4, 29),
+                config=config,
+            )

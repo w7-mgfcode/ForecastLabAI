@@ -17,6 +17,7 @@ Recommended PRP sequence:
 | --- | --- | --- | --- |
 | 1 | `INITIAL-MLZOO-A-foundation-feature-frames.md` | PRP-29 | Feature-aware forecasting foundation and leakage-safe frame contracts |
 | 2 | `INITIAL-MLZOO-B-lightgbm-first-model.md` | PRP-30 | First advanced model path with LightGBM (optional `ml-lightgbm` extra) |
+| 2.5 | `INITIAL-MLZOO-B.2-feature-aware-backtesting.md` | PRP-MLZOO-B.2 | Wire feature-aware models into the backtesting fold loop (per-fold leakage-safe `X_train` / `X_future`) |
 | 3 | `INITIAL-MLZOO-C-xgboost-prophet-extensions.md` | Future PRP | XGBoost and Prophet-like extensions |
 | 4 | `INITIAL-MLZOO-D-frontend-registry-explainability.md` | Future PRP | UI, registry surfacing, and explanation polish |
 
@@ -25,8 +26,9 @@ Dependency graph:
 ```text
 A. Foundation feature frames
   -> B. LightGBM first model
-      -> C. XGBoost / Prophet-like extensions
-      -> D. Frontend / registry / explainability
+      -> B.2 Feature-aware backtesting
+          -> C. XGBoost / Prophet-like extensions
+          -> D. Frontend / registry / explainability
 ```
 
 The full vision is documented in `docs/optional-features/05-advanced-ml-model-zoo.md`.

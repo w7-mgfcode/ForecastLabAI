@@ -33,10 +33,15 @@ from __future__ import annotations
 import math
 from datetime import date, timedelta
 
+import pytest
+
 from app.shared.feature_frames import (
     EXOGENOUS_LAGS,
     build_calendar_columns,
+    build_future_feature_rows,
+    build_historical_feature_rows,
     build_long_lag_columns,
+    canonical_feature_columns,
 )
 
 # The forecast origin T is the last observed day; the horizon runs T+1 … T+H.
@@ -114,3 +119,136 @@ def test_calendar_columns_are_independent_of_the_target_series() -> None:
         for cell in values:
             assert cell not in history_values
             assert cell not in _FUTURE_TARGETS
+
+
+# --- build_future_feature_rows — the backtest test-window matrix (MLZOO-B.2) --
+#
+# build_future_feature_rows assembles one backtest fold's test-window feature
+# matrix. It receives ONLY history_tail (entirely <= the fold origin T) — it is
+# structurally incapable of reading a test-window observed target. These specs
+# pin that, the NaN-where-future contract (including a gap > 0 fold), and the
+# historical-vs-future asymmetry that is the reason X_future is rebuilt here
+# rather than sliced from the historical matrix.
+
+_TEST_WINDOW = 14
+_TEST_PRICES = [10.0] * _TEST_WINDOW
+
+
+def test_future_lag_cells_are_drawn_only_from_history() -> None:
+    """Every non-NaN future lag cell comes from ``history_tail`` — never a target.
+
+    ``build_future_feature_rows`` takes only ``history_tail`` as target data;
+    a value disjoint from it appearing in any lag cell would be a leak.
+    """
+    test_dates = [_ORIGIN + timedelta(days=offset) for offset in range(1, _TEST_WINDOW + 1)]
+    columns = canonical_feature_columns()
+    rows = build_future_feature_rows(
+        test_dates=test_dates,
+        history_tail=_HISTORY_TAIL,
+        gap=0,
+        test_prices=_TEST_PRICES,
+        baseline_price=10.0,
+        test_promo_dates=set(),
+        test_holiday_dates=set(),
+        launch_date=None,
+    )
+    history_values = set(_HISTORY_TAIL)
+    for lag in EXOGENOUS_LAGS:
+        col = columns.index(f"lag_{lag}")
+        for j in range(_TEST_WINDOW):
+            cell = rows[j][col]
+            if math.isnan(cell):
+                continue
+            assert cell in history_values, (
+                f"lag_{lag} test day {j} emitted {cell}, not an observed history value"
+            )
+            assert cell not in _FUTURE_TARGETS, (
+                f"lag_{lag} test day {j} leaked a future target value {cell}"
+            )
+
+
+@pytest.mark.parametrize("gap", [0, 3, 7])
+def test_future_lag_is_nan_exactly_where_source_is_a_test_day(gap: int) -> None:
+    """A future lag cell is ``NaN`` exactly when its source day is in the test window.
+
+    For lag ``k`` and test day ``j`` (0-indexed) the source day relative to the
+    origin ``T`` is ``T + gap + j + 1 - k``; it lies in the test window — and
+    the cell MUST be ``NaN`` — exactly when ``gap + j - k >= 0``. Otherwise the
+    source is observed history and the cell MUST carry a value.
+    """
+    test_dates = [_ORIGIN + timedelta(days=gap + offset) for offset in range(1, _TEST_WINDOW + 1)]
+    columns = canonical_feature_columns()
+    rows = build_future_feature_rows(
+        test_dates=test_dates,
+        history_tail=_HISTORY_TAIL,
+        gap=gap,
+        test_prices=_TEST_PRICES,
+        baseline_price=10.0,
+        test_promo_dates=set(),
+        test_holiday_dates=set(),
+        launch_date=None,
+    )
+    for lag in EXOGENOUS_LAGS:
+        col = columns.index(f"lag_{lag}")
+        for j in range(_TEST_WINDOW):
+            cell = rows[j][col]
+            if gap + j - lag >= 0:
+                assert math.isnan(cell), (
+                    f"gap={gap} lag_{lag} day {j}: source is a test day — expected NaN, got {cell}"
+                )
+            else:
+                assert not math.isnan(cell), (
+                    f"gap={gap} lag_{lag} day {j}: source is in history — expected a value, got NaN"
+                )
+
+
+def test_historical_and_future_lag_columns_are_asymmetric() -> None:
+    """The crux of MLZOO-B.2: a historical lag row reads adjacent observed targets;
+    a future lag row does NOT — which is why ``X_future`` is rebuilt here and
+    never sliced from the historical matrix.
+
+    A continuous sequential series is split at the origin ``T``. The historical
+    matrix row for a test-window day reads that day's neighbouring *observed*
+    target as ``lag_1`` (slicing it for ``X_future`` would be target leakage).
+    The future matrix produces ``NaN`` there instead.
+    """
+    series_len = 60
+    train_end = 40  # origin T is index 39 (the last train day)
+    full = [float(i + 1) for i in range(series_len)]
+    history_tail = full[:train_end]
+    columns = canonical_feature_columns()
+    lag1 = columns.index("lag_1")
+
+    historical = build_historical_feature_rows(
+        dates=[_ORIGIN + timedelta(days=offset) for offset in range(series_len)],
+        quantities=full,
+        prices=[10.0] * series_len,
+        baseline_price=10.0,
+        promo_dates=set(),
+        holiday_dates=set(),
+        launch_date=None,
+    )
+    # The historical matrix row for a TEST-window day reads an observed
+    # test-day target as lag_1 — proof that slicing it for X_future leaks.
+    assert historical[train_end + 1][lag1] == full[train_end], (
+        "historical lag_1 for a test-window row must read the adjacent observed target"
+    )
+
+    test_window = 10
+    future = build_future_feature_rows(
+        test_dates=[_ORIGIN + timedelta(days=offset) for offset in range(1, test_window + 1)],
+        history_tail=history_tail,
+        gap=0,
+        test_prices=[10.0] * test_window,
+        baseline_price=10.0,
+        test_promo_dates=set(),
+        test_holiday_dates=set(),
+        launch_date=None,
+    )
+    # The future matrix: test day 0's lag_1 is y[T] (knowable); every later
+    # day's lag_1 is NaN — it never reads a test-window observed target.
+    assert future[0][lag1] == history_tail[-1], "future lag_1 day 0 must be the origin y[T]"
+    for j in range(1, test_window):
+        assert math.isnan(future[j][lag1]), (
+            f"future lag_1 test day {j} must be NaN — it must never read a test-window target"
+        )

@@ -21,6 +21,7 @@ from app.features.backtesting.schemas import (
     SplitBoundary,
     SplitConfig,
 )
+from app.features.backtesting.service import BacktestingService
 from app.features.forecasting.schemas import (
     LightGBMModelConfig,
     RegressionModelConfig,
@@ -245,4 +246,67 @@ async def test_execute_train_rejects_unsupported_model_type() -> None:
         await JobService()._execute_train(
             db=cast(AsyncSession, AsyncMock()),
             params={**_REGRESSION_PARAMS, "model_type": "arima"},
+        )
+
+
+# Parameters for a backtest job — _execute_backtest reads these keys.
+_BACKTEST_PARAMS: dict[str, Any] = {
+    "model_type": "regression",
+    "store_id": 1,
+    "product_id": 1,
+    "start_date": "2024-01-01",
+    "end_date": "2024-12-01",
+    "n_splits": 3,
+}
+
+
+async def test_execute_backtest_builds_regression_config() -> None:
+    """A backtest job with model_type='regression' builds a RegressionModelConfig.
+
+    ``run_backtest`` is mocked, so the test is pure (no DB): it pins that
+    ``_execute_backtest`` widened its allow-list and shaped the result.
+    """
+    response = _make_response()
+    with patch.object(
+        BacktestingService, "run_backtest", new=AsyncMock(return_value=response)
+    ) as mock_run:
+        result = await JobService()._execute_backtest(
+            db=cast(AsyncSession, AsyncMock()),
+            params=_BACKTEST_PARAMS,
+        )
+    assert mock_run.call_args is not None
+    config = mock_run.call_args.kwargs["config"]
+    assert isinstance(config.model_config_main, RegressionModelConfig)
+    assert result["model_type"] == "regression"
+    # The frontend job-result contract is still shaped (byte-stable keys).
+    assert "fold_metrics" in result
+    assert "aggregated_metrics" in result
+
+
+async def test_execute_backtest_builds_lightgbm_config() -> None:
+    """A backtest job with model_type='lightgbm' builds a LightGBMModelConfig.
+
+    ``run_backtest`` is mocked, so ``model_factory``'s feature-flag gate is
+    never reached and the optional lightgbm dependency is not required.
+    """
+    response = _make_response()
+    with patch.object(
+        BacktestingService, "run_backtest", new=AsyncMock(return_value=response)
+    ) as mock_run:
+        result = await JobService()._execute_backtest(
+            db=cast(AsyncSession, AsyncMock()),
+            params={**_BACKTEST_PARAMS, "model_type": "lightgbm"},
+        )
+    assert mock_run.call_args is not None
+    config = mock_run.call_args.kwargs["config"]
+    assert isinstance(config.model_config_main, LightGBMModelConfig)
+    assert result["model_type"] == "lightgbm"
+
+
+async def test_execute_backtest_rejects_unsupported_model_type() -> None:
+    """_execute_backtest still rejects a genuinely unsupported model_type."""
+    with pytest.raises(ValueError, match="Unsupported model_type"):
+        await JobService()._execute_backtest(
+            db=cast(AsyncSession, AsyncMock()),
+            params={**_BACKTEST_PARAMS, "model_type": "arima"},
         )
