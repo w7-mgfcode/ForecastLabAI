@@ -85,7 +85,7 @@ def build_historical_feature_rows(
 
     Raises:
         ValueError: When ``dates``, ``quantities``, and ``prices`` do not all
-            share the same length.
+            share the same length, or ``baseline_price`` is not finite and > 0.
     """
     n_dates = len(dates)
     if len(quantities) != n_dates or len(prices) != n_dates:
@@ -93,6 +93,11 @@ def build_historical_feature_rows(
             "build_historical_feature_rows: dates, quantities, and prices must have "
             f"equal lengths (got dates={n_dates}, quantities={len(quantities)}, "
             f"prices={len(prices)})"
+        )
+    if not math.isfinite(baseline_price) or baseline_price <= 0.0:
+        raise ValueError(
+            "build_historical_feature_rows: baseline_price must be finite and > 0, "
+            f"got {baseline_price!r}"
         )
     calendar_columns = build_calendar_columns(dates)
     rows: list[list[float]] = []
@@ -169,7 +174,8 @@ def build_future_feature_rows(
 
     Raises:
         ValueError: When ``gap`` is negative, ``test_prices`` does not align
-            with ``test_dates``, or a canonical column cannot be sourced.
+            with ``test_dates``, ``baseline_price`` is not finite and > 0, or a
+            canonical column cannot be sourced.
     """
     horizon = len(test_dates)
     if gap < 0:
@@ -178,6 +184,11 @@ def build_future_feature_rows(
         raise ValueError(
             f"build_future_feature_rows: test_prices has {len(test_prices)} entries "
             f"but test_dates has {horizon} — they must align"
+        )
+    if not math.isfinite(baseline_price) or baseline_price <= 0.0:
+        raise ValueError(
+            "build_future_feature_rows: baseline_price must be finite and > 0, "
+            f"got {baseline_price!r}"
         )
 
     # Lags: build for gap + horizon days, then drop the gap lead-in so row j
