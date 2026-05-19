@@ -393,3 +393,85 @@ class TestBacktestingRouteIntegration:
             assert "test_end" in split
             assert "train_size" in split
             assert "test_size" in split
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestBacktestingRouteFeatureAwareIntegration:
+    """Integration tests for POST /backtesting/run with a feature-aware model."""
+
+    async def test_run_backtest_regression_model(
+        self,
+        client: AsyncClient,
+        sample_store: Store,
+        sample_product: Product,
+        sample_sales_120: list[SalesDaily],
+    ) -> None:
+        """A regression backtest returns 200 with per-fold metrics + baselines."""
+        response = await client.post(
+            "/backtesting/run",
+            json={
+                "store_id": sample_store.id,
+                "product_id": sample_product.id,
+                "start_date": "2024-01-01",
+                "end_date": "2024-04-29",
+                "config": {
+                    "split_config": {
+                        "strategy": "expanding",
+                        "n_splits": 3,
+                        "min_train_size": 30,
+                        "gap": 0,
+                        "horizon": 14,
+                    },
+                    "model_config_main": {"model_type": "regression"},
+                    "include_baselines": True,
+                    "store_fold_details": True,
+                },
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+
+        main = data["main_model_results"]
+        assert main["model_type"] == "regression"
+        assert main["feature_aware"] is True
+        assert main["exogenous_policy"] == "observed"
+        assert len(main["fold_results"]) > 0
+        assert data["leakage_check_passed"] is True
+
+        baseline_types = {b["model_type"] for b in data["baseline_results"]}
+        assert baseline_types == {"naive", "seasonal_naive"}
+
+    async def test_run_backtest_regression_rejects_small_min_train_size(
+        self,
+        client: AsyncClient,
+        sample_store: Store,
+        sample_product: Product,
+        sample_sales_120: list[SalesDaily],
+    ) -> None:
+        """A regression backtest with min_train_size < 30 returns RFC 7807 400."""
+        response = await client.post(
+            "/backtesting/run",
+            json={
+                "store_id": sample_store.id,
+                "product_id": sample_product.id,
+                "start_date": "2024-01-01",
+                "end_date": "2024-04-29",
+                "config": {
+                    "split_config": {
+                        "strategy": "expanding",
+                        "n_splits": 3,
+                        "min_train_size": 20,
+                        "gap": 0,
+                        "horizon": 14,
+                    },
+                    "model_config_main": {"model_type": "regression"},
+                    "include_baselines": False,
+                    "store_fold_details": True,
+                },
+            },
+        )
+
+        assert response.status_code == 400
+        assert "at least 30" in response.text

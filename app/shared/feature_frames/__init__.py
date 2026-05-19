@@ -23,6 +23,10 @@ from app.shared.feature_frames.contract import (
     canonical_feature_columns,
     feature_safety,
 )
+from app.shared.feature_frames.rows import (
+    build_future_feature_rows,
+    build_historical_feature_rows,
+)
 
 __all__ = [
     "CALENDAR_COLUMNS",
@@ -33,6 +37,8 @@ __all__ = [
     "FeatureSafety",
     "FutureFeatureFrame",
     "build_calendar_columns",
+    "build_future_feature_rows",
+    "build_historical_feature_rows",
     "build_long_lag_columns",
     "canonical_feature_columns",
     "feature_safety",

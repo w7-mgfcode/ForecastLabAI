@@ -105,12 +105,29 @@ A new feature-aware model (PRP-MLZOO-B onward):
 2. Reuses the **shared** frame builders and `canonical_feature_columns()` — it
    writes **zero** new contract code, so it cannot drift from the regression
    contract.
-3. Consumes the historical frame for `fit(y, X)` and (via
-   `POST /scenarios/simulate`) the future frame for `predict(horizon, X)`.
+3. Consumes the historical frame for `fit(y, X)`, the future frame (via
+   `POST /scenarios/simulate`) for `predict(horizon, X)`, and — since
+   PRP-MLZOO-B.2 — the per-fold backtest frames for `POST /backtesting/run`.
 
-Known limitation: **backtesting is not wired for feature-aware models.** The
-backtest fold loop calls `model.fit(y_train)` target-only; a feature-aware model
-raises `ValueError` there — a loud, non-leaky failure, pinned by
-`test_feature_aware_model_fails_loud_in_backtest`. Feature-aware backtesting is
-deferred to PRP-MLZOO-B.2 — it remains pending after PRP-30 (LightGBM, MLZOO-B)
-shipped the first advanced feature-aware model.
+## Backtesting frame (per fold)
+
+Since **PRP-MLZOO-B.2** a feature-aware model is evaluated by the backtesting
+fold loop. Each fold builds two matrices from the **same** canonical column set:
+
+- **`X_train`** — a positional slice of the full historical matrix
+  (`build_historical_feature_rows`), built once over the whole series. Leakage-
+  safe *as a training row*: every lag reads a strictly-earlier observed target.
+- **`X_future`** — the test-window matrix, **rebuilt per fold** by
+  `build_future_feature_rows` (never sliced from the historical matrix — a
+  sliced historical test row would read an adjacent test-day observed target as
+  its `lag_1` cell, which is target leakage). Its `history_tail` ends at the
+  fold origin `T`, so a lag cell whose source day is in the test window is
+  `NaN`. With `gap > 0` the lag columns are built for `gap + horizon` days and
+  the first `gap` rows dropped.
+
+The test-window `price_factor` / `promo_active` come from the **recorded**
+price/promotion for that window (the v1 `observed` exogenous policy) — that
+reads no target `y`, so it is exogenous foresight, not target leakage; the
+`ModelBacktestResult` records `exogenous_policy="observed"` so the metric is
+read honestly. Both builders live in `app/shared/feature_frames/rows.py` and are
+spec'd by the load-bearing `app/shared/feature_frames/tests/test_leakage.py`.

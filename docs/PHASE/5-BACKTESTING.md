@@ -373,6 +373,39 @@ $ uv run pytest app/features/backtesting/tests/ -v -m integration
 
 ---
 
+## Feature-Aware Backtesting (MLZOO-B.2)
+
+Since PRP-MLZOO-B.2 the fold loop also evaluates **feature-aware** models
+(`regression`, `lightgbm` — any model with `requires_features=True`), not just
+the target-only baselines.
+
+**How it works**:
+1. `run_backtest` (async) probes the model's `requires_features` flag. For a
+   feature-aware model it resolves the exogenous data — recorded price,
+   promotion windows, calendar holidays, product launch date — once, into a
+   pure in-memory `ExogenousFrame`. The fold loop stays sync and DB-free.
+2. `_run_model_backtest` branches on the flag. The feature-aware path builds the
+   full historical feature matrix once, then per fold:
+   - **`X_train`** — a positional slice of that historical matrix.
+   - **`X_future`** — rebuilt per fold by `build_future_feature_rows` (never
+     sliced — that would leak an adjacent test-day target as `lag_1`). Its
+     `history_tail` ends at the fold origin `T`, so future-sourced lag cells
+     are `NaN`; with `gap > 0` the lag columns drop the gap lead-in.
+3. The result records `feature_aware: true` and `exogenous_policy: "observed"`
+   (the v1 policy — the recorded test-window price/promotion plan; exogenous
+   foresight, not target leakage).
+
+**Constraints**:
+- `min_train_size >= 30` is required for a feature-aware backtest (each fold
+  must resolve its lag features) — a smaller value raises `ValueError` (400).
+- The naive / seasonal baselines stay target-only — they take the unchanged
+  code path even when the main model is feature-aware.
+
+The per-fold row builders live in `app/shared/feature_frames/rows.py`; the
+leakage invariants are pinned by `app/shared/feature_frames/tests/test_leakage.py`.
+
+---
+
 ## Next Phase Preparation
 
 Phase 6 (Model Registry) will use the backtesting module to:

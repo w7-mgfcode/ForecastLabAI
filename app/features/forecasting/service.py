@@ -11,7 +11,6 @@ CRITICAL: All operations respect time-safety constraints.
 
 from __future__ import annotations
 
-import math
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -40,10 +39,8 @@ from app.features.forecasting.schemas import (
     TrainResponse,
 )
 from app.shared.feature_frames import (
-    CALENDAR_COLUMNS,
-    EXOGENOUS_LAGS,
     HISTORY_TAIL_DAYS,
-    build_calendar_columns,
+    build_historical_feature_rows,
     canonical_feature_columns,
 )
 
@@ -133,9 +130,11 @@ def _assemble_regression_rows(
     then the calendar columns, then ``price_factor``, ``promo_active``,
     ``is_holiday``, ``days_since_launch``.
 
-    Extracted from :meth:`ForecastingService._build_regression_features` so the
-    leakage invariant can be unit-tested without a database
-    (``test_regression_features_leakage.py``).
+    Delegating shim (MLZOO-B.2): the row-assembly body was promoted verbatim
+    to :func:`app.shared.feature_frames.build_historical_feature_rows` so the
+    ``backtesting`` slice can reuse it without a forbidden cross-slice import.
+    This wrapper keeps the name and signature byte-stable, so the load-bearing
+    leakage spec (``test_regression_features_leakage.py``) imports it unchanged.
 
     Args:
         dates: Observed days in chronological order.
@@ -151,23 +150,15 @@ def _assemble_regression_rows(
         a lag whose source day precedes the series, and ``days_since_launch``
         when the product has no launch date.
     """
-    calendar_columns = build_calendar_columns(dates)
-    rows: list[list[float]] = []
-    for index, day in enumerate(dates):
-        row: list[float] = []
-        # Target long-lag columns — read only strictly-earlier observations.
-        for lag in EXOGENOUS_LAGS:
-            row.append(quantities[index - lag] if index >= lag else math.nan)
-        # Calendar columns — pure functions of the date (shared builder).
-        for name in CALENDAR_COLUMNS:
-            row.append(calendar_columns[name][index])
-        # Exogenous columns — same-day observed attributes.
-        row.append(prices[index] / baseline_price)
-        row.append(1.0 if day in promo_dates else 0.0)
-        row.append(1.0 if day in holiday_dates else 0.0)
-        row.append(float((day - launch_date).days) if launch_date is not None else math.nan)
-        rows.append(row)
-    return rows
+    return build_historical_feature_rows(
+        dates=dates,
+        quantities=quantities,
+        prices=prices,
+        baseline_price=baseline_price,
+        promo_dates=promo_dates,
+        holiday_dates=holiday_dates,
+        launch_date=launch_date,
+    )
 
 
 class ForecastingService:

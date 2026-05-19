@@ -225,6 +225,48 @@ class TestModelBacktestResult:
         assert result.model_type == "naive"
         assert result.aggregated_metrics["mae"] == 5.0
 
+    def test_feature_aware_fields_default_to_target_only(self):
+        """The MLZOO-B.2 fields default to a target-only result — every existing
+        construction site (which omits them) stays valid."""
+        result = ModelBacktestResult(
+            model_type="naive",
+            config_hash="abc123",
+            fold_results=[],
+            aggregated_metrics={"mae": 5.0},
+            metric_std={"mae_stability": 10.0},
+        )
+
+        assert result.feature_aware is False
+        assert result.exogenous_policy is None
+
+    def test_feature_aware_fields_accept_explicit_values(self):
+        """A feature-aware result carries feature_aware=True + the exogenous policy."""
+        result = ModelBacktestResult(
+            model_type="regression",
+            config_hash="def456",
+            fold_results=[],
+            aggregated_metrics={"mae": 3.0},
+            metric_std={"mae_stability": 8.0},
+            feature_aware=True,
+            exogenous_policy="observed",
+        )
+
+        assert result.feature_aware is True
+        assert result.exogenous_policy == "observed"
+
+    def test_exogenous_policy_rejects_an_unknown_value(self):
+        """exogenous_policy is a closed Literal — only 'observed' in v1."""
+        with pytest.raises(ValidationError):
+            ModelBacktestResult(
+                model_type="regression",
+                config_hash="def456",
+                fold_results=[],
+                aggregated_metrics={"mae": 3.0},
+                metric_std={"mae_stability": 8.0},
+                feature_aware=True,
+                exogenous_policy="assumptions",  # type: ignore[arg-type]
+            )
+
 
 class TestBacktestRequest:
     """Tests for BacktestRequest schema."""

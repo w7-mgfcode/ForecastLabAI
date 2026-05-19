@@ -125,10 +125,14 @@ def test_shared_package_imports_nothing_from_features() -> None:
     """``app/shared/**`` is leaf-level — it may never import a vertical slice.
 
     Walks every ``.py`` file in the package and asserts no module imports a
-    name under ``app.features`` (AGENTS.md § Architecture).
+    name under ``app.features`` (AGENTS.md § Architecture). ``rows.py`` (the
+    MLZOO-B.2 row-matrix assemblers) is walked here too — see the explicit
+    assertion below that it is part of the package.
     """
     pkg_dir = Path(__file__).resolve().parents[1]  # app/shared/feature_frames/
+    walked: set[str] = set()
     for py_file in pkg_dir.rglob("*.py"):
+        walked.add(py_file.name)
         source = py_file.read_text(encoding="utf-8")
         for node in ast.walk(ast.parse(source)):
             if isinstance(node, ast.ImportFrom) and node.module:
@@ -140,3 +144,7 @@ def test_shared_package_imports_nothing_from_features() -> None:
                     assert not alias.name.startswith("app.features"), (
                         f"ARCHITECTURE BREACH: {py_file} imports {alias.name}"
                     )
+    # rows.py must exist and be covered by the leaf-level walk above.
+    assert {"contract.py", "rows.py"} <= walked, (
+        f"expected contract.py and rows.py in the package walk, got {sorted(walked)}"
+    )
