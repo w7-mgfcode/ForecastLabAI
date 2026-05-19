@@ -15,6 +15,8 @@ This folder contains implementation-oriented product and architecture notes for 
 | Agent Experiment Workbench | [07-agent-experiment-workbench.md](07-agent-experiment-workbench.md) | Strategic | High |
 | Demand Anomaly and Data Quality Monitor | [08-demand-anomaly-data-quality-monitor.md](08-demand-anomaly-data-quality-monitor.md) | Medium-term | Medium |
 | Model Champion/Challenger Governance | [09-model-champion-challenger-governance.md](09-model-champion-challenger-governance.md) | Medium-term | High |
+| BaseForecaster Feature Contract | [10-baseforecaster-feature-contract.md](10-baseforecaster-feature-contract.md) | MLZOO foundation | Low |
+| Feature-Aware Forecasting Predict Serving | [11-feature-aware-predict-serving.md](11-feature-aware-predict-serving.md) | MLZOO follow-up | Medium |
 
 ## Promotion Criteria
 
