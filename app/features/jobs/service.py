@@ -424,9 +424,13 @@ class JobService:
         from datetime import date as date_type
 
         from app.features.forecasting.schemas import (
+            LightGBMModelConfig,
             MovingAverageModelConfig,
             NaiveModelConfig,
+            ProphetLikeModelConfig,
+            RegressionModelConfig,
             SeasonalNaiveModelConfig,
+            XGBoostModelConfig,
         )
         from app.features.forecasting.service import ForecastingService
 
@@ -457,6 +461,31 @@ class JobService:
         elif model_type == "moving_average":
             window_size = params.get("window_size", 7)
             config = MovingAverageModelConfig(window_size=window_size)
+        elif model_type == "regression":
+            config = RegressionModelConfig(
+                max_iter=params.get("max_iter", 200),
+                learning_rate=params.get("learning_rate", 0.05),
+                max_depth=params.get("max_depth", 6),
+            )
+        elif model_type == "lightgbm":
+            # The forecast_enable_lightgbm gate lives in model_factory — a
+            # lightgbm job with the flag off fails loud at train time.
+            config = LightGBMModelConfig(
+                n_estimators=params.get("n_estimators", 100),
+                learning_rate=params.get("learning_rate", 0.1),
+                max_depth=params.get("max_depth", 6),
+            )
+        elif model_type == "xgboost":
+            # The forecast_enable_xgboost gate lives in model_factory — an
+            # xgboost job with the flag off fails loud at train time.
+            config = XGBoostModelConfig(
+                n_estimators=params.get("n_estimators", 100),
+                learning_rate=params.get("learning_rate", 0.1),
+                max_depth=params.get("max_depth", 6),
+            )
+        elif model_type == "prophet_like":
+            # Pure scikit-learn additive model — no flag, always available.
+            config = ProphetLikeModelConfig(alpha=params.get("alpha", 1.0))
         else:
             msg = f"Unsupported model_type: {model_type}"
             raise ValueError(msg)
@@ -593,9 +622,13 @@ class JobService:
         from app.features.backtesting.schemas import BacktestConfig, SplitConfig
         from app.features.backtesting.service import BacktestingService
         from app.features.forecasting.schemas import (
+            LightGBMModelConfig,
             MovingAverageModelConfig,
             NaiveModelConfig,
+            ProphetLikeModelConfig,
+            RegressionModelConfig,
             SeasonalNaiveModelConfig,
+            XGBoostModelConfig,
         )
 
         service = BacktestingService()
@@ -628,6 +661,20 @@ class JobService:
         elif model_type == "moving_average":
             window_size = params.get("window_size", 7)
             model_config = MovingAverageModelConfig(window_size=window_size)
+        elif model_type == "regression":
+            # Feature-aware — the backtest builds per-fold leakage-safe X.
+            model_config = RegressionModelConfig()
+        elif model_type == "lightgbm":
+            # Feature-aware — still gated by forecast_enable_lightgbm inside
+            # model_factory; a disabled flag surfaces as a loud failed job.
+            model_config = LightGBMModelConfig()
+        elif model_type == "xgboost":
+            # Feature-aware — still gated by forecast_enable_xgboost inside
+            # model_factory; a disabled flag surfaces as a loud failed job.
+            model_config = XGBoostModelConfig()
+        elif model_type == "prophet_like":
+            # Feature-aware — the backtest builds per-fold leakage-safe X.
+            model_config = ProphetLikeModelConfig()
         else:
             msg = f"Unsupported model_type: {model_type}"
             raise ValueError(msg)

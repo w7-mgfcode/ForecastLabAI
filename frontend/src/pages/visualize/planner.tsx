@@ -35,6 +35,7 @@ import {
 import { downloadCsv, toCsv } from '@/lib/csv-export'
 import { formatCurrency, formatNumber, getErrorMessage } from '@/lib/api'
 import {
+  assumptionDateErrors,
   buildMultiSeries,
   coverageLabel,
   coverageVariant,
@@ -73,8 +74,11 @@ export default function WhatIfPlannerPage() {
   const [selectedJobId, setSelectedJobId] = useState('')
   const [horizon, setHorizon] = useState(14)
   const { data: job } = useJob(selectedJobId, !!selectedJobId)
-  // A predict job's params.run_id is the baseline model artifact key.
-  const baselineRunId = typeof job?.params?.run_id === 'string' ? job.params.run_id : null
+  // A completed `train` job stores result.run_id — the model-artifact key
+  // POST /scenarios/simulate resolves. (This is NOT a registry run id.)
+  // A `regression` baseline routes the simulate call down the model_exogenous
+  // re-forecast branch; other model types fall back to the heuristic factor.
+  const baselineRunId = typeof job?.result?.run_id === 'string' ? job.result.run_id : null
 
   // -- Assumption form state ---------------------------------------------
   const [priceEnabled, setPriceEnabled] = useState(false)
@@ -96,6 +100,19 @@ export default function WhatIfPlannerPage() {
   const [lifecycleEnabled, setLifecycleEnabled] = useState(false)
   const [lifecycleStage, setLifecycleStage] =
     useState<(typeof LIFECYCLE_STAGES)[number]>('maturity')
+
+  // -- Derived validation ------------------------------------------------
+  // Enabling Price/Promotion without filling both dates would submit empty
+  // strings — Pydantic date validation rejects those with an RFC 7807 422.
+  // Gate Run/Save on this so the form can never produce that request (#228).
+  const dateErrors = assumptionDateErrors({
+    priceEnabled,
+    priceStart,
+    priceEnd,
+    promoEnabled,
+    promoStart,
+    promoEnd,
+  })
 
   // -- Results / persistence state ---------------------------------------
   const [simulated, setSimulated] = useState<ScenarioComparison | null>(null)
@@ -152,7 +169,7 @@ export default function WhatIfPlannerPage() {
   }
 
   async function handleRun() {
-    if (!baselineRunId) return
+    if (!baselineRunId || dateErrors.hasErrors) return
     setRunError(null)
     setReloadId('')
     try {
@@ -169,7 +186,7 @@ export default function WhatIfPlannerPage() {
   }
 
   async function handleSave() {
-    if (!baselineRunId || !planName.trim()) return
+    if (!baselineRunId || !planName.trim() || dateErrors.hasErrors) return
     setRunError(null)
     try {
       await createScenario.mutateAsync({
@@ -245,12 +262,15 @@ export default function WhatIfPlannerPage() {
         <CardHeader>
           <CardTitle>1. Pick a baseline</CardTitle>
           <CardDescription>
-            Choose a completed prediction job — its model is the baseline this scenario adjusts.
+            Choose a completed training job — its model is the baseline this scenario
+            adjusts. A regression baseline is genuinely re-forecast through the model
+            (model-driven); naive, seasonal-naive and moving-average baselines use a
+            heuristic adjustment factor.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <JobPicker
-            jobType="predict"
+            jobType="train"
             selectedJobId={selectedJobId}
             onSelect={setSelectedJobId}
             autoSelectLatest
@@ -274,7 +294,7 @@ export default function WhatIfPlannerPage() {
           </div>
           {selectedJobId && !baselineRunId && (
             <p className="text-sm text-muted-foreground">
-              The selected job has no model artifact — pick a completed predict job.
+              The selected job has no model artifact — pick a completed train job.
             </p>
           )}
         </CardContent>
@@ -317,6 +337,9 @@ export default function WhatIfPlannerPage() {
                     value={priceStart}
                     onChange={(event) => setPriceStart(event.target.value)}
                   />
+                  {dateErrors.priceStart && (
+                    <p className="text-xs text-destructive">Required</p>
+                  )}
                 </div>
                 <div className="space-y-1">
                   <span className="text-xs text-muted-foreground">To</span>
@@ -326,6 +349,9 @@ export default function WhatIfPlannerPage() {
                     value={priceEnd}
                     onChange={(event) => setPriceEnd(event.target.value)}
                   />
+                  {dateErrors.priceEnd && (
+                    <p className="text-xs text-destructive">Required</p>
+                  )}
                 </div>
               </div>
             )}
@@ -368,6 +394,9 @@ export default function WhatIfPlannerPage() {
                     value={promoStart}
                     onChange={(event) => setPromoStart(event.target.value)}
                   />
+                  {dateErrors.promoStart && (
+                    <p className="text-xs text-destructive">Required</p>
+                  )}
                 </div>
                 <div className="space-y-1">
                   <span className="text-xs text-muted-foreground">To</span>
@@ -377,6 +406,9 @@ export default function WhatIfPlannerPage() {
                     value={promoEnd}
                     onChange={(event) => setPromoEnd(event.target.value)}
                   />
+                  {dateErrors.promoEnd && (
+                    <p className="text-xs text-destructive">Required</p>
+                  )}
                 </div>
               </div>
             )}
@@ -462,7 +494,10 @@ export default function WhatIfPlannerPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3 border-t pt-4">
-            <Button onClick={handleRun} disabled={!baselineRunId || simulate.isPending}>
+            <Button
+              onClick={handleRun}
+              disabled={!baselineRunId || simulate.isPending || dateErrors.hasErrors}
+            >
               {simulate.isPending ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
@@ -593,7 +628,12 @@ export default function WhatIfPlannerPage() {
                 </div>
                 <Button
                   onClick={handleSave}
-                  disabled={!baselineRunId || !planName.trim() || createScenario.isPending}
+                  disabled={
+                    !baselineRunId ||
+                    !planName.trim() ||
+                    createScenario.isPending ||
+                    dateErrors.hasErrors
+                  }
                 >
                   {createScenario.isPending ? (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />

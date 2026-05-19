@@ -17,6 +17,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import date as date_type
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -34,19 +35,55 @@ from app.features.backtesting.schemas import (
     ModelBacktestResult,
     SplitBoundary,
 )
-from app.features.backtesting.splitter import TimeSeriesSplitter
-from app.features.data_platform.models import SalesDaily
+from app.features.backtesting.splitter import TimeSeriesSplit, TimeSeriesSplitter
+from app.features.data_platform.models import Calendar, Product, Promotion, SalesDaily
 from app.features.forecasting.models import model_factory
 from app.features.forecasting.schemas import (
     ModelConfig,
     NaiveModelConfig,
     SeasonalNaiveModelConfig,
 )
+from app.shared.feature_frames import (
+    HISTORY_TAIL_DAYS,
+    build_future_feature_rows,
+    build_historical_feature_rows,
+)
 
 if TYPE_CHECKING:
     pass
 
 logger = structlog.get_logger()
+
+# Minimum observed train rows a feature-aware model needs per fold to resolve
+# its lag features — mirrors ``forecasting.service._MIN_REGRESSION_TRAIN_ROWS``.
+# A feature-aware backtest with a smaller ``min_train_size`` fails loud in
+# ``_validate_config`` rather than producing all-NaN lag columns silently.
+_MIN_FEATURE_AWARE_TRAIN_ROWS = 30
+
+
+@dataclass
+class ExogenousFrame:
+    """Pre-loaded exogenous data for one series — resolved async, consumed sync.
+
+    A feature-aware backtest needs price / promotion / holiday / launch-date
+    data to build its per-fold feature matrices, but the fold loop is sync and
+    DB-free by design. ``run_backtest`` resolves all of it once into this pure
+    in-memory carrier; the fold builders read it without touching the database.
+
+    Attributes:
+        prices: Observed unit prices, aligned index-for-index with
+            :attr:`SeriesData.dates`.
+        baseline_price: Median positive price (``>0``); fallback ``1.0``.
+        promo_dates: Days a promotion covered anywhere in the data window.
+        holiday_dates: Calendar holiday days in the data window.
+        launch_date: The product's launch date, or ``None``.
+    """
+
+    prices: list[float]
+    baseline_price: float
+    promo_dates: set[date_type]
+    holiday_dates: set[date_type]
+    launch_date: date_type | None
 
 
 @dataclass
@@ -58,6 +95,8 @@ class SeriesData:
         values: Target values as numpy array.
         store_id: Store ID.
         product_id: Product ID.
+        exogenous: Pre-loaded exogenous data — present only for a feature-aware
+            backtest; ``None`` for a target-only run.
         n_observations: Number of observations.
     """
 
@@ -65,6 +104,7 @@ class SeriesData:
     values: np.ndarray[Any, np.dtype[np.floating[Any]]]
     store_id: int
     product_id: int
+    exogenous: ExogenousFrame | None = None
     n_observations: int = field(init=False)
 
     def __post_init__(self) -> None:
@@ -124,6 +164,19 @@ class BacktestingService:
                 provided=split_config.min_train_size,
                 default=self.settings.backtest_default_min_train_size,
                 message="Using provided min_train_size below recommended default",
+            )
+
+        # Feature-aware models need enough train rows per fold to resolve their
+        # lag features. Build a cheap probe (no fit) and branch on the
+        # capability flag — never on a model_type string. Loud, not silent.
+        probe = model_factory(
+            config.model_config_main, random_state=self.settings.forecast_random_seed
+        )
+        if probe.requires_features and split_config.min_train_size < _MIN_FEATURE_AWARE_TRAIN_ROWS:
+            raise ValueError(
+                f"A feature-aware model ({config.model_config_main.model_type}) needs "
+                f"min_train_size of at least {_MIN_FEATURE_AWARE_TRAIN_ROWS} to resolve its "
+                f"lag features per fold; got {split_config.min_train_size}."
             )
 
     def save_results(
@@ -217,6 +270,21 @@ class BacktestingService:
                 f"between {start_date} and {end_date}"
             )
 
+        # Feature-aware models consume a per-fold feature matrix. Branch on the
+        # capability flag (not a model_type string) and resolve the exogenous
+        # data once, here in the async entry point — the fold loop stays sync
+        # and DB-free. Target-only models skip this entirely.
+        probe = model_factory(
+            config.model_config_main, random_state=self.settings.forecast_random_seed
+        )
+        if probe.requires_features:
+            series_data.exogenous = await self._load_exogenous_frame(
+                db=db,
+                store_id=store_id,
+                product_id=product_id,
+                dates=series_data.dates,
+            )
+
         # Create splitter and validate
         splitter = TimeSeriesSplitter(config.split_config)
 
@@ -284,30 +352,61 @@ class BacktestingService:
     ) -> ModelBacktestResult:
         """Run backtest for a single model configuration.
 
+        Branches on the model's ``requires_features`` capability flag (never a
+        ``model_type`` string). A target-only model takes the unchanged
+        target-only path; a feature-aware model builds the full historical
+        feature matrix once (a local — never instance state) and runs each fold
+        through :meth:`_run_feature_aware_fold` with a leakage-safe per-fold
+        ``X_train`` slice and a rebuilt ``X_future``. The method signature is
+        unchanged — ``gap`` is read from ``splitter.config.gap``. Sync and
+        DB-free: all exogenous I/O happened in :meth:`run_backtest`.
+
         Args:
-            series_data: Loaded time series data.
+            series_data: Loaded time series data (carries ``exogenous`` for a
+                feature-aware run).
             splitter: Time series splitter.
             model_config: Model configuration.
             store_fold_details: Whether to store per-fold details.
 
         Returns:
-            ModelBacktestResult with all fold results.
+            ModelBacktestResult with all fold results; ``feature_aware`` and
+            ``exogenous_policy`` are set for a feature-aware model.
+
+        Raises:
+            ValueError: If a feature-aware model has no loaded ``ExogenousFrame``.
         """
         fold_results: list[FoldResult] = []
         fold_metrics: list[dict[str, float]] = []
 
+        # Probe the capability flag, then build the historical matrix once for
+        # the whole run (feature-aware path only) — sliced, never rebuilt, for
+        # each fold's X_train.
+        probe = model_factory(model_config, random_state=self.settings.forecast_random_seed)
+        feature_aware: bool = probe.requires_features
+        historical_matrix: np.ndarray[Any, np.dtype[np.floating[Any]]] | None = None
+        if feature_aware:
+            historical_matrix = self._build_historical_matrix(series_data)
+
         for split in splitter.split(series_data.dates, series_data.values):
             # Extract train and test data
-            y_train = series_data.values[split.train_indices]
             y_test = series_data.values[split.test_indices]
-
-            # Create and fit model
-            model = model_factory(model_config, random_state=self.settings.forecast_random_seed)
-            model.fit(y_train)
-
-            # Generate predictions
             horizon = len(split.test_indices)
-            predictions = model.predict(horizon)
+
+            if historical_matrix is not None:
+                # Feature-aware path — per-fold leakage-safe X_train / X_future.
+                predictions = self._run_feature_aware_fold(
+                    series_data=series_data,
+                    split=split,
+                    model_config=model_config,
+                    historical_matrix=historical_matrix,
+                    gap=splitter.config.gap,
+                )
+            else:
+                # Target-only path — unchanged.
+                y_train = series_data.values[split.train_indices]
+                model = model_factory(model_config, random_state=self.settings.forecast_random_seed)
+                model.fit(y_train)
+                predictions = model.predict(horizon)
 
             # Calculate metrics
             metrics = self.metrics_calculator.calculate_all(
@@ -360,7 +459,113 @@ class BacktestingService:
             fold_results=fold_results,
             aggregated_metrics=aggregated_metrics,
             metric_std=metric_std,
+            feature_aware=feature_aware,
+            exogenous_policy="observed" if feature_aware else None,
         )
+
+    def _build_historical_matrix(
+        self, series_data: SeriesData
+    ) -> np.ndarray[Any, np.dtype[np.floating[Any]]]:
+        """Build the full-series historical feature matrix for a backtest.
+
+        Built once per :meth:`_run_model_backtest` call as a local — never
+        instance state. Each row is leakage-safe *as a training row*: its lag
+        columns read only strictly-earlier observed targets. Per-fold
+        ``X_train`` is a positional slice of this matrix; ``X_future`` is NEVER
+        sliced from it (that would leak an adjacent test-day target).
+
+        Args:
+            series_data: Loaded time series data — must carry ``exogenous``.
+
+        Returns:
+            Row-major feature matrix aligned with ``series_data.dates``.
+
+        Raises:
+            ValueError: If ``series_data.exogenous`` is ``None`` — the
+                genuinely-unsupported path for a feature-aware backtest.
+        """
+        exo = series_data.exogenous
+        if exo is None:
+            raise ValueError(
+                "feature-aware backtest requires a loaded ExogenousFrame on series_data; "
+                "run_backtest must resolve exogenous data before the fold loop"
+            )
+        rows = build_historical_feature_rows(
+            dates=series_data.dates,
+            quantities=[float(v) for v in series_data.values],
+            prices=exo.prices,
+            baseline_price=exo.baseline_price,
+            promo_dates=exo.promo_dates,
+            holiday_dates=exo.holiday_dates,
+            launch_date=exo.launch_date,
+        )
+        return np.array(rows, dtype=np.float64)
+
+    def _run_feature_aware_fold(
+        self,
+        *,
+        series_data: SeriesData,
+        split: TimeSeriesSplit,
+        model_config: ModelConfig,
+        historical_matrix: np.ndarray[Any, np.dtype[np.floating[Any]]],
+        gap: int,
+    ) -> np.ndarray[Any, np.dtype[np.floating[Any]]]:
+        """Fit + predict one fold of a feature-aware backtest — pure, sync.
+
+        ``X_train`` is a positional slice of the full historical matrix (built
+        once, leakage-safe by position). ``X_future`` is rebuilt here per fold
+        via :func:`build_future_feature_rows`: its ``history_tail`` ends at the
+        fold origin ``T`` (the last train day, gap days excluded), so a lag
+        cell whose source day falls in the test window is ``NaN``.
+
+        Args:
+            series_data: Loaded time series data — carries ``exogenous``.
+            split: The fold's train/test split.
+            model_config: Model configuration (feature-aware).
+            historical_matrix: The full-series historical feature matrix.
+            gap: Gap days between train end and test start.
+
+        Returns:
+            Per-day predictions for the fold's test window.
+
+        Raises:
+            ValueError: If ``series_data.exogenous`` is ``None``.
+        """
+        exo = series_data.exogenous
+        if exo is None:  # defensive — the caller guarantees this is non-None
+            raise ValueError("feature-aware backtest requires a loaded ExogenousFrame")
+
+        # X_train — slice the historical matrix (leakage-safe by position).
+        x_train = historical_matrix[split.train_indices]
+        y_train = series_data.values[split.train_indices]
+
+        # X_future — rebuilt per fold. history_tail ends at T = last train day
+        # and EXCLUDES the gap days (data "not yet available" at forecast time).
+        train_end_idx = int(split.train_indices[-1]) + 1
+        history_tail = [float(v) for v in series_data.values[:train_end_idx][-HISTORY_TAIL_DAYS:]]
+        test_indices = [int(i) for i in split.test_indices]
+        test_prices = [exo.prices[i] for i in test_indices]
+        test_promo_dates = {
+            series_data.dates[i] for i in test_indices if series_data.dates[i] in exo.promo_dates
+        }
+        test_holiday_dates = {d for d in split.test_dates if d in exo.holiday_dates}
+        x_future = np.array(
+            build_future_feature_rows(
+                test_dates=split.test_dates,
+                history_tail=history_tail,
+                gap=gap,
+                test_prices=test_prices,
+                baseline_price=exo.baseline_price,
+                test_promo_dates=test_promo_dates,
+                test_holiday_dates=test_holiday_dates,
+                launch_date=exo.launch_date,
+            ),
+            dtype=np.float64,
+        )
+
+        model = model_factory(model_config, random_state=self.settings.forecast_random_seed)
+        model.fit(y_train, x_train)
+        return model.predict(len(test_indices), x_future)
 
     def _run_baseline_comparisons(
         self,
@@ -542,4 +747,106 @@ class BacktestingService:
             values=values,
             store_id=store_id,
             product_id=product_id,
+        )
+
+    async def _load_exogenous_frame(
+        self,
+        db: AsyncSession,
+        store_id: int,
+        product_id: int,
+        dates: list[date_type],
+    ) -> ExogenousFrame:
+        """Load exogenous data for a feature-aware backtest — async, once.
+
+        Mirrors ``ForecastingService._build_regression_features``: resolves the
+        recorded unit price per date, the promotion-covered days, the calendar
+        holidays, and the product launch date into a pure :class:`ExogenousFrame`
+        the sync fold loop consumes. The only ``y``-free reads — never a target.
+
+        Args:
+            db: Database session.
+            store_id: Store ID.
+            product_id: Product ID.
+            dates: The series dates (from :meth:`_load_series_data`) the prices
+                must align with index-for-index.
+
+        Returns:
+            The resolved :class:`ExogenousFrame`.
+        """
+        start_date = dates[0]
+        end_date = dates[-1]
+
+        # Recorded unit price per date — aligned with the series dates. Every
+        # series date came from the same SalesDaily window, so each resolves.
+        price_rows = (
+            await db.execute(
+                select(SalesDaily.date, SalesDaily.unit_price).where(
+                    (SalesDaily.store_id == store_id)
+                    & (SalesDaily.product_id == product_id)
+                    & (SalesDaily.date >= start_date)
+                    & (SalesDaily.date <= end_date)
+                )
+            )
+        ).all()
+        price_by_date = {row.date: float(row.unit_price) for row in price_rows}
+        prices = [price_by_date.get(day, 0.0) for day in dates]
+
+        # Baseline price = median of the positive prices, so price_factor is
+        # ~1.0 on a typical day and < 1.0 on a markdown/promo day.
+        positive_prices = sorted(price for price in prices if price > 0.0)
+        baseline_price = positive_prices[len(positive_prices) // 2] if positive_prices else 1.0
+
+        holiday_dates: set[date_type] = set(
+            (
+                await db.execute(
+                    select(Calendar.date).where(
+                        Calendar.date >= start_date,
+                        Calendar.date <= end_date,
+                        Calendar.is_holiday.is_(True),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        # Promotion-active days: store-specific OR chain-wide rows overlapping
+        # the data window, expanded to the set of dates they cover.
+        promo_rows = (
+            await db.execute(
+                select(Promotion.start_date, Promotion.end_date).where(
+                    Promotion.product_id == product_id,
+                    (Promotion.store_id == store_id) | (Promotion.store_id.is_(None)),
+                    Promotion.start_date <= end_date,
+                    Promotion.end_date >= start_date,
+                )
+            )
+        ).all()
+        promo_dates: set[date_type] = set()
+        for promo in promo_rows:
+            day = max(promo.start_date, start_date)
+            last = min(promo.end_date, end_date)
+            while day <= last:
+                promo_dates.add(day)
+                day += timedelta(days=1)
+
+        launch_date: date_type | None = await db.scalar(
+            select(Product.launch_date).where(Product.id == product_id)
+        )
+
+        logger.info(
+            "backtesting.exogenous_frame_loaded",
+            store_id=store_id,
+            product_id=product_id,
+            n_dates=len(dates),
+            n_holidays=len(holiday_dates),
+            n_promo_days=len(promo_dates),
+        )
+
+        return ExogenousFrame(
+            prices=prices,
+            baseline_price=baseline_price,
+            promo_dates=promo_dates,
+            holiday_dates=holiday_dates,
+            launch_date=launch_date,
         )

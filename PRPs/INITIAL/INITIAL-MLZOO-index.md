@@ -1,0 +1,88 @@
+# INITIAL-MLZOO-index.md - Advanced ML Model Zoo Roadmap
+
+## FEATURE:
+
+Split the Advanced ML Model Zoo into multiple INITIAL briefs so each future PRP can remain small, reviewable, and implementation-safe.
+
+This index is the roadmap for the MLZOO sequence. Do not create one PRP that implements the full model zoo. The correct flow is:
+
+1. Use this index to understand the full architecture.
+2. Use `INITIAL-MLZOO-A-foundation-feature-frames.md` as the first PRP input.
+3. Implement and merge the foundation before creating PRPs for later parts.
+4. Promote B, C, and D into PRPs only after their prerequisites are stable.
+
+Recommended PRP sequence:
+
+| Order | INITIAL | Intended PRP | Purpose |
+| --- | --- | --- | --- |
+| 1 | `INITIAL-MLZOO-A-foundation-feature-frames.md` | PRP-29 | Feature-aware forecasting foundation and leakage-safe frame contracts |
+| 2 | `INITIAL-MLZOO-B-lightgbm-first-model.md` | PRP-30 | First advanced model path with LightGBM (optional `ml-lightgbm` extra) |
+| 2.5 | `INITIAL-MLZOO-B.2-feature-aware-backtesting.md` | PRP-MLZOO-B.2 | Wire feature-aware models into the backtesting fold loop (per-fold leakage-safe `X_train` / `X_future`) |
+| 3a | `INITIAL-MLZOO-C-xgboost-prophet-extensions.md` (XGBoost half) | PRP-MLZOO-C1 | XGBoost feature-aware model — a low-risk follow-up mirroring the merged LightGBM design (optional `ml-xgboost` extra) |
+| 3b | `INITIAL-MLZOO-C-xgboost-prophet-extensions.md` (Prophet-like half) | PRP-MLZOO-C2 | Prophet-like additive model — a distinct model-family design (pure scikit-learn; trend / seasonality / regressor decomposition) |
+| 4 | `INITIAL-MLZOO-D-frontend-registry-explainability.md` | Future PRP | UI, registry surfacing, and explanation polish |
+
+**C is two PRPs, not one.** `INITIAL-MLZOO-C` briefs both XGBoost and a Prophet-like model,
+but they are deliberately split into **two separate PRPs, branches, and review units** —
+`PRP-MLZOO-C1` (XGBoost) and `PRP-MLZOO-C2` (Prophet-like). They are additive and
+order-independent; whichever merges second rebases cleanly. Do **not** combine them into a
+single branch or a single review unit (this honours the "one reviewable unit" rule below).
+
+Dependency graph:
+
+```text
+A. Foundation feature frames
+  -> B. LightGBM first model
+      -> B.2 Feature-aware backtesting
+          -> C1. XGBoost model           (separate review unit)
+          -> C2. Prophet-like model      (separate review unit; parallel to C1)
+          -> D. Frontend / registry / explainability
+```
+
+The full vision is documented in `docs/optional-features/05-advanced-ml-model-zoo.md`.
+
+## EXAMPLES:
+
+Read these before creating any MLZOO PRP:
+
+- `docs/optional-features/05-advanced-ml-model-zoo.md`
+  - Full optional-feature concept and documentation links.
+
+- `PRPs/INITIAL/INITIAL-5.md`
+  - Earlier forecasting model brief, including baseline model zoo and global ML hooks.
+
+- `docs/PHASE/4-FORECASTING.md`
+  - Completed forecasting phase, model interface, configs, persistence, service, and API behavior.
+
+- `app/features/forecasting/models.py`
+  - Current baseline model interface.
+
+- `app/features/featuresets/service.py`
+  - Existing time-safe feature engineering.
+
+- `app/features/featuresets/tests/test_leakage.py`
+  - Existing leakage-safety testing pattern.
+
+## DOCUMENTATION:
+
+- LightGBM documentation: https://lightgbm.readthedocs.io/
+- XGBoost documentation: https://xgboost.readthedocs.io/en/stable/
+- Prophet documentation: https://facebook.github.io/prophet/docs/quick_start.html
+- scikit-learn model persistence: https://scikit-learn.org/stable/model_persistence.html
+- scikit-learn TimeSeriesSplit: https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html
+- scikit-learn Pipeline composition: https://scikit-learn.org/stable/modules/compose.html
+- Pandas time series documentation: https://pandas.pydata.org/docs/user_guide/timeseries.html
+- Joblib persistence documentation: https://joblib.readthedocs.io/en/stable/persistence.html
+- Pydantic documentation: https://docs.pydantic.dev/latest/
+- FastAPI documentation: https://fastapi.tiangolo.com/
+
+## OTHER CONSIDERATIONS:
+
+- The first PRP should be generated from `INITIAL-MLZOO-A-foundation-feature-frames.md`.
+- Do not implement LightGBM before the feature-frame contracts and leakage tests are stable.
+- Do not implement XGBoost or Prophet-like models before the first advanced model path proves the architecture.
+- Do not add frontend/explainability scope before backend metadata and persistence contracts are stable.
+- Keep each PRP to one branch and one reviewable unit. In particular, `INITIAL-MLZOO-C`'s
+  two models (XGBoost, Prophet-like) are **two PRPs** — `PRP-MLZOO-C1` and `PRP-MLZOO-C2` —
+  never one combined branch.
+

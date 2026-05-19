@@ -40,6 +40,10 @@ class ModelBundle:
         created_at: Timestamp when bundle was created.
         python_version: Python version used when saving.
         sklearn_version: Scikit-learn version used when saving.
+        lightgbm_version: LightGBM version used when saving, ``None`` when the
+            optional ``ml-lightgbm`` dependency was not installed.
+        xgboost_version: XGBoost version used when saving, ``None`` when the
+            optional ``ml-xgboost`` dependency was not installed.
         bundle_hash: Deterministic hash of bundle contents.
     """
 
@@ -51,6 +55,8 @@ class ModelBundle:
     created_at: datetime | None = None
     python_version: str | None = None
     sklearn_version: str | None = None
+    lightgbm_version: str | None = None
+    xgboost_version: str | None = None
     bundle_hash: str | None = None
 
     def compute_hash(self) -> str:
@@ -95,6 +101,22 @@ def save_model_bundle(bundle: ModelBundle, path: str | Path) -> Path:
     bundle.created_at = datetime.now(UTC)
     bundle.python_version = sys.version
     bundle.sklearn_version = sklearn.__version__
+    # Best-effort: LightGBM is an optional dependency, so a baseline-only
+    # install legitimately has no version to record.
+    try:
+        import lightgbm
+
+        bundle.lightgbm_version = str(lightgbm.__version__)
+    except ImportError:
+        bundle.lightgbm_version = None
+    # Best-effort: XGBoost is an optional dependency, so a baseline-only
+    # install legitimately has no version to record.
+    try:
+        import xgboost
+
+        bundle.xgboost_version = str(xgboost.__version__)
+    except ImportError:
+        bundle.xgboost_version = None
     bundle.bundle_hash = bundle.compute_hash()
 
     # Save with compression
@@ -170,6 +192,38 @@ def load_model_bundle(path: str | Path, base_dir: str | Path | None = None) -> M
             saved_sklearn=bundle.sklearn_version,
             current_sklearn=sklearn.__version__,
         )
+
+    # LightGBM is optional — only warn when the bundle recorded a version AND
+    # the optional dependency is importable here AND the two differ.
+    if bundle.lightgbm_version:
+        try:
+            import lightgbm
+
+            current_lightgbm: str | None = str(lightgbm.__version__)
+        except ImportError:
+            current_lightgbm = None
+        if current_lightgbm is not None and bundle.lightgbm_version != current_lightgbm:
+            logger.warning(
+                "forecasting.lightgbm_version_mismatch",
+                saved_lightgbm=bundle.lightgbm_version,
+                current_lightgbm=current_lightgbm,
+            )
+
+    # XGBoost is optional — only warn when the bundle recorded a version AND
+    # the optional dependency is importable here AND the two differ.
+    if bundle.xgboost_version:
+        try:
+            import xgboost
+
+            current_xgboost: str | None = str(xgboost.__version__)
+        except ImportError:
+            current_xgboost = None
+        if current_xgboost is not None and bundle.xgboost_version != current_xgboost:
+            logger.warning(
+                "forecasting.xgboost_version_mismatch",
+                saved_xgboost=bundle.xgboost_version,
+                current_xgboost=current_xgboost,
+            )
 
     logger.info(
         "forecasting.model_bundle_loaded",
