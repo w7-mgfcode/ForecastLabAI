@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.core.exceptions import DatabaseError
+from app.core.exceptions import BadRequestError, DatabaseError
 from app.core.logging import get_logger
 from app.features.forecasting.schemas import (
     PredictRequest,
@@ -66,16 +66,14 @@ async def train_model(
 
     # Check if LightGBM is enabled
     if request.config.model_type == "lightgbm" and not settings.forecast_enable_lightgbm:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="LightGBM is disabled. Set forecast_enable_lightgbm=True in settings.",
+        raise BadRequestError(
+            message="LightGBM is disabled. Set forecast_enable_lightgbm=True in settings.",
         )
 
     # Check if XGBoost is enabled
     if request.config.model_type == "xgboost" and not settings.forecast_enable_xgboost:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="XGBoost is disabled. Set forecast_enable_xgboost=True in settings.",
+        raise BadRequestError(
+            message="XGBoost is disabled. Set forecast_enable_xgboost=True in settings.",
         )
 
     logger.info(
