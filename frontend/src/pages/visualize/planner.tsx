@@ -73,8 +73,11 @@ export default function WhatIfPlannerPage() {
   const [selectedJobId, setSelectedJobId] = useState('')
   const [horizon, setHorizon] = useState(14)
   const { data: job } = useJob(selectedJobId, !!selectedJobId)
-  // A predict job's params.run_id is the baseline model artifact key.
-  const baselineRunId = typeof job?.params?.run_id === 'string' ? job.params.run_id : null
+  // A completed `train` job stores result.run_id — the model-artifact key
+  // POST /scenarios/simulate resolves. (This is NOT a registry run id.)
+  // A `regression` baseline routes the simulate call down the model_exogenous
+  // re-forecast branch; other model types fall back to the heuristic factor.
+  const baselineRunId = typeof job?.result?.run_id === 'string' ? job.result.run_id : null
 
   // -- Assumption form state ---------------------------------------------
   const [priceEnabled, setPriceEnabled] = useState(false)
@@ -245,12 +248,15 @@ export default function WhatIfPlannerPage() {
         <CardHeader>
           <CardTitle>1. Pick a baseline</CardTitle>
           <CardDescription>
-            Choose a completed prediction job — its model is the baseline this scenario adjusts.
+            Choose a completed training job — its model is the baseline this scenario
+            adjusts. A regression baseline is genuinely re-forecast through the model
+            (model-driven); naive, seasonal-naive and moving-average baselines use a
+            heuristic adjustment factor.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <JobPicker
-            jobType="predict"
+            jobType="train"
             selectedJobId={selectedJobId}
             onSelect={setSelectedJobId}
             autoSelectLatest
@@ -274,7 +280,7 @@ export default function WhatIfPlannerPage() {
           </div>
           {selectedJobId && !baselineRunId && (
             <p className="text-sm text-muted-foreground">
-              The selected job has no model artifact — pick a completed predict job.
+              The selected job has no model artifact — pick a completed train job.
             </p>
           )}
         </CardContent>
