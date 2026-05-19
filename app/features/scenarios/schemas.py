@@ -200,6 +200,58 @@ class CreateScenarioRequest(BaseModel):
         default_factory=ScenarioAssumptions,
         description="What-if assumptions for this plan.",
     )
+    tags: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description="Optional library tags for filtering and grouping saved plans.",
+    )
+    cloned_from: str | None = Field(
+        default=None,
+        max_length=32,
+        description="scenario_id this plan was cloned from, when it originated as a clone.",
+    )
+
+
+class SaveScenarioRequest(BaseModel):
+    """What the ``save_scenario`` agent tool persists once HITL-approved.
+
+    Unlike ``CreateScenarioRequest`` this carries ``store_id`` / ``product_id``
+    explicitly — the agent proposed the scenario for a known grain, so the
+    identity travels with the request rather than being re-derived. The
+    persisted ``scenario_plan`` row is stamped ``source='agent'`` plus the
+    originating ``agent_session_id`` (PRP-27 Phase D, DECISIONS LOCKED #13).
+    """
+
+    model_config = ConfigDict(strict=True)
+
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="Human-readable name for the saved plan.",
+    )
+    assumptions: ScenarioAssumptions = Field(
+        ...,
+        description="The what-if assumptions the agent proposed.",
+    )
+    store_id: int = Field(..., ge=1, description="Store the proposed scenario targets.")
+    product_id: int = Field(..., ge=1, description="Product the proposed scenario targets.")
+    horizon: int = Field(..., ge=1, le=90, description="Number of days to simulate.")
+    run_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        description="Artifact key of the baseline model.",
+    )
+    source: Literal["user", "agent"] = Field(
+        default="agent",
+        description="Provenance of the plan — an agent save defaults to 'agent'.",
+    )
+    agent_session_id: str | None = Field(
+        default=None,
+        max_length=32,
+        description="The originating agent session id, when agent-created.",
+    )
 
 
 # =============================================================================
@@ -255,14 +307,15 @@ class ScenarioComparison(BaseModel):
         description="covered / at_risk / stockout, or unknown when no inventory "
         "assumption was supplied.",
     )
-    method: Literal["heuristic"] = Field(
+    method: Literal["heuristic", "model_exogenous"] = Field(
         ...,
-        description="Always 'heuristic' — the result is a deterministic post-forecast "
-        "multiplier, not a re-trained causal model.",
+        description="How the scenario was produced: 'heuristic' (a deterministic "
+        "post-forecast multiplier) or 'model_exogenous' (a re-forecast through a "
+        "feature-consuming regression model).",
     )
     disclaimer: str = Field(
         ...,
-        description="Plain-language caveat that the numbers are heuristic estimates.",
+        description="Plain-language caveat appropriate to the method that produced the comparison.",
     )
     generated_at: datetime = Field(..., description="When the comparison was computed (UTC).")
 
@@ -286,6 +339,23 @@ class ScenarioPlanResponse(BaseModel):
     comparison: ScenarioComparison = Field(
         ..., description="The full baseline-vs-scenario snapshot, re-rendered without recompute."
     )
+    tags: list[str] = Field(default_factory=list, description="Library tags attached to the plan.")
+    cloned_from: str | None = Field(
+        default=None, description="scenario_id this plan was cloned from, if any."
+    )
+    source: str = Field(default="user", description="Who created the plan — 'user' or 'agent'.")
+    agent_session_id: str | None = Field(
+        default=None, description="Originating agent session id, when agent-created."
+    )
+    approved_by: str | None = Field(
+        default=None, description="Who approved an agent-created plan, if any."
+    )
+    approved_at: datetime | None = Field(
+        default=None, description="When an agent-created plan was approved (UTC)."
+    )
+    approval_decision: str | None = Field(
+        default=None, description="The HITL decision — 'approved' or 'rejected'."
+    )
 
 
 class ScenarioListItem(BaseModel):
@@ -301,6 +371,20 @@ class ScenarioListItem(BaseModel):
     units_delta: float = Field(..., description="Summed scenario-minus-baseline demand.")
     revenue_delta: float = Field(..., description="Scenario-minus-baseline revenue.")
     created_at: datetime = Field(..., description="When the plan was saved (UTC).")
+    tags: list[str] = Field(default_factory=list, description="Library tags attached to the plan.")
+    source: str = Field(default="user", description="Who created the plan — 'user' or 'agent'.")
+    agent_session_id: str | None = Field(
+        default=None, description="Originating agent session id, when agent-created."
+    )
+    approved_by: str | None = Field(
+        default=None, description="Who approved an agent-created plan, if any."
+    )
+    approved_at: datetime | None = Field(
+        default=None, description="When an agent-created plan was approved (UTC)."
+    )
+    approval_decision: str | None = Field(
+        default=None, description="The HITL decision — 'approved' or 'rejected'."
+    )
 
 
 class ScenarioListResponse(BaseModel):
@@ -312,3 +396,68 @@ class ScenarioListResponse(BaseModel):
         ..., description="Saved plans for the current page; empty when none exist."
     )
     total: int = Field(..., ge=0, description="Total saved plans matching the query.")
+
+
+# =============================================================================
+# Multi-scenario comparison (PRP-27 Phase C)
+# =============================================================================
+
+# Metric a multi-scenario comparison ranks by.
+RankBy = Literal["revenue_delta", "units_delta"]
+
+
+class CompareScenariosRequest(BaseModel):
+    """Request body for ``POST /scenarios/compare``.
+
+    The 2..5 bound keeps the multi-series chart legible — the upper bound is
+    the pinned ``MAX_COMPARE_SCENARIOS`` (PRP-27 DECISIONS LOCKED #12); the
+    literal ``5`` must stay in sync with that constant in ``feature_frame.py``.
+    """
+
+    model_config = ConfigDict(strict=True)
+
+    scenario_ids: list[str] = Field(
+        ...,
+        min_length=2,
+        max_length=5,
+        description="2-5 saved scenario_ids to compare side by side.",
+    )
+    rank_by: RankBy = Field(
+        default="revenue_delta",
+        description="Metric the ranked rows are ordered by (descending).",
+    )
+
+
+class ScenarioComparisonRow(BaseModel):
+    """One saved plan's headline numbers within a multi-scenario comparison."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    scenario_id: str = Field(..., description="The plan's external identifier.")
+    name: str = Field(..., description="The plan's human-readable name.")
+    units_delta: float = Field(..., description="Scenario-minus-baseline demand for the plan.")
+    revenue_delta: float = Field(..., description="Scenario-minus-baseline revenue for the plan.")
+    coverage_verdict: CoverageVerdict = Field(..., description="The plan's coverage verdict.")
+    rank: int = Field(..., ge=1, description="1-based rank by the chosen metric (1 == best).")
+
+
+class MultiScenarioComparison(BaseModel):
+    """A baseline compared against 2-5 saved scenarios, ranked."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    baseline_total_units: float = Field(
+        ..., description="Reference baseline demand (from the first compared plan)."
+    )
+    baseline_revenue: float = Field(
+        ..., description="Reference baseline revenue (from the first compared plan)."
+    )
+    rank_by: RankBy = Field(..., description="Metric the rows are ranked by.")
+    scenarios: list[ScenarioComparisonRow] = Field(
+        ..., description="The compared plans, ordered best-first by rank_by."
+    )
+    chart_series: list[dict[str, float | str]] = Field(
+        ...,
+        description="Date-keyed merged rows for the multi-series chart — each row "
+        "carries 'date', 'baseline', and one entry per scenario keyed by scenario_id.",
+    )

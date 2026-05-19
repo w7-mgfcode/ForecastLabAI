@@ -6,7 +6,12 @@
  * `ScenarioComparison` into chart rows, a delta table, and readable summaries.
  */
 import type { CsvColumn } from '@/lib/csv-export'
-import type { CoverageVerdict, ScenarioAssumptions, ScenarioPoint } from '@/types/api'
+import type {
+  CoverageVerdict,
+  MultiScenarioComparison,
+  ScenarioAssumptions,
+  ScenarioPoint,
+} from '@/types/api'
 
 /** One charted day: a date plus the baseline and scenario demand values. */
 export interface ComparisonChartRow {
@@ -104,4 +109,29 @@ export function summariseAssumptions(assumptions: ScenarioAssumptions): string[]
     lines.push('No assumptions — baseline only')
   }
   return lines
+}
+
+/** A line in the multi-scenario comparison chart. */
+export interface MultiSeriesLine {
+  key: string
+  label: string
+}
+
+/**
+ * Derive the chart lines for a multi-scenario comparison: the shared baseline
+ * first, then one line per scenario keyed by `scenario_id` — matching the keys
+ * the backend put in each `chart_series` row (a CSS-identifier-safe key) — and
+ * labelled by the plan name.
+ */
+export function buildMultiSeries(comparison: MultiScenarioComparison): MultiSeriesLine[] {
+  const lines: MultiSeriesLine[] = [{ key: 'baseline', label: 'Baseline' }]
+  for (const row of comparison.scenarios) {
+    lines.push({ key: row.scenario_id, label: row.name })
+  }
+  return lines
+}
+
+/** Human label for the method that produced a comparison. */
+export function methodLabel(method: 'heuristic' | 'model_exogenous'): string {
+  return method === 'model_exogenous' ? 'Model-driven' : 'Heuristic'
 }

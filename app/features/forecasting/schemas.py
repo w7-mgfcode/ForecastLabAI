@@ -144,9 +144,58 @@ class LightGBMModelConfig(ModelConfigBase):
     )
 
 
+class RegressionModelConfig(ModelConfigBase):
+    """Configuration for the exogenous-regressor forecaster (PRP-27).
+
+    Wraps scikit-learn's ``HistGradientBoostingRegressor`` — a deterministic,
+    NaN-tolerant gradient-boosted tree model. Unlike the baseline forecasters,
+    a ``regression`` model *consumes* a per-day exogenous feature frame, so a
+    scenario what-if can be answered by genuinely re-forecasting demand
+    (``method="model_exogenous"``) rather than by a post-forecast multiplier.
+
+    No feature flag and no new dependency: ``HistGradientBoostingRegressor``
+    ships with the already-pinned ``scikit-learn`` (see
+    ``PRPs/ai_docs/exogenous-regressor-forecasting.md`` § 5).
+
+    Attributes:
+        max_iter: Number of boosting iterations.
+        learning_rate: Gradient-boosting learning rate.
+        max_depth: Maximum depth of each tree.
+        feature_config_hash: Optional hash of the feature contract used.
+    """
+
+    model_type: Literal["regression"] = "regression"
+    max_iter: int = Field(
+        default=200,
+        ge=10,
+        le=1000,
+        description="Number of boosting iterations",
+    )
+    learning_rate: float = Field(
+        default=0.05,
+        ge=0.001,
+        le=1.0,
+        description="Gradient-boosting learning rate",
+    )
+    max_depth: int = Field(
+        default=6,
+        ge=1,
+        le=20,
+        description="Maximum depth of each tree",
+    )
+    feature_config_hash: str | None = Field(
+        default=None,
+        description="Hash of the feature contract used for training",
+    )
+
+
 # Union type for all model configs
 ModelConfig = (
-    NaiveModelConfig | SeasonalNaiveModelConfig | MovingAverageModelConfig | LightGBMModelConfig
+    NaiveModelConfig
+    | SeasonalNaiveModelConfig
+    | MovingAverageModelConfig
+    | LightGBMModelConfig
+    | RegressionModelConfig
 )
 
 

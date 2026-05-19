@@ -757,6 +757,8 @@ export interface CreateScenarioRequest {
   run_id: string
   horizon: number
   assumptions: ScenarioAssumptions
+  tags?: string[]
+  cloned_from?: string | null
 }
 
 // Whether projected demand is covered by on-hand stock.
@@ -787,7 +789,9 @@ export interface ScenarioComparison {
   scenario_revenue: number
   revenue_delta: number
   coverage_verdict: CoverageVerdict
-  method: 'heuristic'
+  // 'heuristic' = a deterministic post-forecast multiplier; 'model_exogenous'
+  // = a re-forecast through a feature-consuming regression model (PRP-27).
+  method: 'heuristic' | 'model_exogenous'
   disclaimer: string
   generated_at: string
 }
@@ -804,6 +808,8 @@ export interface ScenarioPlanResponse {
   created_at: string
   assumptions: ScenarioAssumptions
   comparison: ScenarioComparison
+  tags: string[]
+  cloned_from: string | null
 }
 
 // A compact row in the saved-plans list.
@@ -816,10 +822,41 @@ export interface ScenarioListItem {
   units_delta: number
   revenue_delta: number
   created_at: string
+  tags: string[]
 }
 
 // A page of saved scenario plans — GET /scenarios.
 export interface ScenarioListResponse {
   scenarios: ScenarioListItem[]
   total: number
+}
+
+// Metric a multi-scenario comparison ranks by.
+export type RankBy = 'revenue_delta' | 'units_delta'
+
+// Request body for POST /scenarios/compare.
+export interface CompareScenariosRequest {
+  scenario_ids: string[]
+  rank_by?: RankBy
+}
+
+// One saved plan's headline numbers within a multi-scenario comparison.
+export interface ScenarioComparisonRow {
+  scenario_id: string
+  name: string
+  units_delta: number
+  revenue_delta: number
+  coverage_verdict: CoverageVerdict
+  rank: number
+}
+
+// A baseline compared against 2-5 saved scenarios — POST /scenarios/compare.
+export interface MultiScenarioComparison {
+  baseline_total_units: number
+  baseline_revenue: number
+  rank_by: RankBy
+  scenarios: ScenarioComparisonRow[]
+  // Date-keyed merged rows: each carries 'date', 'baseline', and one numeric
+  // entry per scenario name.
+  chart_series: Record<string, number | string>[]
 }

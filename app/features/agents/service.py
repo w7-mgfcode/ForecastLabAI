@@ -869,6 +869,8 @@ class AgentService:
             ValueError: If action_type is not recognized.
         """
         from app.features.agents.tools.registry_tools import archive_run, create_alias
+        from app.features.scenarios.agent_tools import save_scenario
+        from app.features.scenarios.schemas import SaveScenarioRequest
 
         if action_type == "create_alias":
             alias_name = arguments.get("alias_name", "")
@@ -886,7 +888,17 @@ class AgentService:
             if result is None:
                 raise ValueError(f"Run not found: {run_id}")
             return result
+        elif action_type == "save_scenario":
+            # The HITL gate has released the agent's save_scenario call — persist
+            # the scenario_plan row now, stamped with the approved audit trail.
+            request = SaveScenarioRequest.model_validate(arguments)
+            return await save_scenario(
+                db=db,
+                request=request,
+                agent_session_id=arguments.get("agent_session_id"),
+            )
         else:
             raise ValueError(
-                f"Unknown action type: {action_type}. Supported actions: create_alias, archive_run"
+                f"Unknown action type: {action_type}. Supported actions: "
+                "create_alias, archive_run, save_scenario"
             )

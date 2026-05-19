@@ -67,7 +67,7 @@ Reference: PR #115 (issue #109) introduced this pattern on `ComputeFeaturesReque
 - Token budget cap per session (`agent_max_tokens=4096` default).
 - Tool-call cap per session (`agent_max_tool_calls=10` default).
 - Timeout wrap around `agent.run()` / `agent.run_stream()` (`agent_timeout_seconds=120`).
-- HITL approval required for mutating tools — `agent_require_approval=["create_alias","archive_run"]`. Never widen the agent's mutation surface without adding the new tool name to that list.
+- HITL approval required for mutating tools — `agent_require_approval=["create_alias","archive_run","save_scenario"]`. `save_scenario` (PRP-27 Phase D) lets the experiment agent persist a `scenario_plan` row; it is gated here exactly like the registry mutations. Never widen the agent's mutation surface without adding the new tool name to that list.
 - Never log full prompts/responses at INFO; DEBUG only with explicit operator opt-in.
 
 ## External Integrations Security

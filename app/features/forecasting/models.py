@@ -17,6 +17,9 @@ from datetime import date as date_type
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
+from sklearn.ensemble import (  # type: ignore[import-untyped]
+    HistGradientBoostingRegressor,
+)
 
 if TYPE_CHECKING:
     from app.features.forecasting.schemas import ModelConfig
@@ -422,8 +425,147 @@ class MovingAverageForecaster(BaseForecaster):
         return self
 
 
+class RegressionForecaster(BaseForecaster):
+    """Feature-driven forecaster wrapping ``HistGradientBoostingRegressor``.
+
+    CRITICAL: this is the FIRST forecaster that *consumes* the exogenous ``X``
+    argument — the baseline forecasters all ignore it (each ``fit``/``predict``
+    carries ``# noqa: ARG002``). Both ``fit`` and ``predict`` therefore REQUIRE
+    a non-``None`` ``X`` whose row count matches, and raise ``ValueError``
+    otherwise — a regression model cannot forecast without its feature frame.
+
+    ``HistGradientBoostingRegressor`` is deterministic given a fixed
+    ``random_state`` and tolerates ``NaN`` natively, which matters because the
+    future feature frame leaves lag cells ``NaN`` when their source target
+    lies in the (un-observed) horizon.
+
+    Attributes:
+        max_iter: Number of boosting iterations.
+        learning_rate: Gradient-boosting learning rate.
+        max_depth: Maximum depth of each tree.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_iter: int = 200,
+        learning_rate: float = 0.05,
+        max_depth: int = 6,
+        random_state: int = 42,
+    ) -> None:
+        """Initialize the regression forecaster.
+
+        Args:
+            max_iter: Number of boosting iterations.
+            learning_rate: Gradient-boosting learning rate.
+            max_depth: Maximum depth of each tree.
+            random_state: Random seed for reproducibility (determinism).
+        """
+        super().__init__(random_state)
+        self.max_iter = max_iter
+        self.learning_rate = learning_rate
+        self.max_depth = max_depth
+        self._estimator: Any = None
+
+    def fit(
+        self,
+        y: np.ndarray[Any, np.dtype[np.floating[Any]]],
+        X: np.ndarray[Any, np.dtype[np.floating[Any]]] | None = None,
+    ) -> RegressionForecaster:
+        """Fit the gradient-boosted regressor on historical features.
+
+        Args:
+            y: Target values (1D array of shape ``[n_samples]``).
+            X: Exogenous features (2D array of shape ``[n_samples, n_features]``).
+                REQUIRED — unlike the baseline forecasters.
+
+        Returns:
+            self (for method chaining).
+
+        Raises:
+            ValueError: If ``X`` is ``None``, ``y`` is empty, or the row counts
+                of ``X`` and ``y`` do not match.
+        """
+        if X is None:
+            raise ValueError("RegressionForecaster requires exogenous features X for fit()")
+        if len(y) == 0:
+            raise ValueError("Cannot fit on empty array")
+        if X.shape[0] != len(y):
+            raise ValueError(
+                f"X has {X.shape[0]} rows but y has {len(y)} — feature/target rows must match"
+            )
+        estimator: Any = HistGradientBoostingRegressor(
+            max_iter=self.max_iter,
+            learning_rate=self.learning_rate,
+            max_depth=self.max_depth,
+            random_state=self.random_state,
+        )
+        estimator.fit(X, y)
+        self._estimator = estimator
+        self._last_values = np.asarray(y[-1:], dtype=np.float64)
+        self._is_fitted = True
+        return self
+
+    def predict(
+        self,
+        horizon: int,
+        X: np.ndarray[Any, np.dtype[np.floating[Any]]] | None = None,
+    ) -> np.ndarray[Any, np.dtype[np.floating[Any]]]:
+        """Generate forecasts from a future feature frame.
+
+        Args:
+            horizon: Number of steps to forecast.
+            X: Exogenous features for the forecast period, shape
+                ``[horizon, n_features]``. REQUIRED.
+
+        Returns:
+            Array of forecasts with shape ``[horizon]``.
+
+        Raises:
+            RuntimeError: If the model has not been fitted.
+            ValueError: If ``X`` is ``None`` or its row count is not ``horizon``.
+        """
+        if not self._is_fitted or self._estimator is None:
+            raise RuntimeError("Model must be fitted before predict")
+        if X is None:
+            raise ValueError("RegressionForecaster requires exogenous features X for predict()")
+        if X.shape[0] != horizon:
+            raise ValueError(f"X has {X.shape[0]} rows but horizon is {horizon} — they must match")
+        predictions = self._estimator.predict(X)
+        result: np.ndarray[Any, np.dtype[np.floating[Any]]] = np.asarray(
+            predictions, dtype=np.float64
+        )
+        return result
+
+    def get_params(self) -> dict[str, Any]:
+        """Get model parameters.
+
+        Returns:
+            Dictionary with max_iter, learning_rate, max_depth, random_state.
+        """
+        return {
+            "max_iter": self.max_iter,
+            "learning_rate": self.learning_rate,
+            "max_depth": self.max_depth,
+            "random_state": self.random_state,
+        }
+
+    def set_params(self, **params: Any) -> RegressionForecaster:  # noqa: ANN401
+        """Set model parameters.
+
+        Args:
+            **params: Parameter names and values to set.
+
+        Returns:
+            self (for method chaining).
+        """
+        for key, value in params.items():
+            setattr(self, key, value)
+        return self
+
+
 # Type alias for model type literals
-ModelType = Literal["naive", "seasonal_naive", "moving_average", "lightgbm"]
+ModelType = Literal["naive", "seasonal_naive", "moving_average", "lightgbm", "regression"]
 
 
 def model_factory(config: ModelConfig, random_state: int = 42) -> BaseForecaster:
@@ -472,5 +614,16 @@ def model_factory(config: ModelConfig, random_state: int = 42) -> BaseForecaster
             )
         # LightGBM implementation would go here when feature-flagged
         raise NotImplementedError("LightGBM forecaster not yet implemented")
+    elif model_type == "regression":
+        from app.features.forecasting.schemas import RegressionModelConfig
+
+        if isinstance(config, RegressionModelConfig):
+            return RegressionForecaster(
+                max_iter=config.max_iter,
+                learning_rate=config.learning_rate,
+                max_depth=config.max_depth,
+                random_state=random_state,
+            )
+        raise ValueError("Invalid config type for regression")
     else:
         raise ValueError(f"Unknown model type: {model_type}")
