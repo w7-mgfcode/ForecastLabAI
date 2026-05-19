@@ -395,5 +395,5 @@ class MultiScenarioComparison(BaseModel):
     chart_series: list[dict[str, float | str]] = Field(
         ...,
         description="Date-keyed merged rows for the multi-series chart — each row "
-        "carries 'date', 'baseline', and one entry per scenario name.",
+        "carries 'date', 'baseline', and one entry per scenario keyed by scenario_id.",
     )

@@ -490,7 +490,8 @@ class ScenarioService:
         """Merge every plan's per-day series into date-keyed chart rows.
 
         Each row carries ``date``, the reference ``baseline`` (from the first
-        plan), and one entry per plan keyed by the plan name.
+        plan), and one entry per plan keyed by its ``scenario_id`` — a
+        CSS-identifier-safe key, unlike a free-text plan name.
         """
         by_date: dict[str, dict[str, float | str]] = {}
         for plan_index, plan in enumerate(plans):
@@ -500,7 +501,7 @@ class ScenarioService:
                 row = by_date.setdefault(point_date, {"date": point_date})
                 if plan_index == 0:
                     row["baseline"] = float(point.get("baseline", 0.0))
-                row[plan.name] = float(point.get("scenario", 0.0))
+                row[plan.scenario_id] = float(point.get("scenario", 0.0))
         return [by_date[key] for key in sorted(by_date)]
 
     async def get_plan(self, db: AsyncSession, scenario_id: str) -> ScenarioPlanResponse | None:
