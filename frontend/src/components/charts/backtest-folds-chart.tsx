@@ -1,7 +1,9 @@
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend, Cell } from 'recharts'
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Cell } from 'recharts'
 import {
   ChartConfig,
   ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
   ChartTooltip,
   ChartTooltipContent,
 } from '@/components/ui/chart'
@@ -76,10 +78,11 @@ export function BacktestFoldsChart({
             <XAxis dataKey="foldLabel" tickLine={false} axisLine={false} />
             <YAxis tickLine={false} axisLine={false} />
             <ChartTooltip content={<ChartTooltipContent />} />
-            <Legend />
+            <ChartLegend content={<ChartLegendContent />} />
             <Bar
               dataKey={metricKey}
               name={metricLabels[metricKey]}
+              fill={metricColors[metricKey]}
               radius={[4, 4, 0, 0]}
             >
               {formattedData.map((_, index) => (

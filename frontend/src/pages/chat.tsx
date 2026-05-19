@@ -240,9 +240,9 @@ export default function ChatPage() {
           <p className="text-sm text-muted-foreground">
             {agentType === 'rag_assistant' ? 'RAG Assistant' : 'Experiment Agent'} •{' '}
             {wsStatus === 'connected' ? (
-              <span className="text-green-600">Connected</span>
+              <span className="text-success">Connected</span>
             ) : (
-              <span className="text-yellow-600">{wsStatus}</span>
+              <span className="text-warning">{wsStatus}</span>
             )}
           </p>
         </div>

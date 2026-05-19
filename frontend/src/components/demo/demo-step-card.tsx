@@ -15,11 +15,11 @@ const STATUS_GLYPH: Record<DemoStepUiStatus, string> = {
 // Left-border accent colour per status.
 const STATUS_ACCENT: Record<DemoStepUiStatus, string> = {
   idle: 'border-l-border',
-  running: 'border-l-blue-500',
-  pass: 'border-l-green-500',
-  fail: 'border-l-red-500',
+  running: 'border-l-info',
+  pass: 'border-l-success',
+  fail: 'border-l-destructive',
   skip: 'border-l-muted-foreground/40',
-  warn: 'border-l-yellow-500',
+  warn: 'border-l-warning',
 }
 
 function formatDuration(ms: number): string {
@@ -50,7 +50,7 @@ function BacktestBreakdown({ data }: { data: Record<string, unknown> }) {
           className={cn(
             'flex items-center justify-between rounded-md px-2 py-1 text-xs',
             row.model === winner
-              ? 'bg-green-100 font-semibold dark:bg-green-900/30'
+              ? 'bg-success/10 font-semibold'
               : 'bg-muted'
           )}
         >

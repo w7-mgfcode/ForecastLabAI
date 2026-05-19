@@ -1,7 +1,9 @@
-import { Area, CartesianGrid, ComposedChart, Legend, Line, XAxis, YAxis } from 'recharts'
+import { Area, CartesianGrid, ComposedChart, Line, XAxis, YAxis } from 'recharts'
 import {
   ChartConfig,
   ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
   ChartTooltip,
   ChartTooltipContent,
 } from '@/components/ui/chart'
@@ -88,7 +90,7 @@ export function TimeSeriesChart({
             />
             <YAxis tickLine={false} axisLine={false} />
             <ChartTooltip content={<ChartTooltipContent />} />
-            <Legend />
+            <ChartLegend content={<ChartLegendContent />} />
             {/* Prediction-interval band — drawn first so the forecast line sits
                 on top. A function dataKey returns the [lower, upper] tuple
                 recharts renders as a range area. */}

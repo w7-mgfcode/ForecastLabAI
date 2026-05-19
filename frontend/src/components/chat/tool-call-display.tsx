@@ -18,9 +18,9 @@ export function ToolCallDisplay({ toolCall, className }: ToolCallDisplayProps) {
 
   const statusIcon = {
     pending: <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />,
-    running: <Loader2 className="h-3 w-3 animate-spin text-blue-500" />,
-    completed: <CheckCircle2 className="h-3 w-3 text-green-500" />,
-    failed: <XCircle className="h-3 w-3 text-red-500" />,
+    running: <Loader2 className="h-3 w-3 animate-spin text-info" />,
+    completed: <CheckCircle2 className="h-3 w-3 text-success" />,
+    failed: <XCircle className="h-3 w-3 text-destructive" />,
   }
 
   return (
@@ -77,9 +77,9 @@ export function ToolCallProgress({ toolName, status }: ToolCallProgressProps) {
       {status === 'running' || status === 'starting' ? (
         <Loader2 className="h-3 w-3 animate-spin" />
       ) : status === 'completed' ? (
-        <CheckCircle2 className="h-3 w-3 text-green-500" />
+        <CheckCircle2 className="h-3 w-3 text-success" />
       ) : (
-        <XCircle className="h-3 w-3 text-red-500" />
+        <XCircle className="h-3 w-3 text-destructive" />
       )}
       <Wrench className="h-3 w-3" />
       <span>

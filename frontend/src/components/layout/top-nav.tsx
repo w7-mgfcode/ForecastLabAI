@@ -59,7 +59,8 @@ export function TopNav() {
                                 to={subItem.href}
                                 className={cn(
                                   'block select-none rounded-md p-2 text-sm leading-none no-underline outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground',
-                                  isActive(subItem.href) && 'bg-accent/50'
+                                  isActive(subItem.href) &&
+                                    'bg-accent font-medium text-accent-foreground'
                                 )}
                               >
                                 {subItem.label}
@@ -75,7 +76,8 @@ export function TopNav() {
                     to={item.href}
                     className={cn(
                       navigationMenuTriggerStyle(),
-                      isActive(item.href) && 'bg-accent/50'
+                      isActive(item.href) &&
+                        'bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground focus:bg-primary focus:text-primary-foreground'
                     )}
                   >
                     {item.label}
@@ -121,7 +123,8 @@ export function TopNav() {
                               onClick={() => setMobileMenuOpen(false)}
                               className={cn(
                                 'block rounded-md px-2 py-1.5 text-sm hover:bg-accent',
-                                isActive(subItem.href) && 'bg-accent/50 font-medium'
+                                isActive(subItem.href) &&
+                                  'bg-accent font-medium text-accent-foreground'
                               )}
                             >
                               {subItem.label}
@@ -135,7 +138,8 @@ export function TopNav() {
                         onClick={() => setMobileMenuOpen(false)}
                         className={cn(
                           'block rounded-md px-2 py-1.5 text-sm font-medium hover:bg-accent',
-                          isActive(item.href) && 'bg-accent/50'
+                          isActive(item.href) &&
+                            'bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground'
                         )}
                       >
                         {item.label}
