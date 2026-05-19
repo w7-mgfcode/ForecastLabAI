@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest'
 import {
   attentionBadgeVariant,
   attentionItemLink,
+  driftBadgeVariant,
   formatStaleness,
+  formatWapeDelta,
   sortRetrainingCandidates,
   summaryHealthVariant,
 } from './ops-utils'
@@ -115,5 +117,28 @@ describe('sortRetrainingCandidates', () => {
 
   it('returns an empty array unchanged', () => {
     expect(sortRetrainingCandidates([])).toEqual([])
+  })
+})
+
+describe('driftBadgeVariant', () => {
+  it('maps each drift direction to its badge variant', () => {
+    expect(driftBadgeVariant('degrading')).toBe('error')
+    expect(driftBadgeVariant('improving')).toBe('success')
+    expect(driftBadgeVariant('stable')).toBe('info')
+    expect(driftBadgeVariant('unknown')).toBe('default')
+  })
+})
+
+describe('formatWapeDelta', () => {
+  it('prefixes a positive delta with +', () => {
+    expect(formatWapeDelta(14)).toBe('+14.0')
+  })
+
+  it('keeps a negative delta sign', () => {
+    expect(formatWapeDelta(-9.3)).toBe('-9.3')
+  })
+
+  it('renders an em dash for a null delta', () => {
+    expect(formatWapeDelta(null)).toBe('—')
   })
 })

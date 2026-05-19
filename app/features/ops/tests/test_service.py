@@ -4,7 +4,7 @@ These run without a database (-m "not integration"): the helpers are pure
 functions with no I/O.
 """
 
-from app.features.ops.service import extract_wape, score_retraining_candidate
+from app.features.ops.service import classify_drift, extract_wape, score_retraining_candidate
 
 # =============================================================================
 # score_retraining_candidate
@@ -78,3 +78,58 @@ def test_extract_wape_coerces_int_to_float() -> None:
     result = extract_wape({"wape": 25})
     assert result == 25.0
     assert isinstance(result, float)
+
+
+# =============================================================================
+# classify_drift
+# =============================================================================
+
+
+def test_classify_drift_unknown_when_empty() -> None:
+    """An empty history has no trend — direction is 'unknown', delta None."""
+    assert classify_drift([]) == ("unknown", None)
+
+
+def test_classify_drift_unknown_when_under_two_numeric() -> None:
+    """Fewer than two numeric WAPEs yields 'unknown' (None gaps don't count)."""
+    assert classify_drift([None, 10.0]) == ("unknown", None)
+    assert classify_drift([10.0]) == ("unknown", None)
+
+
+def test_classify_drift_degrading() -> None:
+    """A latest WAPE far above the prior mean is 'degrading'; delta is positive."""
+    direction, delta = classify_drift([10.0, 10.0, 20.0])
+    assert direction == "degrading"
+    assert delta == 10.0
+
+
+def test_classify_drift_improving() -> None:
+    """A latest WAPE far below the prior mean is 'improving'; delta is negative."""
+    direction, delta = classify_drift([20.0, 20.0, 10.0])
+    assert direction == "improving"
+    assert delta == -10.0
+
+
+def test_classify_drift_stable_within_band() -> None:
+    """A change inside the ±10% relative band is 'stable'."""
+    direction, delta = classify_drift([10.0, 10.5])  # +5% < 10% band
+    assert direction == "stable"
+    assert delta == 0.5
+
+
+def test_classify_drift_tolerates_none_gaps() -> None:
+    """None gaps are skipped; classification uses only numeric observations."""
+    direction, delta = classify_drift([None, 10.0, None, 12.0])  # +20% over baseline 10
+    assert direction == "degrading"
+    assert delta == 2.0
+
+
+def test_classify_drift_zero_baseline_guard() -> None:
+    """A zero baseline never divides by zero: positive error degrades, zero is stable."""
+    assert classify_drift([0.0, 5.0])[0] == "degrading"
+    assert classify_drift([0.0, 0.0])[0] == "stable"
+
+
+def test_classify_drift_never_raises_on_sparse_history() -> None:
+    """Sparse / all-None history degrades gracefully to 'unknown'."""
+    assert classify_drift([None, None, None]) == ("unknown", None)

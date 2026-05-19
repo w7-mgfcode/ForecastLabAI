@@ -669,3 +669,36 @@ export interface RetrainingCandidatesResponse {
   total_evaluated: number
   generated_at: string
 }
+
+// Forecast-error trend verdict for a (store, product) grain.
+export type DriftDirection = 'improving' | 'stable' | 'degrading' | 'unknown'
+
+// One run's WAPE observation in a grain's chronological history.
+export interface WapePoint {
+  run_id: string
+  created_at: string
+  wape: number | null
+}
+
+// Forecast-error health and drift verdict for one (store, product) grain.
+export interface ModelHealthEntry {
+  store_id: number
+  product_id: number
+  run_count: number
+  latest_run_id: string | null
+  latest_run_status: string | null
+  latest_wape: number | null
+  previous_wape: number | null
+  wape_delta: number | null
+  drift_direction: DriftDirection
+  last_trained_at: string | null
+  staleness_days: number
+  wape_history: WapePoint[]
+}
+
+// Per-grain forecast-error health — GET /ops/model-health.
+export interface ModelHealthResponse {
+  entries: ModelHealthEntry[]
+  total_evaluated: number
+  generated_at: string
+}

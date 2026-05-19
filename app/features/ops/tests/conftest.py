@@ -263,3 +263,35 @@ async def sample_sales(db_session: AsyncSession) -> list[SalesDaily]:
     for row in sales:
         await db_session.refresh(row)
     return sales
+
+
+@pytest.fixture
+async def sample_health_runs(db_session: AsyncSession) -> list[ModelRun]:
+    """Three successful runs for one grain forming a degrading WAPE history.
+
+    Grain (9101, 8101): WAPE 10.0 -> 11.0 -> 25.0. Each run is committed in its
+    own transaction so its server-side ``created_at`` is strictly later than
+    the prior one — making the chronological history deterministic for the
+    model-health endpoint's ``itertools.groupby`` ordering.
+    """
+    wapes = [10.0, 11.0, 25.0]
+    window_ends = [date(2026, 1, 1), date(2026, 2, 1), date(2026, 3, 1)]
+    runs: list[ModelRun] = []
+    for wape, window_end in zip(wapes, window_ends, strict=True):
+        run = ModelRun(
+            run_id=f"test-{_short_id()}",
+            status=RunStatus.SUCCESS.value,
+            model_type="naive",
+            model_config={"_test": True},
+            config_hash=_short_id()[:16],
+            data_window_start=date(2025, 1, 1),
+            data_window_end=window_end,
+            store_id=9101,
+            product_id=8101,
+            metrics={"wape": wape},
+        )
+        db_session.add(run)
+        await db_session.commit()
+        await db_session.refresh(run)
+        runs.append(run)
+    return runs
