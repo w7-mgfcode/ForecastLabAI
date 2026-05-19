@@ -122,6 +122,11 @@ describe('inventoryRequirement', () => {
   it('treats a null on-order as zero', () => {
     expect(inventoryRequirement(100, 30, null)).toBe(70)
   })
+
+  it('rounds a fractional shortfall up to avoid under-ordering', () => {
+    // shortfall = 10.4 - 5 - 0 = 5.4 → ceil → 6 (Math.round would yield 5)
+    expect(inventoryRequirement(10.4, 5, 0)).toBe(6)
+  })
 })
 
 describe('extractForecasts', () => {
@@ -184,6 +189,20 @@ describe('joinDemandRows', () => {
     expect(row.onHand).toBeNull()
     expect(row.onOrder).toBeNull()
     expect(row.inventoryRequirement).toBeNull()
+  })
+
+  it('keeps the latest inventory snapshot per grain by date', () => {
+    const job = makePredictJob('j1', {
+      store_id: 1,
+      product_id: 10,
+      forecasts: flatForecasts(7, 1),
+    })
+    const older: InventoryStatusItem = { ...makeInventory(1, 10, 99, 0), date: '2026-01-01' }
+    const newer: InventoryStatusItem = { ...makeInventory(1, 10, 12, 3), date: '2026-02-01' }
+    // `newer` listed first — a naive Map-from-entries would keep `older`.
+    const [row] = joinDemandRows([job], products, [newer, older], 7)
+    expect(row.onHand).toBe(12)
+    expect(row.onOrder).toBe(3)
   })
 
   it('falls back to a #id SKU when the product is unknown', () => {

@@ -21,8 +21,8 @@ Claude pulls these in on demand — load only what the task touches.
 - Pipeline contract (CI/CD):     @docs/_base/PIPELINE_CONTRACT.md
 
 > Project rules are enforced via `.claude/rules/` (commit-format, branch-naming,
-> security-patterns, product-vision, test-requirements, ui-design, versioning,
-> output-formatting). Read those first — they are authoritative on detail.
+> security-patterns, product-vision, test-requirements, ui-design, shadcn-ui,
+> versioning, output-formatting). Read those first — they are authoritative on detail.
 
 ## Safety
 

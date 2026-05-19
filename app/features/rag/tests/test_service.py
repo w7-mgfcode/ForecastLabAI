@@ -1,11 +1,16 @@
 """Unit tests for RAG service."""
 
 import hashlib
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.features.rag.schemas import IndexRequest, RetrieveRequest
+from app.features.rag.schemas import (
+    IndexProjectDocsRequest,
+    IndexRequest,
+    RetrieveRequest,
+)
 from app.features.rag.service import RAGService, SourceNotFoundError
 
 
@@ -68,6 +73,88 @@ class TestRAGServiceUnit:
         # Try to read file outside base_dir (should fail)
         with pytest.raises(FileNotFoundError, match="not found or access denied"):
             service._read_content_from_path("/etc/passwd")
+
+
+class TestRAGServiceDiscoverProjectDocFiles:
+    """Unit tests for RAGService._discover_project_doc_files (pure, no DB)."""
+
+    @staticmethod
+    def _build_tree(tmp_path: Path) -> None:
+        """Create a fixture doc tree under tmp_path."""
+        (tmp_path / "docs" / "sub").mkdir(parents=True)
+        (tmp_path / "PRPs").mkdir()
+        (tmp_path / "docs" / "test-a.md").write_text("# A", encoding="utf-8")
+        (tmp_path / "docs" / "sub" / "test-b.md").write_text("# B", encoding="utf-8")
+        (tmp_path / "docs" / "notes.txt").write_text("not markdown", encoding="utf-8")
+        (tmp_path / "PRPs" / "test-c.md").write_text("# C", encoding="utf-8")
+        (tmp_path / "README.md").write_text("# Readme", encoding="utf-8")
+
+    def test_discovers_all_roots(self, tmp_path):
+        """Test discovery across docs/, PRPs/, and the root allow-list."""
+        self._build_tree(tmp_path)
+        service = RAGService(base_dir=str(tmp_path))
+
+        found = service._discover_project_doc_files(IndexProjectDocsRequest())
+
+        rel = {p.relative_to(tmp_path).as_posix(): cat for p, cat in found}
+        assert rel == {
+            "docs/test-a.md": "docs",
+            "docs/sub/test-b.md": "docs",
+            "PRPs/test-c.md": "prp",
+            "README.md": "root",
+        }
+
+    def test_filters_non_markdown(self, tmp_path):
+        """Test that non-.md files (notes.txt) are excluded."""
+        self._build_tree(tmp_path)
+        service = RAGService(base_dir=str(tmp_path))
+
+        found = service._discover_project_doc_files(IndexProjectDocsRequest())
+
+        assert all(p.suffix == ".md" for p, _ in found)
+
+    def test_result_is_sorted(self, tmp_path):
+        """Test that discovery returns a deterministically sorted list."""
+        self._build_tree(tmp_path)
+        service = RAGService(base_dir=str(tmp_path))
+
+        found = service._discover_project_doc_files(IndexProjectDocsRequest())
+
+        paths = [str(p) for p, _ in found]
+        assert paths == sorted(paths)
+
+    def test_toggles_select_roots(self, tmp_path):
+        """Test that include_* toggles select roots independently."""
+        self._build_tree(tmp_path)
+        service = RAGService(base_dir=str(tmp_path))
+
+        docs_only = service._discover_project_doc_files(
+            IndexProjectDocsRequest(include_prps=False, include_root=False)
+        )
+        assert {cat for _, cat in docs_only} == {"docs"}
+
+        no_root = service._discover_project_doc_files(IndexProjectDocsRequest(include_root=False))
+        assert "root" not in {cat for _, cat in no_root}
+
+    def test_missing_root_directory_yields_nothing(self, tmp_path):
+        """Test that an absent docs/ or PRPs/ root contributes 0 files."""
+        # tmp_path is empty — no docs/, no PRPs/, no root markdown.
+        service = RAGService(base_dir=str(tmp_path))
+
+        found = service._discover_project_doc_files(IndexProjectDocsRequest())
+
+        assert found == []
+
+    def test_root_allow_list_only(self, tmp_path):
+        """Test that only allow-listed root files are discovered."""
+        (tmp_path / "README.md").write_text("# Readme", encoding="utf-8")
+        (tmp_path / "NOTES.md").write_text("# Notes", encoding="utf-8")
+        service = RAGService(base_dir=str(tmp_path))
+
+        found = service._discover_project_doc_files(IndexProjectDocsRequest())
+
+        names = {p.name for p, _ in found}
+        assert names == {"README.md"}
 
 
 class TestRAGServiceIndexDocument:

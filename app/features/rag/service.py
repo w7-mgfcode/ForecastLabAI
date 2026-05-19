@@ -29,8 +29,11 @@ from app.features.rag.models import DocumentChunk, DocumentSource
 from app.features.rag.schemas import (
     ChunkResult,
     DeleteResponse,
+    IndexProjectDocsRequest,
+    IndexProjectDocsResponse,
     IndexRequest,
     IndexResponse,
+    ProjectDocResult,
     RetrieveRequest,
     RetrieveResponse,
     SourceListResponse,
@@ -38,6 +41,10 @@ from app.features.rag.schemas import (
 )
 
 logger = structlog.get_logger()
+
+# Allow-listed root markdown files indexed by index_project_docs. CLAUDE.md is
+# deliberately excluded — it is an operating index that @imports AGENTS.md.
+_PROJECT_ROOT_FILES: tuple[str, ...] = ("README.md", "AGENTS.md", "CHANGELOG.md")
 
 
 class SourceNotFoundError(ValueError):
@@ -249,6 +256,135 @@ class RAGService:
             duration_ms=duration_ms,
             status=status,
         )
+
+    def _discover_project_doc_files(
+        self, request: IndexProjectDocsRequest
+    ) -> list[tuple[Path, str]]:
+        """Discover bundled markdown under the allow-listed project-doc roots.
+
+        Pure and synchronous — no DB, no network. ``rglob`` on a non-existent
+        directory yields nothing (no exception), so an absent docs/ or PRPs/
+        root simply contributes 0 files.
+
+        Args:
+            request: Toggles selecting which roots to discover.
+
+        Returns:
+            A deterministically sorted list of (absolute_path, category) pairs
+            where category is "docs", "prp", or "root".
+        """
+        found: list[tuple[Path, str]] = []
+
+        if request.include_docs:
+            found += [(p, "docs") for p in (self._base_dir / "docs").rglob("*.md")]
+
+        if request.include_prps:
+            found += [(p, "prp") for p in (self._base_dir / "PRPs").rglob("*.md")]
+
+        if request.include_root:
+            for name in _PROJECT_ROOT_FILES:
+                candidate = self._base_dir / name
+                if candidate.is_file():
+                    found.append((candidate, "root"))
+
+        # rglob order is filesystem-dependent — sort for stable, reproducible runs.
+        return sorted(found, key=lambda pair: str(pair[0]))
+
+    async def index_project_docs(
+        self,
+        db: AsyncSession,
+        request: IndexProjectDocsRequest,
+    ) -> IndexProjectDocsResponse:
+        """Bulk-index discovered project docs via index_document. Idempotent.
+
+        Each file is indexed through index_document, reusing its chunking,
+        embedding, SHA-256 content-hash idempotency, and upsert. A single
+        unreadable / non-UTF-8 file is reported status="failed" and does NOT
+        abort the batch. EmbeddingError / SQLAlchemyError are NOT caught here —
+        they are batch-fatal and propagate to the route's error handlers.
+
+        Args:
+            db: Database session.
+            request: Toggles selecting which roots to index.
+
+        Returns:
+            Per-file results plus aggregate counts.
+        """
+        start_time = time.time()
+
+        logger.info(
+            "rag.index_project_docs_started",
+            include_docs=request.include_docs,
+            include_prps=request.include_prps,
+            include_root=request.include_root,
+        )
+
+        results: list[ProjectDocResult] = []
+
+        for abs_path, category in self._discover_project_doc_files(request):
+            # abs_path was globbed under self._base_dir, so relative_to is safe.
+            rel = abs_path.relative_to(self._base_dir).as_posix()
+            try:
+                content = abs_path.read_text(encoding="utf-8")
+                index_response = await self.index_document(
+                    db,
+                    IndexRequest(
+                        source_type="markdown",
+                        source_path=rel,
+                        content=content,
+                        metadata={"category": category},
+                    ),
+                )
+                results.append(
+                    ProjectDocResult(
+                        source_path=rel,
+                        status=index_response.status,
+                        chunks_created=index_response.chunks_created,
+                        error=None,
+                    )
+                )
+            except (OSError, ValueError) as exc:
+                # FileNotFoundError ⊂ OSError; UnicodeDecodeError ⊂ ValueError.
+                logger.warning(
+                    "rag.index_project_docs_file_failed",
+                    source_path=rel,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+                results.append(
+                    ProjectDocResult(
+                        source_path=rel,
+                        status="failed",
+                        chunks_created=0,
+                        error=str(exc),
+                    )
+                )
+
+        duration_ms = (time.time() - start_time) * 1000
+
+        summary = IndexProjectDocsResponse(
+            results=results,
+            total_files=len(results),
+            indexed=sum(r.status == "indexed" for r in results),
+            updated=sum(r.status == "updated" for r in results),
+            unchanged=sum(r.status == "unchanged" for r in results),
+            failed=sum(r.status == "failed" for r in results),
+            total_chunks=sum(r.chunks_created for r in results),
+            duration_ms=duration_ms,
+        )
+
+        logger.info(
+            "rag.index_project_docs_completed",
+            total_files=summary.total_files,
+            indexed=summary.indexed,
+            updated=summary.updated,
+            unchanged=summary.unchanged,
+            failed=summary.failed,
+            total_chunks=summary.total_chunks,
+            duration_ms=duration_ms,
+        )
+
+        return summary
 
     async def retrieve(
         self,

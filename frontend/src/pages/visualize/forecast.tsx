@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { BarChart3, Download, ExternalLink, Loader2, Play } from 'lucide-react'
 import { useJob, useCreateJob } from '@/hooks/use-jobs'
+import { useJobExplanation } from '@/hooks/use-explanations'
+import { ExplanationPanel } from '@/components/explainability/explanation-panel'
 import { TimeSeriesChart } from '@/components/charts/time-series-chart'
 import { EmptyState } from '@/components/common/error-display'
 import { JobPicker } from '@/components/common/job-picker'
@@ -48,10 +50,19 @@ export default function ForecastPage() {
 
   // A completed `predict` job stores result.forecasts (date + forecast, plus
   // optional lower/upper bounds for models that emit a prediction interval).
-  const forecastData = job?.result?.forecasts as ForecastPoint[] | undefined
-  const hasBounds = !!forecastData?.some(
+  // `job.result` is untyped JSONB — guard with Array.isArray before treating
+  // `forecasts` as an array so a malformed result can never throw on `.some()`.
+  const rawForecasts = job?.result?.forecasts
+  const forecastData: ForecastPoint[] = Array.isArray(rawForecasts)
+    ? (rawForecasts as ForecastPoint[])
+    : []
+  const hasBounds = forecastData.some(
     (point) => point.lower_bound != null && point.upper_bound != null,
   )
+
+  // Explain the loaded job only when it is a completed predict job.
+  const isPredictDone = job?.status === 'completed' && job?.job_type === 'predict'
+  const explanationQuery = useJobExplanation(job?.job_id ?? '', !!job && isPredictDone)
 
   async function handleRunForecast() {
     if (!trainRunId) return
@@ -68,7 +79,7 @@ export default function ForecastPage() {
   }
 
   function handleExport() {
-    if (!forecastData || !job) return
+    if (forecastData.length === 0 || !job) return
     downloadCsv(`forecast-${job.job_id}.csv`, toCsv(forecastData, csvColumns))
   }
 
@@ -189,7 +200,7 @@ export default function ForecastPage() {
           </Card>
 
           {/* Forecast Chart */}
-          {forecastData && forecastData.length > 0 ? (
+          {forecastData.length > 0 ? (
             <div className="space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <label className="flex items-center gap-2 text-sm">
@@ -240,6 +251,15 @@ export default function ForecastPage() {
                 </p>
               </CardContent>
             </Card>
+          )}
+
+          {/* Forecast explanation — only for a completed predict job */}
+          {isPredictDone && (
+            <ExplanationPanel
+              explanation={explanationQuery.data}
+              isLoading={explanationQuery.isLoading}
+              error={explanationQuery.error}
+            />
           )}
         </>
       )}

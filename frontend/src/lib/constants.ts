@@ -2,6 +2,7 @@
 export const ROUTES = {
   DASHBOARD: '/',
   SHOWCASE: '/showcase',
+  OPS: '/ops',
   EXPLORER: {
     SALES: '/explorer/sales',
     STORES: '/explorer/stores',
@@ -22,6 +23,7 @@ export const ROUTES = {
     FORECAST: '/visualize/forecast',
     BACKTEST: '/visualize/backtest',
     DEMAND: '/visualize/demand',
+    PLANNER: '/visualize/planner',
   },
   KNOWLEDGE: '/knowledge',
   CHAT: '/chat',
@@ -33,6 +35,7 @@ export const ROUTES = {
 export const NAV_ITEMS = [
   { label: 'Dashboard', href: ROUTES.DASHBOARD },
   { label: 'Showcase', href: ROUTES.SHOWCASE },
+  { label: 'Control Center', href: ROUTES.OPS },
   {
     label: 'Explorer',
     items: [
@@ -47,6 +50,7 @@ export const NAV_ITEMS = [
     label: 'Visualize',
     items: [
       { label: 'Demand Planner', href: ROUTES.VISUALIZE.DEMAND },
+      { label: 'What-If Planner', href: ROUTES.VISUALIZE.PLANNER },
       { label: 'Forecast', href: ROUTES.VISUALIZE.FORECAST },
       { label: 'Backtest Results', href: ROUTES.VISUALIZE.BACKTEST },
     ],

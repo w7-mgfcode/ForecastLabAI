@@ -110,7 +110,7 @@ export default function ShowcasePage() {
         <Card
           className={cn(
             'border-l-4',
-            summary.overallStatus === 'pass' ? 'border-l-green-500' : 'border-l-red-500'
+            summary.overallStatus === 'pass' ? 'border-l-success' : 'border-l-destructive'
           )}
         >
           <CardHeader>
@@ -118,7 +118,7 @@ export default function ShowcasePage() {
               <Trophy
                 className={cn(
                   'h-5 w-5',
-                  summary.overallStatus === 'pass' ? 'text-green-600' : 'text-destructive'
+                  summary.overallStatus === 'pass' ? 'text-success' : 'text-destructive'
                 )}
               />
               {summary.overallStatus === 'pass'

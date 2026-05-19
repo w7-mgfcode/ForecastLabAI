@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
@@ -122,11 +122,25 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
         finally:
-            # Clean up test data (delete in FK-safe order). InventorySnapshotDaily
-            # FK-references store/product/calendar, so it must be cleared before
-            # the Store/Product/Calendar deletes below.
-            await session.execute(delete(InventorySnapshotDaily))
-            await session.execute(delete(SalesDaily))
+            # Clean up test data (delete in FK-safe order). Scope the fact-table
+            # deletes to TEST-prefixed stores/products so a shared dev or
+            # integration dataset is never wiped. InventorySnapshotDaily /
+            # SalesDaily FK-reference store/product/calendar, so they must be
+            # cleared before the Store/Product/Calendar deletes below.
+            test_store_ids = select(Store.id).where(Store.code.like("TEST-%"))
+            test_product_ids = select(Product.id).where(Product.sku.like("TEST-%"))
+            await session.execute(
+                delete(InventorySnapshotDaily).where(
+                    InventorySnapshotDaily.store_id.in_(test_store_ids)
+                    | InventorySnapshotDaily.product_id.in_(test_product_ids)
+                )
+            )
+            await session.execute(
+                delete(SalesDaily).where(
+                    SalesDaily.store_id.in_(test_store_ids)
+                    | SalesDaily.product_id.in_(test_product_ids)
+                )
+            )
             await session.execute(delete(Product).where(Product.sku.like("TEST-%")))
             await session.execute(delete(Store).where(Store.code.like("TEST-%")))
             await session.execute(
@@ -154,7 +168,9 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     ) as ac:
         yield ac
 
-    app.dependency_overrides.clear()
+    # Remove only this fixture's override — clear() would also drop overrides
+    # installed by other fixtures sharing the app instance.
+    app.dependency_overrides.pop(get_db, None)
 
 
 @pytest.fixture

@@ -83,6 +83,17 @@ function SortHead({
     <TableHead
       className={cn('cursor-pointer select-none', numeric && 'text-right')}
       onClick={() => onSort(columnKey)}
+      // Keyboard-operable sort header: focusable, fires on Enter / Space, and
+      // exposes the current sort direction to assistive tech.
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onSort(columnKey)
+        }
+      }}
+      tabIndex={0}
+      role="button"
+      aria-sort={active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
     >
       <span className={cn('inline-flex items-center gap-1', numeric && 'flex-row-reverse')}>
         {label}
@@ -304,6 +315,15 @@ export default function DemandPlannerPage() {
                     <TableRow
                       key={row.jobId}
                       onClick={() => setSelectedJobId(row.jobId)}
+                      // Keyboard-operable row: focusable and fires on Enter / Space.
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          setSelectedJobId(row.jobId)
+                        }
+                      }}
+                      tabIndex={0}
+                      role="button"
                       className={cn(
                         'cursor-pointer',
                         row.jobId === selectedJobId && 'bg-muted',

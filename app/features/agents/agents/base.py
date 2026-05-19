@@ -284,6 +284,8 @@ TOOL USAGE (call tools by these EXACT names):
 - Use tool_compare_runs to analyze differences between registered runs
 - Use tool_create_alias to deploy successful models (requires approval)
 - Use tool_archive_run to clean up old experiments (requires approval)
+- Use tool_propose_scenario to draft a candidate what-if scenario (read-only)
+- Use tool_save_scenario to persist an approved scenario plan (requires approval)
 """
 
 SAFETY_INSTRUCTIONS = """

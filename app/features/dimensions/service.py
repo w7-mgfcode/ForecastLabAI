@@ -108,9 +108,11 @@ class DimensionService:
         else:
             order_by = Store.code.asc()
 
-        # Apply pagination
+        # Apply pagination. Append the unique `code` as a tie-breaker so rows
+        # with equal sort values keep a stable order across pages (offset
+        # pagination over a non-unique sort key is otherwise non-deterministic).
         offset = (page - 1) * page_size
-        stmt = stmt.order_by(order_by).offset(offset).limit(page_size)
+        stmt = stmt.order_by(order_by, Store.code.asc()).offset(offset).limit(page_size)
 
         # Execute query
         result = await db.execute(stmt)
@@ -233,9 +235,11 @@ class DimensionService:
         else:
             order_by = Product.sku.asc()
 
-        # Apply pagination
+        # Apply pagination. Append the unique `sku` as a tie-breaker so rows
+        # with equal sort values keep a stable order across pages (offset
+        # pagination over a non-unique sort key is otherwise non-deterministic).
         offset = (page - 1) * page_size
-        stmt = stmt.order_by(order_by).offset(offset).limit(page_size)
+        stmt = stmt.order_by(order_by, Product.sku.asc()).offset(offset).limit(page_size)
 
         # Execute query
         result = await db.execute(stmt)

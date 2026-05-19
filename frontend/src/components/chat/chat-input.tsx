@@ -87,7 +87,7 @@ export function ApprovalPrompt({
   isLoading = false,
 }: ApprovalPromptProps) {
   return (
-    <div className="mx-4 my-2 p-4 border rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800">
+    <div className="mx-4 my-2 p-4 border border-warning/30 rounded-lg bg-warning/10">
       <p className="font-medium text-sm mb-2">Approval Required</p>
       <p className="text-sm text-muted-foreground mb-3">
         The agent wants to perform: <strong>{action}</strong>

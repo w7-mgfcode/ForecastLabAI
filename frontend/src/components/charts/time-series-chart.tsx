@@ -1,7 +1,9 @@
-import { Area, CartesianGrid, ComposedChart, Legend, Line, XAxis, YAxis } from 'recharts'
+import { Area, CartesianGrid, ComposedChart, Line, XAxis, YAxis } from 'recharts'
 import {
   ChartConfig,
   ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
   ChartTooltip,
   ChartTooltipContent,
 } from '@/components/ui/chart'
@@ -70,7 +72,10 @@ export function TimeSeriesChart({
         {description && <CardDescription>{description}</CardDescription>}
       </CardHeader>
       <CardContent>
-        <ChartContainer config={chartConfig} className={`h-[${height}px] w-full`}>
+        {/* Height is passed via inline style — a `h-[${height}px]` class is a
+            dynamic string Tailwind cannot statically discover, so the JIT
+            compiler drops it at build time. */}
+        <ChartContainer config={chartConfig} className="w-full" style={{ height: `${height}px` }}>
           <ComposedChart data={data} accessibilityLayer>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis
@@ -85,7 +90,7 @@ export function TimeSeriesChart({
             />
             <YAxis tickLine={false} axisLine={false} />
             <ChartTooltip content={<ChartTooltipContent />} />
-            <Legend />
+            <ChartLegend content={<ChartLegendContent />} />
             {/* Prediction-interval band — drawn first so the forecast line sits
                 on top. A function dataKey returns the [lower, upper] tuple
                 recharts renders as a range area. */}

@@ -11,6 +11,8 @@ from app.core.logging import get_logger
 from app.features.rag.embeddings import EmbeddingError
 from app.features.rag.schemas import (
     DeleteResponse,
+    IndexProjectDocsRequest,
+    IndexProjectDocsResponse,
     IndexRequest,
     IndexResponse,
     RetrieveRequest,
@@ -129,6 +131,91 @@ async def index_document(
         )
         raise DatabaseError(
             message="Failed to index document",
+            details={"error": str(e)},
+        ) from e
+
+
+@router.post(
+    "/index/project-docs",
+    response_model=IndexProjectDocsResponse,
+    summary="Index bundled project documentation",
+    description="""
+Discover and bulk-index the repository's own bundled markdown.
+
+**Discovery roots (all toggleable, all default on):**
+- `include_docs`: every `docs/**/*.md`
+- `include_prps`: every `PRPs/**/*.md`
+- `include_root`: `README.md`, `AGENTS.md`, `CHANGELOG.md`
+
+Each file is indexed through the same path as `POST /rag/index`, so chunking,
+embedding, the SHA-256 content-hash idempotency short-circuit, and upsert are
+all reused. Re-runs return every unchanged file as `status: "unchanged"`.
+
+**Returns:** per-file results plus aggregate counts (indexed / updated /
+unchanged / failed / total_chunks). A single unreadable file is reported
+`status: "failed"` without aborting the batch; an embedding-provider or
+database failure is batch-fatal and surfaces as `502` / problem+json.
+""",
+)
+async def index_project_docs(
+    request: IndexProjectDocsRequest,
+    db: AsyncSession = Depends(get_db),
+) -> IndexProjectDocsResponse:
+    """Bulk-index bundled project documentation into the knowledge base.
+
+    Args:
+        request: Toggles selecting which doc roots to index.
+        db: Async database session from dependency.
+
+    Returns:
+        Per-file results plus aggregate indexing statistics.
+
+    Raises:
+        HTTPException: If embedding generation fails (502).
+        DatabaseError: If a database operation fails.
+    """
+    logger.info(
+        "rag.index_project_docs_request_received",
+        include_docs=request.include_docs,
+        include_prps=request.include_prps,
+        include_root=request.include_root,
+    )
+
+    service = RAGService()
+
+    try:
+        response = await service.index_project_docs(db=db, request=request)
+
+        logger.info(
+            "rag.index_project_docs_request_completed",
+            total_files=response.total_files,
+            total_chunks=response.total_chunks,
+            failed=response.failed,
+        )
+
+        return response
+
+    except EmbeddingError as e:
+        logger.error(
+            "rag.index_project_docs_request_failed",
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Embedding generation failed: {e}",
+        ) from e
+
+    except SQLAlchemyError as e:
+        logger.error(
+            "rag.index_project_docs_request_failed",
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
+        raise DatabaseError(
+            message="Failed to index project docs",
             details={"error": str(e)},
         ) from e
 

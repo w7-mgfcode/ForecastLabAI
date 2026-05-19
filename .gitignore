@@ -27,6 +27,7 @@ infra/terraform.tfvars
 .terraform
 .terraform*
 .langgraph_api
+.mcp.json
 
 # Virtual environments
 .venv

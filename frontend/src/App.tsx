@@ -10,6 +10,7 @@ import { ROUTES } from '@/lib/constants'
 // Lazy-loaded page components
 const DashboardPage = lazy(() => import('@/pages/dashboard'))
 const ShowcasePage = lazy(() => import('@/pages/showcase'))
+const OpsPage = lazy(() => import('@/pages/ops'))
 const SalesExplorerPage = lazy(() => import('@/pages/explorer/sales'))
 const StoresExplorerPage = lazy(() => import('@/pages/explorer/stores'))
 const StoreDetailPage = lazy(() => import('@/pages/explorer/store-detail'))
@@ -23,6 +24,7 @@ const JobDetailPage = lazy(() => import('@/pages/explorer/job-detail'))
 const ForecastPage = lazy(() => import('@/pages/visualize/forecast'))
 const BacktestPage = lazy(() => import('@/pages/visualize/backtest'))
 const DemandPlannerPage = lazy(() => import('@/pages/visualize/demand'))
+const WhatIfPlannerPage = lazy(() => import('@/pages/visualize/planner'))
 const ChatPage = lazy(() => import('@/pages/chat'))
 const KnowledgePage = lazy(() => import('@/pages/knowledge'))
 const GuidePage = lazy(() => import('@/pages/guide'))
@@ -52,6 +54,14 @@ function App() {
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <ShowcasePage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.OPS}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <OpsPage />
                   </Suspense>
                 }
               />
@@ -156,6 +166,14 @@ function App() {
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <DemandPlannerPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.VISUALIZE.PLANNER}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <WhatIfPlannerPage />
                   </Suspense>
                 }
               />

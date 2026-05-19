@@ -71,7 +71,9 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     ) as ac:
         yield ac
 
-    app.dependency_overrides.clear()
+    # Remove only this fixture's override — clear() would also drop overrides
+    # installed by other fixtures sharing the app instance.
+    app.dependency_overrides.pop(get_db, None)
 
 
 @pytest.fixture

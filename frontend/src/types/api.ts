@@ -312,6 +312,34 @@ export interface RetrieveResponse {
   total_chunks_searched: number
 }
 
+// Request for POST /rag/index/project-docs. All flags default to true
+// server-side (extra="forbid"), so the UI posts an empty {}.
+export interface IndexProjectDocsRequest {
+  include_docs?: boolean
+  include_prps?: boolean
+  include_root?: boolean
+}
+
+// One file's outcome in a project-docs index run.
+export interface ProjectDocResult {
+  source_path: string
+  status: 'indexed' | 'updated' | 'unchanged' | 'failed'
+  chunks_created: number
+  error: string | null
+}
+
+// Aggregate result of POST /rag/index/project-docs.
+export interface IndexProjectDocsResponse {
+  results: ProjectDocResult[]
+  total_files: number
+  indexed: number
+  updated: number
+  unchanged: number
+  failed: number
+  total_chunks: number
+  duration_ms: number
+}
+
 // === Agents WebSocket ===
 export type AgentEventType =
   | 'text_delta'
@@ -549,4 +577,327 @@ export interface ProviderHealth {
   reachable: boolean
   detail: string
   models: string[]
+}
+
+// =============================================================================
+// ForecastOps Control Center — GET /ops/summary, GET /ops/retraining-candidates
+// =============================================================================
+
+// Liveness snapshot for the Control Center header.
+export interface SystemHealth {
+  api_ok: boolean
+  database_connected: boolean
+  latest_successful_job_at: string | null
+}
+
+// One bucket of a status histogram.
+export interface StatusCount {
+  status: string
+  count: number
+}
+
+// Aggregated job-execution health.
+export interface JobHealth {
+  counts: StatusCount[]
+  completed_today: number
+  failed_total: number
+  active_total: number
+}
+
+// Aggregated model-run health.
+export interface RunHealth {
+  counts: StatusCount[]
+  success_rate: number | null
+  failed_total: number
+}
+
+// Deployment-alias health with a staleness verdict.
+export interface AliasHealth {
+  alias_name: string
+  run_id: string
+  run_status: string
+  model_type: string
+  store_id: number
+  product_id: number
+  is_stale: boolean
+  stale_reason: string | null
+  wape: number | null
+}
+
+// How current the underlying data and model state are.
+export interface DataFreshness {
+  latest_sales_date: string | null
+  latest_job_completed_at: string | null
+  latest_run_completed_at: string | null
+}
+
+// One entry in the "needs attention" list.
+export interface AttentionItem {
+  item_type: 'failed_job' | 'failed_run' | 'stale_alias'
+  entity_id: string
+  label: string
+  detail: string
+  occurred_at: string | null
+}
+
+// Aggregated operational summary — GET /ops/summary.
+export interface OpsSummaryResponse {
+  system: SystemHealth
+  jobs: JobHealth
+  runs: RunHealth
+  aliases: AliasHealth[]
+  freshness: DataFreshness
+  attention_items: AttentionItem[]
+  generated_at: string
+}
+
+// One (store, product) pair ranked for retraining.
+export interface RetrainingCandidate {
+  store_id: number
+  product_id: number
+  priority_score: number
+  staleness_days: number
+  wape: number | null
+  latest_run_id: string | null
+  latest_run_status: string | null
+  reason: string
+}
+
+// Ranked retraining-candidate queue — GET /ops/retraining-candidates.
+export interface RetrainingCandidatesResponse {
+  candidates: RetrainingCandidate[]
+  total_evaluated: number
+  generated_at: string
+}
+
+// Forecast-error trend verdict for a (store, product) grain.
+export type DriftDirection = 'improving' | 'stable' | 'degrading' | 'unknown'
+
+// One run's WAPE observation in a grain's chronological history.
+export interface WapePoint {
+  run_id: string
+  created_at: string
+  wape: number | null
+}
+
+// Forecast-error health and drift verdict for one (store, product) grain.
+export interface ModelHealthEntry {
+  store_id: number
+  product_id: number
+  run_count: number
+  latest_run_id: string | null
+  latest_run_status: string | null
+  latest_wape: number | null
+  previous_wape: number | null
+  wape_delta: number | null
+  drift_direction: DriftDirection
+  last_trained_at: string | null
+  staleness_days: number
+  wape_history: WapePoint[]
+}
+
+// Per-grain forecast-error health — GET /ops/model-health.
+export interface ModelHealthResponse {
+  entries: ModelHealthEntry[]
+  total_evaluated: number
+  generated_at: string
+}
+
+// ── Scenario Simulation / What-If Planner ──
+
+// A relative price change over a future date window.
+export interface PriceAssumption {
+  change_pct: number
+  start_date: string
+  end_date: string
+}
+
+// A promotion of a given kind running over a future date window.
+export interface PromotionAssumption {
+  kind: 'pct_off' | 'bogo' | 'bundle' | 'markdown'
+  start_date: string
+  end_date: string
+}
+
+// Explicit holiday / event days that lift demand.
+export interface HolidayAssumption {
+  dates: string[]
+}
+
+// On-hand stock used only to derive a coverage verdict.
+export interface InventoryAssumption {
+  on_hand_units: number
+}
+
+// A forced product lifecycle stage for the horizon.
+export interface LifecycleAssumption {
+  stage: 'launch' | 'growth' | 'maturity' | 'decline'
+}
+
+// The full set of optional what-if assumptions.
+export interface ScenarioAssumptions {
+  price?: PriceAssumption | null
+  promotion?: PromotionAssumption | null
+  holiday?: HolidayAssumption | null
+  inventory?: InventoryAssumption | null
+  lifecycle?: LifecycleAssumption | null
+}
+
+// Request body for POST /scenarios/simulate.
+export interface SimulateScenarioRequest {
+  run_id: string
+  horizon: number
+  assumptions: ScenarioAssumptions
+  name?: string | null
+}
+
+// Request body for POST /scenarios.
+export interface CreateScenarioRequest {
+  name: string
+  run_id: string
+  horizon: number
+  assumptions: ScenarioAssumptions
+  tags?: string[]
+  cloned_from?: string | null
+}
+
+// Whether projected demand is covered by on-hand stock.
+export type CoverageVerdict = 'covered' | 'at_risk' | 'stockout' | 'unknown'
+
+// One horizon day: baseline vs. scenario demand and the factor applied.
+export interface ScenarioPoint {
+  date: string
+  baseline: number
+  scenario: number
+  delta: number
+  applied_factor: number
+}
+
+// A full baseline-vs-scenario comparison — POST /scenarios/simulate.
+export interface ScenarioComparison {
+  store_id: number
+  product_id: number
+  model_type: string
+  horizon: number
+  points: ScenarioPoint[]
+  baseline_total_units: number
+  scenario_total_units: number
+  units_delta: number
+  units_delta_pct: number
+  unit_price_used: number
+  baseline_revenue: number
+  scenario_revenue: number
+  revenue_delta: number
+  coverage_verdict: CoverageVerdict
+  // 'heuristic' = a deterministic post-forecast multiplier; 'model_exogenous'
+  // = a re-forecast through a feature-consuming regression model (PRP-27).
+  method: 'heuristic' | 'model_exogenous'
+  disclaimer: string
+  generated_at: string
+}
+
+// A persisted scenario plan with its embedded comparison snapshot.
+export interface ScenarioPlanResponse {
+  scenario_id: string
+  name: string
+  store_id: number
+  product_id: number
+  run_id: string
+  horizon: number
+  method: string
+  created_at: string
+  assumptions: ScenarioAssumptions
+  comparison: ScenarioComparison
+  tags: string[]
+  cloned_from: string | null
+}
+
+// A compact row in the saved-plans list.
+export interface ScenarioListItem {
+  scenario_id: string
+  name: string
+  store_id: number
+  product_id: number
+  horizon: number
+  units_delta: number
+  revenue_delta: number
+  created_at: string
+  tags: string[]
+}
+
+// A page of saved scenario plans — GET /scenarios.
+export interface ScenarioListResponse {
+  scenarios: ScenarioListItem[]
+  total: number
+}
+
+// Metric a multi-scenario comparison ranks by.
+export type RankBy = 'revenue_delta' | 'units_delta'
+
+// Request body for POST /scenarios/compare.
+export interface CompareScenariosRequest {
+  scenario_ids: string[]
+  rank_by?: RankBy
+}
+
+// One saved plan's headline numbers within a multi-scenario comparison.
+export interface ScenarioComparisonRow {
+  scenario_id: string
+  name: string
+  units_delta: number
+  revenue_delta: number
+  coverage_verdict: CoverageVerdict
+  rank: number
+}
+
+// A baseline compared against 2-5 saved scenarios — POST /scenarios/compare.
+export interface MultiScenarioComparison {
+  baseline_total_units: number
+  baseline_revenue: number
+  rank_by: RankBy
+  scenarios: ScenarioComparisonRow[]
+  // Date-keyed merged rows: each carries 'date', 'baseline', and one numeric
+  // entry per scenario name.
+  chart_series: Record<string, number | string>[]
+}
+
+// =============================================================================
+// Explainability — PRP-28 forecast explanation & driver attribution
+// =============================================================================
+
+// Qualitative confidence band for a forecast explanation.
+export type ConfidenceLevel = 'high' | 'medium' | 'low'
+
+// One named, interpretable demand driver behind a forecast. A driver with
+// contribution === 0 is informational context the model does not consume.
+export interface DriverContribution {
+  name: string
+  feature_value: number
+  contribution: number
+  direction: 'positive' | 'negative' | 'neutral'
+  description: string
+}
+
+// An advisory retail signal correlated with the forecast — never a causal claim.
+export interface ReasonCode {
+  code: string
+  severity: 'info' | 'warn'
+  detail: string
+}
+
+// A structured, rule-based explanation of a baseline h=1 forecast —
+// GET /explain/runs/{run_id}, GET /explain/jobs/{job_id}, POST /explain/forecast.
+export interface ForecastExplanation {
+  store_id: number
+  product_id: number
+  model_type: string
+  method: 'rule_based'
+  forecast_value: number
+  drivers: DriverContribution[]
+  reason_codes: ReasonCode[]
+  confidence: ConfidenceLevel
+  caveats: string[]
+  agent_summary: string
+  as_of_date: string // ISO date
+  generated_at: string // ISO datetime
 }

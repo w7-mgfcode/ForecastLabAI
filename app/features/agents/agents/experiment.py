@@ -38,6 +38,8 @@ from app.features.agents.tools.registry_tools import (
     get_run,
     list_runs,
 )
+from app.features.scenarios.agent_tools import propose_scenario, save_scenario
+from app.features.scenarios.schemas import SaveScenarioRequest
 
 logger = structlog.get_logger()
 
@@ -372,6 +374,111 @@ def create_experiment_agent() -> Agent[AgentDeps, ExperimentReport]:
             }
 
         return await archive_run(db=ctx.deps.db, run_id=run_id)
+
+    @agent.tool
+    @recoverable
+    async def tool_propose_scenario(
+        ctx: RunContext[AgentDeps],
+        store_id: int,
+        product_id: int,
+        horizon: int = 14,
+        objective: str = "",
+    ) -> dict[str, Any]:
+        """Propose a candidate what-if scenario for a store / product.
+
+        READ-ONLY: this drafts a candidate scenario; it persists nothing. To
+        save the proposal, call tool_save_scenario (which requires approval).
+
+        Args:
+            store_id: Store the proposed scenario targets.
+            product_id: Product the proposed scenario targets.
+            horizon: Number of days the proposed scenario should span (default 14).
+            objective: Free-text planning objective — keywords like 'promotion'
+                steer the proposal toward a promotion instead of a price cut.
+
+        Returns:
+            A candidate scenario with assumptions and a recommendation.
+        """
+        ctx.deps.increment_tool_calls()
+        logger.info(
+            "agents.experiment.tool_propose_scenario",
+            session_id=ctx.deps.session_id,
+            store_id=store_id,
+            product_id=product_id,
+        )
+        return await propose_scenario(
+            db=ctx.deps.db,
+            store_id=store_id,
+            product_id=product_id,
+            horizon=horizon,
+            objective=objective,
+        )
+
+    @agent.tool
+    @recoverable
+    async def tool_save_scenario(
+        ctx: RunContext[AgentDeps],
+        name: str,
+        run_id: str,
+        store_id: int,
+        product_id: int,
+        horizon: int,
+        assumptions: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Persist a proposed what-if scenario as a saved scenario plan.
+
+        REQUIRES HUMAN APPROVAL. This action writes a scenario_plan row.
+
+        Use this only after tool_propose_scenario, passing back its candidate
+        assumptions. The plan is persisted with agent provenance and the
+        approval audit trail.
+
+        Args:
+            name: Human-readable name for the saved plan.
+            run_id: Artifact key of the baseline model.
+            store_id: Store the scenario targets.
+            product_id: Product the scenario targets.
+            horizon: Number of days to simulate.
+            assumptions: The candidate assumptions dict from tool_propose_scenario.
+
+        Returns:
+            The saved plan details, or an approval request.
+        """
+        ctx.deps.increment_tool_calls()
+        logger.info(
+            "agents.experiment.tool_save_scenario",
+            session_id=ctx.deps.session_id,
+            store_id=store_id,
+            product_id=product_id,
+            requires_approval=requires_approval("save_scenario"),
+        )
+
+        arguments: dict[str, Any] = {
+            "name": name,
+            "run_id": run_id,
+            "store_id": store_id,
+            "product_id": product_id,
+            "horizon": horizon,
+            "assumptions": assumptions or {},
+            "source": "agent",
+            "agent_session_id": ctx.deps.session_id,
+        }
+
+        # Check if approval is required — mirrors tool_create_alias exactly.
+        if requires_approval("save_scenario"):
+            return {
+                "status": "approval_required",
+                "action": "save_scenario",
+                "arguments": arguments,
+                "message": "This action requires human approval. Please approve to proceed.",
+            }
+
+        request = SaveScenarioRequest.model_validate(arguments)
+        return await save_scenario(
+            db=ctx.deps.db,
+            request=request,
+            agent_session_id=ctx.deps.session_id,
+        )
 
     return agent
 
