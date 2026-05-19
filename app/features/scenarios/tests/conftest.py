@@ -25,9 +25,9 @@ from app.core.database import get_db
 from app.features.forecasting.models import NaiveForecaster, RegressionForecaster
 from app.features.forecasting.persistence import ModelBundle, save_model_bundle
 from app.features.forecasting.schemas import NaiveModelConfig, RegressionModelConfig
-from app.features.scenarios.feature_frame import canonical_feature_columns
 from app.features.scenarios.models import ScenarioPlan
 from app.main import app
+from app.shared.feature_frames import canonical_feature_columns
 
 # Store / product the test bundle is trained for. High IDs that no seeder uses,
 # so the revenue calc deterministically hits the unit-price fallback.

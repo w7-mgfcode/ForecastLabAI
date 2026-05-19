@@ -12,22 +12,24 @@ import math
 from datetime import date, timedelta
 
 from app.features.scenarios.feature_frame import (
-    CALENDAR_COLUMNS,
-    EXOGENOUS_COLUMNS,
-    EXOGENOUS_LAGS,
-    HISTORY_TAIL_DAYS,
     MAX_COMPARE_SCENARIOS,
     assemble_future_frame,
-    build_calendar_columns,
     build_exogenous_columns,
-    build_long_lag_columns,
-    canonical_feature_columns,
 )
 from app.features.scenarios.schemas import (
     HolidayAssumption,
     PriceAssumption,
     PromotionAssumption,
     ScenarioAssumptions,
+)
+from app.shared.feature_frames import (
+    CALENDAR_COLUMNS,
+    EXOGENOUS_COLUMNS,
+    EXOGENOUS_LAGS,
+    HISTORY_TAIL_DAYS,
+    build_calendar_columns,
+    build_long_lag_columns,
+    canonical_feature_columns,
 )
 
 _ORIGIN = date(2026, 6, 30)
