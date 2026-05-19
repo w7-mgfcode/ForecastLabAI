@@ -10,6 +10,8 @@ import {
   ShieldCheck,
 } from 'lucide-react'
 import { useRun, useVerifyArtifact } from '@/hooks/use-runs'
+import { useRunExplanation } from '@/hooks/use-explanations'
+import { ExplanationPanel } from '@/components/explainability/explanation-panel'
 import { JsonBlock } from '@/components/common/json-block'
 import { ErrorDisplay } from '@/components/common/error-display'
 import { LoadingState } from '@/components/common/loading-state'
@@ -40,6 +42,9 @@ export default function RunDetailPage() {
   // The verify GET is button-gated: disabled until the first click, then refetch.
   const [verifyOn, setVerifyOn] = useState(false)
   const verifyQuery = useVerifyArtifact(runId ?? '', verifyOn)
+
+  // The explanation panel self-handles a 400 for non-baseline (lightgbm) runs.
+  const explanationQuery = useRunExplanation(runId ?? '', !!runId)
 
   if (!runId) {
     return (
@@ -157,6 +162,12 @@ export default function RunDetailPage() {
           <JsonBlock value={run.metrics} />
         </CardContent>
       </Card>
+
+      <ExplanationPanel
+        explanation={explanationQuery.data}
+        isLoading={explanationQuery.isLoading}
+        error={explanationQuery.error}
+      />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>

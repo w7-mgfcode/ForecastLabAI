@@ -20,6 +20,7 @@ from app.features.config.routes import router as config_router
 from app.features.config.service import apply_overrides_on_startup
 from app.features.demo.routes import router as demo_router
 from app.features.dimensions.routes import router as dimensions_router
+from app.features.explainability.routes import router as explainability_router
 from app.features.featuresets.routes import router as featuresets_router
 from app.features.forecasting.routes import router as forecasting_router
 from app.features.ingest.routes import router as ingest_router
@@ -138,6 +139,7 @@ def create_app() -> FastAPI:
     app.include_router(ingest_router)
     app.include_router(featuresets_router)
     app.include_router(forecasting_router)
+    app.include_router(explainability_router)
     app.include_router(backtesting_router)
     app.include_router(registry_router)
     app.include_router(rag_router)
