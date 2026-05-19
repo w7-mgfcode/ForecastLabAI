@@ -1,5 +1,20 @@
 # INITIAL-MLZOO-C-xgboost-prophet-extensions.md - XGBoost and Prophet-like Extensions
 
+> **This brief is split into TWO PRPs — two branches, two review units. Never one.**
+> This INITIAL is the shared brief for both, but the two models are delivered separately:
+>
+> - **`PRPs/PRP-MLZOO-C1-xgboost-model.md`** — the XGBoost half. A low-risk follow-up that
+>   mirrors the merged `LightGBMForecaster` design (optional `ml-xgboost` extra, feature
+>   flag, lazy import, deterministic training, registry metadata).
+> - **`PRPs/PRP-MLZOO-C2-prophet-like-additive-model.md`** — the Prophet-like half. A
+>   distinct model-family design task — a pure-scikit-learn additive linear model with
+>   trend / seasonality / holiday-regressor decomposition; **not** a clone of the tree
+>   models and **not** the real `prophet` dependency.
+>
+> Do not combine the two models into a single PRP or a single branch. The "Out of scope"
+> lists below still apply to *each* PRP individually (e.g. C1 does not touch Prophet-like
+> work; C2 does not touch XGBoost). See `INITIAL-MLZOO-index.md` for the updated roadmap.
+
 ## FEATURE:
 
 Extend the Advanced ML Model Zoo after the feature-frame foundation and first advanced model path are stable.
