@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.2.16](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.15...v0.2.16) (2026-05-19)
+
+
+### Features
+
+* **backtest:** wire feature-aware models into the backtesting fold loop ([#244](https://github.com/w7-mgfcode/ForecastLabAI/issues/244)) ([5a65e35](https://github.com/w7-mgfcode/ForecastLabAI/commit/5a65e35e50c0f4cc504b763994db2037b8e9717f))
+* **backtest:** wire feature-aware models into the backtesting fold loop ([#244](https://github.com/w7-mgfcode/ForecastLabAI/issues/244)) ([12f6cdf](https://github.com/w7-mgfcode/ForecastLabAI/commit/12f6cdfd2bbaef4667b07036da97ba8e18378660))
+* **forecast:** add LightGBM feature-aware forecasting model ([#242](https://github.com/w7-mgfcode/ForecastLabAI/issues/242)) ([2b44491](https://github.com/w7-mgfcode/ForecastLabAI/commit/2b44491748dd6e6ac7ba9ee69d744bf9d5478484))
+* **forecast:** add LightGBM feature-aware forecasting model ([#242](https://github.com/w7-mgfcode/ForecastLabAI/issues/242)) ([2f1b8a5](https://github.com/w7-mgfcode/ForecastLabAI/commit/2f1b8a5517e66f8ae59463e0e7a299d2517b93d5))
+* **forecast:** add Prophet-like additive forecasting model ([#248](https://github.com/w7-mgfcode/ForecastLabAI/issues/248)) ([7531eac](https://github.com/w7-mgfcode/ForecastLabAI/commit/7531eac4fcb4dc536e2b207cce529fe9d4cd5d42))
+* **forecast:** add Prophet-like additive forecasting model ([#248](https://github.com/w7-mgfcode/ForecastLabAI/issues/248)) ([0d219bc](https://github.com/w7-mgfcode/ForecastLabAI/commit/0d219bcdb7c85be252e059c2292569d2c53da4e6))
+* **forecast:** add XGBoost feature-aware forecasting model ([#247](https://github.com/w7-mgfcode/ForecastLabAI/issues/247)) ([2091f2f](https://github.com/w7-mgfcode/ForecastLabAI/commit/2091f2f258a0dcf7f4457435afe04ea44cd57c82))
+* **forecast:** add XGBoost feature-aware forecasting model ([#247](https://github.com/w7-mgfcode/ForecastLabAI/issues/247)) ([53d3d57](https://github.com/w7-mgfcode/ForecastLabAI/commit/53d3d572e2945d103285a1820685cdd3b5042125))
+* **forecast:** feature-aware forecasting foundation — shared feature-frame contract ([a37abfe](https://github.com/w7-mgfcode/ForecastLabAI/commit/a37abfe2d6505137b74bc046a6948e644d5319f2))
+* **forecast:** feature-aware forecasting foundation — shared feature-frame contract ([#238](https://github.com/w7-mgfcode/ForecastLabAI/issues/238)) ([b116489](https://github.com/w7-mgfcode/ForecastLabAI/commit/b116489d4c2fc279ae34e123ab47a60576328d38))
+* **release:** ship the MLZOO advanced ML model zoo (A–C2) to main ([#252](https://github.com/w7-mgfcode/ForecastLabAI/issues/252)) ([689ac94](https://github.com/w7-mgfcode/ForecastLabAI/commit/689ac94f5035c2836193b980fe438f1318911345))
+
+
+### Bug Fixes
+
+* **api:** allow Tailscale CGNAT origins in dev CORS allow-list ([#246](https://github.com/w7-mgfcode/ForecastLabAI/issues/246)) ([82c457e](https://github.com/w7-mgfcode/ForecastLabAI/commit/82c457e0353d53eba82cfc32b018790132440b38))
+* **api:** allow Tailscale CGNAT origins in dev CORS allow-list ([#246](https://github.com/w7-mgfcode/ForecastLabAI/issues/246)) ([d7527a5](https://github.com/w7-mgfcode/ForecastLabAI/commit/d7527a51f3bf44ee4c187782fb947be2a3869e43))
+* **jobs,ui:** reach model_exogenous + block empty assumption dates in the planner ([f09dec0](https://github.com/w7-mgfcode/ForecastLabAI/commit/f09dec08bfde18d8c34f160befdd98d20fecd7bf))
+* **jobs,ui:** reach model_exogenous from the what-if planner ([#229](https://github.com/w7-mgfcode/ForecastLabAI/issues/229)) ([4a2e5dc](https://github.com/w7-mgfcode/ForecastLabAI/commit/4a2e5dc81b05ebda6330070da1f9b59f07e4b1e1))
+* **ui:** block planner runs with empty assumption dates ([#228](https://github.com/w7-mgfcode/ForecastLabAI/issues/228)) ([34104c9](https://github.com/w7-mgfcode/ForecastLabAI/commit/34104c9000b39fb701e6a642c91903a68cf3af3d))
+
+
+### Documentation
+
+* **docs:** add MLZOO planning briefs and feature-contract notes ([#238](https://github.com/w7-mgfcode/ForecastLabAI/issues/238)) ([22e39aa](https://github.com/w7-mgfcode/ForecastLabAI/commit/22e39aa538d4aea0ddd188fb570faf9ab8537643))
+* **docs:** add PRP-MLZOO-C1 XGBoost model and split the MLZOO-C roadmap ([#247](https://github.com/w7-mgfcode/ForecastLabAI/issues/247)) ([7adc045](https://github.com/w7-mgfcode/ForecastLabAI/commit/7adc045737f847c2e9ebf6034488bf36e8b64e6d))
+* **docs:** add PRP-MLZOO-C2 prophet-like additive model ([#248](https://github.com/w7-mgfcode/ForecastLabAI/issues/248)) ([0a25a75](https://github.com/w7-mgfcode/ForecastLabAI/commit/0a25a75307aaf37765fd9a67eba7cfbb19208eb1))
+* **docs:** document the Prophet-like additive model ([#248](https://github.com/w7-mgfcode/ForecastLabAI/issues/248)) ([079e0b7](https://github.com/w7-mgfcode/ForecastLabAI/commit/079e0b7965ad98b0635f93f66142ab7545487b97))
+* land MLZOO planning briefs and sync uv.lock ([97d8057](https://github.com/w7-mgfcode/ForecastLabAI/commit/97d80571a63e0812493a18497bd47f0b353c8474))
+
 ## [0.2.15](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.14...v0.2.15) (2026-05-19)
 
 
