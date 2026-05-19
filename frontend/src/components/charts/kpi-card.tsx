@@ -47,16 +47,16 @@ export function KPICard({
         {Icon && <Icon className="h-4 w-4 text-muted-foreground" />}
       </CardHeader>
       <CardContent>
-        <div className="text-2xl font-bold">{value}</div>
+        <div className="text-3xl font-bold tracking-tight tabular-nums">{value}</div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           {trend && (
             <span
               className={cn(
                 'font-medium',
                 trend.value > 0
-                  ? 'text-green-600 dark:text-green-400'
+                  ? 'text-success'
                   : trend.value < 0
-                  ? 'text-red-600 dark:text-red-400'
+                  ? 'text-destructive'
                   : ''
               )}
             >

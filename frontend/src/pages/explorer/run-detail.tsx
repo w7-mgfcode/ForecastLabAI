@@ -243,8 +243,8 @@ export default function RunDetailPage() {
             !verifyQuery.isFetching &&
             verifyQuery.data &&
             (verifyQuery.data.verified ? (
-              <div className="flex items-start gap-2 rounded-md border border-green-600/40 bg-green-600/10 p-3 text-sm text-green-700 dark:text-green-400">
-                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+              <div className="flex items-start gap-2 rounded-md border border-success/30 bg-success/10 p-3 text-sm text-foreground">
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
                 <span>
                   Artifact verified — the stored checksum matches.
                   {verifyQuery.data.computed_hash && (

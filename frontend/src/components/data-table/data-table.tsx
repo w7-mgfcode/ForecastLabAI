@@ -77,7 +77,9 @@ export function DataTable<TData, TValue>({
           <DataTableViewOptions table={table} />
         </div>
       )}
-      <div className="rounded-md border">
+      {/* Light: elevated white panel. dark: overrides keep the existing
+          borderless-on-canvas look unchanged. */}
+      <div className="rounded-md border bg-card shadow-card overflow-hidden dark:bg-transparent dark:shadow-none">
         <Table>
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (
