@@ -20,9 +20,54 @@ import numpy as np
 from sklearn.ensemble import (  # type: ignore[import-untyped]
     HistGradientBoostingRegressor,
 )
+from sklearn.impute import SimpleImputer  # type: ignore[import-untyped]
+from sklearn.linear_model import Ridge  # type: ignore[import-untyped]
+from sklearn.pipeline import Pipeline  # type: ignore[import-untyped]
 
 if TYPE_CHECKING:
     from app.features.forecasting.schemas import ModelConfig
+
+
+# Canonical 14-column feature frame partitioned into the three Prophet-style
+# additive components. Together the three column tuples cover all 14 canonical
+# columns exactly — which is what makes the additive invariant hold (the
+# component contributions partition the full coef_ · x sum). See
+# ``canonical_feature_columns()`` in ``app/shared/feature_frames``.
+_PROPHET_LIKE_COMPONENTS: dict[str, tuple[str, ...]] = {
+    "trend": ("lag_1", "lag_7", "lag_14", "lag_28", "days_since_launch"),
+    "seasonality": (
+        "dow_sin",
+        "dow_cos",
+        "month_sin",
+        "month_cos",
+        "is_weekend",
+        "is_month_end",
+    ),
+    "holiday_regressor": ("price_factor", "promo_active", "is_holiday"),
+}
+
+
+@dataclass
+class ForecastDecomposition:
+    """Additive component breakdown of a Prophet-like forecast.
+
+    Invariant: ``intercept + trend + seasonality + holiday_regressor`` equals
+    ``predict(...)`` for the same ``X`` (within float tolerance), element-wise.
+    Each component array has shape ``[n_rows]`` — one value per forecast row.
+
+    Attributes:
+        intercept: The fitted Ridge intercept (a scalar, broadcast over rows).
+        trend: Per-row contribution of the trend columns (autoregressive lags
+            + ``days_since_launch``).
+        seasonality: Per-row contribution of the calendar/seasonal columns.
+        holiday_regressor: Per-row contribution of the holiday + extra-regressor
+            columns (price, promotion, holiday flag).
+    """
+
+    intercept: float
+    trend: np.ndarray[Any, np.dtype[np.floating[Any]]]
+    seasonality: np.ndarray[Any, np.dtype[np.floating[Any]]]
+    holiday_regressor: np.ndarray[Any, np.dtype[np.floating[Any]]]
 
 
 @dataclass
@@ -732,8 +777,192 @@ class LightGBMForecaster(BaseForecaster):
         return self
 
 
+class ProphetLikeForecaster(BaseForecaster):
+    """Feature-aware ADDITIVE forecaster — Ridge over the canonical frame.
+
+    Prophet-LIKE, not Prophet: it approximates Prophet's additive trend +
+    seasonality + holiday/regressor decomposition with a regularized linear
+    model over the already-engineered 14-column feature frame. It REQUIRES a
+    non-``None`` exogenous ``X`` for both ``fit`` and ``predict``.
+
+    The fitted estimator is a scikit-learn ``Pipeline`` of two deterministic
+    steps: a ``SimpleImputer(strategy="median")`` that fills the ``NaN`` lag
+    cells the future feature frame emits (a bare ``Ridge`` raises
+    ``ValueError: Input contains NaN``), followed by a
+    ``Ridge(solver="cholesky")`` whose closed-form L2-regularized fit is
+    robust to the collinear engineered columns. Folding the imputer INSIDE the
+    pipeline keeps the no-leakage invariant: it learns its medians on the
+    training ``X`` only and re-applies them at predict time.
+
+    ``decompose()`` returns the per-component additive contributions of a
+    forecast — the literal ``y_hat = intercept + trend + seasonality +
+    holiday_regressor`` split, computed on the IMPUTED ``X``.
+
+    NOT modelled (deliberately — see PRP-MLZOO-C2 Risks): changepoint trend,
+    posterior uncertainty intervals, automatic seasonality discovery,
+    multiplicative seasonality. This is an additive linear approximation, not
+    the real ``prophet`` package.
+
+    Attributes:
+        alpha: Ridge L2 regularization strength (0.0 degenerates to OLS).
+    """
+
+    requires_features: ClassVar[bool] = True
+    """A feature-aware model — ``fit``/``predict`` REQUIRE a non-None ``X``."""
+
+    def __init__(self, *, alpha: float = 1.0, random_state: int = 42) -> None:
+        """Initialize the Prophet-like additive forecaster.
+
+        Args:
+            alpha: Ridge L2 regularization strength. The default 1.0 keeps
+                coefficients robust to the collinear engineered-feature frame.
+            random_state: Kept for interface parity with the other forecasters;
+                ``Ridge(solver="cholesky")`` is closed-form and needs no seed.
+        """
+        super().__init__(random_state)
+        self.alpha = alpha
+        self._estimator: Any = None
+
+    def fit(
+        self,
+        y: np.ndarray[Any, np.dtype[np.floating[Any]]],
+        X: np.ndarray[Any, np.dtype[np.floating[Any]]] | None = None,
+    ) -> ProphetLikeForecaster:
+        """Fit the additive Ridge pipeline on historical features.
+
+        Args:
+            y: Target values (1D array of shape ``[n_samples]``).
+            X: Exogenous features (2D array of shape ``[n_samples, n_features]``).
+                REQUIRED — unlike the baseline forecasters.
+
+        Returns:
+            self (for method chaining).
+
+        Raises:
+            ValueError: If ``X`` is ``None``, ``y`` is empty, or the row counts
+                of ``X`` and ``y`` do not match.
+        """
+        if X is None:
+            raise ValueError("ProphetLikeForecaster requires exogenous features X for fit()")
+        if len(y) == 0:
+            raise ValueError("Cannot fit on empty array")
+        if X.shape[0] != len(y):
+            raise ValueError(
+                f"X has {X.shape[0]} rows but y has {len(y)} — feature/target rows must match"
+            )
+        # The imputer learns its per-column medians on THIS training X only;
+        # the Ridge solver is deterministic and closed-form.
+        estimator: Any = Pipeline(
+            [
+                ("impute", SimpleImputer(strategy="median")),
+                ("ridge", Ridge(alpha=self.alpha, solver="cholesky")),
+            ]
+        )
+        estimator.fit(X, y)
+        self._estimator = estimator
+        self._last_values = np.asarray(y[-1:], dtype=np.float64)
+        self._is_fitted = True
+        return self
+
+    def predict(
+        self,
+        horizon: int,
+        X: np.ndarray[Any, np.dtype[np.floating[Any]]] | None = None,
+    ) -> np.ndarray[Any, np.dtype[np.floating[Any]]]:
+        """Generate forecasts from a future feature frame.
+
+        Args:
+            horizon: Number of steps to forecast.
+            X: Exogenous features for the forecast period, shape
+                ``[horizon, n_features]``. REQUIRED.
+
+        Returns:
+            Array of forecasts with shape ``[horizon]``.
+
+        Raises:
+            RuntimeError: If the model has not been fitted.
+            ValueError: If ``X`` is ``None`` or its row count is not ``horizon``.
+        """
+        if not self._is_fitted or self._estimator is None:
+            raise RuntimeError("Model must be fitted before predict")
+        if X is None:
+            raise ValueError("ProphetLikeForecaster requires exogenous features X for predict()")
+        if X.shape[0] != horizon:
+            raise ValueError(f"X has {X.shape[0]} rows but horizon is {horizon} — they must match")
+        # The Pipeline imputes the NaN lag cells, then the Ridge predicts.
+        predictions = self._estimator.predict(X)
+        result: np.ndarray[Any, np.dtype[np.floating[Any]]] = np.asarray(
+            predictions, dtype=np.float64
+        )
+        return result
+
+    def decompose(self, X: np.ndarray[Any, np.dtype[np.floating[Any]]]) -> ForecastDecomposition:
+        """Split a forecast into its additive trend / seasonality / regressor parts.
+
+        Operates on the IMPUTED ``X`` — the trained imputer's ``transform`` —
+        so the per-component contributions sum EXACTLY to ``predict(...)``: any
+        ``NaN`` cell is filled with the TRAINING-window median, never a
+        predict-time median (no leakage). Each component contribution is the
+        partial sum ``Σ_{i ∈ component} coef_i · x_i``; together the three
+        component column-sets partition all 14 canonical columns, so
+        ``intercept + trend + seasonality + holiday_regressor == predict()``.
+
+        Args:
+            X: Feature matrix of shape ``[n_rows, n_features]`` (the same frame
+                a ``predict`` call would consume). May contain ``NaN`` cells.
+
+        Returns:
+            A :class:`ForecastDecomposition` with the four-way breakdown.
+
+        Raises:
+            RuntimeError: If the model has not been fitted.
+        """
+        from app.shared.feature_frames import canonical_feature_columns
+
+        if not self._is_fitted or self._estimator is None:
+            raise RuntimeError("Model must be fitted before decompose")
+        imputer = self._estimator.named_steps["impute"]
+        ridge = self._estimator.named_steps["ridge"]
+        x_imputed = imputer.transform(X)
+        columns = canonical_feature_columns()
+        coef = np.asarray(ridge.coef_, dtype=np.float64)
+        contributions: dict[str, np.ndarray[Any, np.dtype[np.floating[Any]]]] = {}
+        for component, comp_cols in _PROPHET_LIKE_COMPONENTS.items():
+            idx = [columns.index(c) for c in comp_cols]
+            contributions[component] = np.asarray(x_imputed[:, idx] @ coef[idx], dtype=np.float64)
+        return ForecastDecomposition(
+            intercept=float(ridge.intercept_),
+            trend=contributions["trend"],
+            seasonality=contributions["seasonality"],
+            holiday_regressor=contributions["holiday_regressor"],
+        )
+
+    def get_params(self) -> dict[str, Any]:
+        """Get model parameters.
+
+        Returns:
+            Dictionary with alpha and random_state.
+        """
+        return {"alpha": self.alpha, "random_state": self.random_state}
+
+    def set_params(self, **params: Any) -> ProphetLikeForecaster:  # noqa: ANN401
+        """Set model parameters.
+
+        Args:
+            **params: Parameter names and values to set.
+
+        Returns:
+            self (for method chaining).
+        """
+        for key, value in params.items():
+            setattr(self, key, value)
+        return self
+
+
 # Type alias for model type literals
-ModelType = Literal["naive", "seasonal_naive", "moving_average", "lightgbm", "regression"]
+ModelType = Literal[
+    "naive", "seasonal_naive", "moving_average", "lightgbm", "regression", "prophet_like"
+]
 
 
 def model_factory(config: ModelConfig, random_state: int = 42) -> BaseForecaster:
@@ -801,5 +1030,13 @@ def model_factory(config: ModelConfig, random_state: int = 42) -> BaseForecaster
                 random_state=random_state,
             )
         raise ValueError("Invalid config type for regression")
+    elif model_type == "prophet_like":
+        # No flag gate — the Prophet-like model is pure scikit-learn and ships
+        # always-enabled, exactly like ``regression``.
+        from app.features.forecasting.schemas import ProphetLikeModelConfig
+
+        if isinstance(config, ProphetLikeModelConfig):
+            return ProphetLikeForecaster(alpha=config.alpha, random_state=random_state)
+        raise ValueError("Invalid config type for prophet_like")
     else:
         raise ValueError(f"Unknown model type: {model_type}")

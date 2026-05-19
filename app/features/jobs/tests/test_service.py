@@ -24,6 +24,7 @@ from app.features.backtesting.schemas import (
 from app.features.backtesting.service import BacktestingService
 from app.features.forecasting.schemas import (
     LightGBMModelConfig,
+    ProphetLikeModelConfig,
     RegressionModelConfig,
     TrainResponse,
 )
@@ -240,6 +241,26 @@ async def test_execute_train_builds_lightgbm_config() -> None:
     assert result["model_type"] == "lightgbm"
 
 
+async def test_execute_train_builds_prophet_like_config() -> None:
+    """A train job with model_type='prophet_like' builds a ProphetLikeModelConfig (#248).
+
+    ``train_model`` is mocked, so the test is pure (no DB). The Prophet-like
+    model is pure scikit-learn — no feature flag, no optional dependency.
+    """
+    fake = _fake_train_response("prophet_like")
+    with patch.object(
+        ForecastingService, "train_model", new=AsyncMock(return_value=fake)
+    ) as mock_train:
+        result = await JobService()._execute_train(
+            db=cast(AsyncSession, AsyncMock()),
+            params={**_REGRESSION_PARAMS, "model_type": "prophet_like"},
+        )
+    assert mock_train.call_args is not None
+    config = mock_train.call_args.kwargs["config"]
+    assert isinstance(config, ProphetLikeModelConfig)
+    assert result["model_type"] == "prophet_like"
+
+
 async def test_execute_train_rejects_unsupported_model_type() -> None:
     """_execute_train still rejects a genuinely unsupported model_type."""
     with pytest.raises(ValueError, match="Unsupported model_type"):
@@ -301,6 +322,27 @@ async def test_execute_backtest_builds_lightgbm_config() -> None:
     config = mock_run.call_args.kwargs["config"]
     assert isinstance(config.model_config_main, LightGBMModelConfig)
     assert result["model_type"] == "lightgbm"
+
+
+async def test_execute_backtest_builds_prophet_like_config() -> None:
+    """A backtest job with model_type='prophet_like' builds a ProphetLikeModelConfig.
+
+    ``run_backtest`` is mocked, so the test is pure (no DB): it pins that
+    ``_execute_backtest`` widened its allow-list to the pure-sklearn additive
+    model and shaped the result.
+    """
+    response = _make_response()
+    with patch.object(
+        BacktestingService, "run_backtest", new=AsyncMock(return_value=response)
+    ) as mock_run:
+        result = await JobService()._execute_backtest(
+            db=cast(AsyncSession, AsyncMock()),
+            params={**_BACKTEST_PARAMS, "model_type": "prophet_like"},
+        )
+    assert mock_run.call_args is not None
+    config = mock_run.call_args.kwargs["config"]
+    assert isinstance(config.model_config_main, ProphetLikeModelConfig)
+    assert result["model_type"] == "prophet_like"
 
 
 async def test_execute_backtest_rejects_unsupported_model_type() -> None:

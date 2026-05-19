@@ -189,6 +189,37 @@ class RegressionModelConfig(ModelConfigBase):
     )
 
 
+class ProphetLikeModelConfig(ModelConfigBase):
+    """Configuration for the Prophet-like additive forecaster (MLZOO-C2).
+
+    A deterministic, regularized ADDITIVE linear model — a ``Ridge`` regressor
+    over the canonical 14-column feature frame — that decomposes demand into
+    trend / seasonality / holiday-regressor components. It approximates
+    Prophet's additive shape WITHOUT the real ``prophet``/Stan dependency: it
+    does not model changepoint trend, posterior uncertainty, or automatic
+    seasonality discovery. Pure scikit-learn — no optional dependency, no
+    feature flag, always available (like ``RegressionModelConfig``).
+
+    Attributes:
+        alpha: Ridge L2 regularization strength. 0.0 degenerates to ordinary
+            least squares; the default 1.0 keeps coefficients robust to the
+            collinear engineered-feature frame.
+        feature_config_hash: Optional hash of the feature contract used.
+    """
+
+    model_type: Literal["prophet_like"] = "prophet_like"
+    alpha: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=10000.0,
+        description="Ridge L2 regularization strength",
+    )
+    feature_config_hash: str | None = Field(
+        default=None,
+        description="Hash of the feature contract used for training",
+    )
+
+
 # Union type for all model configs
 ModelConfig = (
     NaiveModelConfig
@@ -196,6 +227,7 @@ ModelConfig = (
     | MovingAverageModelConfig
     | LightGBMModelConfig
     | RegressionModelConfig
+    | ProphetLikeModelConfig
 )
 
 
