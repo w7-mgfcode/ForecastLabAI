@@ -71,6 +71,13 @@ async def train_model(
             detail="LightGBM is disabled. Set forecast_enable_lightgbm=True in settings.",
         )
 
+    # Check if XGBoost is enabled
+    if request.config.model_type == "xgboost" and not settings.forecast_enable_xgboost:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="XGBoost is disabled. Set forecast_enable_xgboost=True in settings.",
+        )
+
     logger.info(
         "forecasting.train_request_received",
         store_id=request.store_id,

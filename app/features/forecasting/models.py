@@ -732,8 +732,166 @@ class LightGBMForecaster(BaseForecaster):
         return self
 
 
+class XGBoostForecaster(BaseForecaster):
+    """Feature-aware forecaster wrapping ``xgboost.XGBRegressor``.
+
+    The second ADVANCED feature-aware tree model (MLZOO-C1). Structurally a
+    twin of ``LightGBMForecaster``: it REQUIRES a non-``None`` exogenous ``X``
+    for both ``fit`` and ``predict``; the estimator is gradient-boosted trees
+    from the optional ``xgboost`` package.
+
+    ``xgboost`` is imported LAZILY inside ``fit`` — never at module scope and
+    never in ``__init__`` — so importing this module (which every forecasting
+    code path does, baseline models included) never requires the optional
+    ``ml-xgboost`` dependency.
+
+    Determinism: ``XGBRegressor`` has no ``deterministic`` switch (unlike
+    LightGBM). Bit-reproducibility comes from ``n_jobs=1`` + ``tree_method="hist"``
+    + a fixed ``random_state`` + the conservative config leaving ``subsample`` /
+    ``colsample_bytree`` at their ``1.0`` defaults (no stochastic sampling) —
+    all pinned in ``fit``. XGBoost tolerates ``NaN`` natively (``missing=np.nan``),
+    which matters because the future feature frame leaves lag cells ``NaN``
+    when their source target lies in the un-observed horizon.
+
+    Attributes:
+        n_estimators: Number of boosting rounds.
+        learning_rate: Gradient-boosting learning rate.
+        max_depth: Maximum depth of each tree.
+    """
+
+    requires_features: ClassVar[bool] = True
+    """A feature-aware model — ``fit``/``predict`` REQUIRE a non-None ``X``."""
+
+    def __init__(
+        self,
+        *,
+        n_estimators: int = 100,
+        learning_rate: float = 0.1,
+        max_depth: int = 6,
+        random_state: int = 42,
+    ) -> None:
+        """Initialize the XGBoost forecaster.
+
+        Args:
+            n_estimators: Number of boosting rounds.
+            learning_rate: Gradient-boosting learning rate.
+            max_depth: Maximum depth of each tree.
+            random_state: Random seed for reproducibility (determinism).
+        """
+        super().__init__(random_state)
+        self.n_estimators = n_estimators
+        self.learning_rate = learning_rate
+        self.max_depth = max_depth
+        self._estimator: Any = None
+
+    def fit(
+        self,
+        y: np.ndarray[Any, np.dtype[np.floating[Any]]],
+        X: np.ndarray[Any, np.dtype[np.floating[Any]]] | None = None,
+    ) -> XGBoostForecaster:
+        """Fit the gradient-boosted regressor on historical features.
+
+        Args:
+            y: Target values (1D array of shape ``[n_samples]``).
+            X: Exogenous features (2D array of shape ``[n_samples, n_features]``).
+                REQUIRED — unlike the baseline forecasters.
+
+        Returns:
+            self (for method chaining).
+
+        Raises:
+            ValueError: If ``X`` is ``None``, ``y`` is empty, or the row counts
+                of ``X`` and ``y`` do not match.
+        """
+        if X is None:
+            raise ValueError("XGBoostForecaster requires exogenous features X for fit()")
+        if len(y) == 0:
+            raise ValueError("Cannot fit on empty array")
+        if X.shape[0] != len(y):
+            raise ValueError(
+                f"X has {X.shape[0]} rows but y has {len(y)} — feature/target rows must match"
+            )
+        # LAZY import — the optional ``ml-xgboost`` dependency is only needed
+        # the first time an XGBoost model is actually fitted.
+        import xgboost as xgb
+
+        estimator: Any = xgb.XGBRegressor(
+            n_estimators=self.n_estimators,
+            learning_rate=self.learning_rate,
+            max_depth=self.max_depth,
+            random_state=self.random_state,
+            n_jobs=1,  # single-threaded — removes float-summation non-determinism
+            tree_method="hist",  # explicit; the default, and the reproducible path
+            verbosity=0,  # silence XGBoost's training chatter
+        )
+        estimator.fit(X, y)
+        self._estimator = estimator
+        self._last_values = np.asarray(y[-1:], dtype=np.float64)
+        self._is_fitted = True
+        return self
+
+    def predict(
+        self,
+        horizon: int,
+        X: np.ndarray[Any, np.dtype[np.floating[Any]]] | None = None,
+    ) -> np.ndarray[Any, np.dtype[np.floating[Any]]]:
+        """Generate forecasts from a future feature frame.
+
+        Args:
+            horizon: Number of steps to forecast.
+            X: Exogenous features for the forecast period, shape
+                ``[horizon, n_features]``. REQUIRED.
+
+        Returns:
+            Array of forecasts with shape ``[horizon]``.
+
+        Raises:
+            RuntimeError: If the model has not been fitted.
+            ValueError: If ``X`` is ``None`` or its row count is not ``horizon``.
+        """
+        if not self._is_fitted or self._estimator is None:
+            raise RuntimeError("Model must be fitted before predict")
+        if X is None:
+            raise ValueError("XGBoostForecaster requires exogenous features X for predict()")
+        if X.shape[0] != horizon:
+            raise ValueError(f"X has {X.shape[0]} rows but horizon is {horizon} — they must match")
+        predictions = self._estimator.predict(X)
+        result: np.ndarray[Any, np.dtype[np.floating[Any]]] = np.asarray(
+            predictions, dtype=np.float64
+        )
+        return result
+
+    def get_params(self) -> dict[str, Any]:
+        """Get model parameters.
+
+        Returns:
+            Dictionary with n_estimators, learning_rate, max_depth, random_state.
+        """
+        return {
+            "n_estimators": self.n_estimators,
+            "learning_rate": self.learning_rate,
+            "max_depth": self.max_depth,
+            "random_state": self.random_state,
+        }
+
+    def set_params(self, **params: Any) -> XGBoostForecaster:  # noqa: ANN401
+        """Set model parameters.
+
+        Args:
+            **params: Parameter names and values to set.
+
+        Returns:
+            self (for method chaining).
+        """
+        for key, value in params.items():
+            setattr(self, key, value)
+        return self
+
+
 # Type alias for model type literals
-ModelType = Literal["naive", "seasonal_naive", "moving_average", "lightgbm", "regression"]
+ModelType = Literal[
+    "naive", "seasonal_naive", "moving_average", "xgboost", "lightgbm", "regression"
+]
 
 
 def model_factory(config: ModelConfig, random_state: int = 42) -> BaseForecaster:
@@ -790,6 +948,21 @@ def model_factory(config: ModelConfig, random_state: int = 42) -> BaseForecaster
                 random_state=random_state,
             )
         raise ValueError("Invalid config type for lightgbm")
+    elif model_type == "xgboost":
+        if not settings.forecast_enable_xgboost:
+            raise ValueError(
+                "XGBoost is not enabled. Set forecast_enable_xgboost=True in settings."
+            )
+        from app.features.forecasting.schemas import XGBoostModelConfig
+
+        if isinstance(config, XGBoostModelConfig):
+            return XGBoostForecaster(
+                n_estimators=config.n_estimators,
+                learning_rate=config.learning_rate,
+                max_depth=config.max_depth,
+                random_state=random_state,
+            )
+        raise ValueError("Invalid config type for xgboost")
     elif model_type == "regression":
         from app.features.forecasting.schemas import RegressionModelConfig
 

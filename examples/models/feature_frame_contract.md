@@ -1,7 +1,7 @@
 # Feature-Frame Contract
 
-The contract a **feature-aware** forecasting model (the regression and LightGBM
-forecasters today; XGBoost / Prophet-like models later in the MLZOO sequence)
+The contract a **feature-aware** forecasting model (the regression, LightGBM
+and XGBoost forecasters today; a Prophet-like model later in the MLZOO sequence)
 stands on. The single source of truth in code is
 [`app/shared/feature_frames`](../../app/shared/feature_frames/) — the pinned
 constants, the canonical column set and order, the `FutureFeatureFrame`

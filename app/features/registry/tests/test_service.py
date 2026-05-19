@@ -99,6 +99,14 @@ class TestRegistryServiceRuntimeInfo:
 
         assert "lightgbm_version" in info
 
+    def test_capture_runtime_info_has_xgboost_version(self) -> None:
+        """Captures the XGBoost version when the optional dep is installed (PRP-MLZOO-C1)."""
+        pytest.importorskip("xgboost")
+        service = RegistryService()
+        info = service._capture_runtime_info()
+
+        assert "xgboost_version" in info
+
 
 class TestRegistryServiceConfigHashDuplicate:
     """Tests for config hash and duplicate detection."""
