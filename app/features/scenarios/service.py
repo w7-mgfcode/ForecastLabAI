@@ -22,7 +22,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 from sqlalchemy import func, select
@@ -36,9 +36,12 @@ from app.features.scenarios import adjustments
 from app.features.scenarios.feature_frame import build_future_frame
 from app.features.scenarios.models import ScenarioPlan
 from app.features.scenarios.schemas import (
+    CompareScenariosRequest,
     CreateScenarioRequest,
+    MultiScenarioComparison,
     ScenarioAssumptions,
     ScenarioComparison,
+    ScenarioComparisonRow,
     ScenarioListItem,
     ScenarioListResponse,
     ScenarioPlanResponse,
@@ -360,6 +363,8 @@ class ScenarioService:
             # heuristic or model_exogenous — taken from the comparison the
             # baseline model actually produced.
             method=comparison.method,
+            tags=list(request.tags),
+            cloned_from=request.cloned_from,
         )
         db.add(plan)
         await db.commit()
@@ -373,35 +378,130 @@ class ScenarioService:
         )
         return self._to_plan_response(plan)
 
-    async def list_plans(self, db: AsyncSession, limit: int, offset: int) -> ScenarioListResponse:
+    async def list_plans(
+        self,
+        db: AsyncSession,
+        limit: int,
+        offset: int,
+        tags: list[str] | None = None,
+    ) -> ScenarioListResponse:
         """List saved scenario plans, newest first.
 
         Args:
             db: Database session.
             limit: Maximum plans to return.
             offset: Number of plans to skip.
+            tags: Optional library tags — when given, only plans carrying every
+                listed tag are returned.
 
         Returns:
             A page of plan list items plus the total count.
         """
-        total = int(await db.scalar(select(func.count()).select_from(ScenarioPlan)) or 0)
+        count_stmt = select(func.count()).select_from(ScenarioPlan)
+        rows_stmt = (
+            select(ScenarioPlan)
+            .order_by(ScenarioPlan.created_at.desc(), ScenarioPlan.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        if tags:
+            # JSONB @> containment — a plan matches when it carries every tag.
+            count_stmt = count_stmt.where(ScenarioPlan.tags.contains(tags))
+            rows_stmt = rows_stmt.where(ScenarioPlan.tags.contains(tags))
 
+        total = int(await db.scalar(count_stmt) or 0)
+        rows = (await db.execute(rows_stmt)).scalars().all()
+        return ScenarioListResponse(
+            scenarios=[self._to_list_item(row) for row in rows],
+            total=total,
+        )
+
+    async def compare_scenarios(
+        self, db: AsyncSession, request: CompareScenariosRequest
+    ) -> MultiScenarioComparison:
+        """Rank 2-5 saved scenario plans against a shared baseline.
+
+        Each saved plan already embeds its full ``ScenarioComparison`` snapshot,
+        so the comparison is a pure aggregation — no model artifact is reloaded.
+        The reference baseline is taken from the first requested plan.
+
+        Args:
+            db: Database session.
+            request: The 2-5 ``scenario_id``s and the ranking metric.
+
+        Returns:
+            A ranked multi-scenario comparison plus merged chart series.
+
+        Raises:
+            FileNotFoundError: When any requested ``scenario_id`` does not exist.
+        """
         rows = (
             (
                 await db.execute(
-                    select(ScenarioPlan)
-                    .order_by(ScenarioPlan.created_at.desc(), ScenarioPlan.id.desc())
-                    .limit(limit)
-                    .offset(offset)
+                    select(ScenarioPlan).where(ScenarioPlan.scenario_id.in_(request.scenario_ids))
                 )
             )
             .scalars()
             .all()
         )
-        return ScenarioListResponse(
-            scenarios=[self._to_list_item(row) for row in rows],
-            total=total,
+        found = {row.scenario_id: row for row in rows}
+        missing = [sid for sid in request.scenario_ids if sid not in found]
+        if missing:
+            raise FileNotFoundError(f"Scenario plan(s) not found: {', '.join(missing)}")
+
+        # Preserve the caller's order; the first plan supplies the baseline.
+        plans = [found[sid] for sid in request.scenario_ids]
+        first_comparison = plans[0].comparison
+        baseline_total = float(first_comparison.get("baseline_total_units", 0.0))
+        baseline_revenue = float(first_comparison.get("baseline_revenue", 0.0))
+
+        ranked = sorted(
+            plans,
+            key=lambda plan: float(plan.comparison.get(request.rank_by, 0.0)),
+            reverse=True,
         )
+        comparison_rows = [
+            ScenarioComparisonRow(
+                scenario_id=plan.scenario_id,
+                name=plan.name,
+                units_delta=float(plan.comparison.get("units_delta", 0.0)),
+                revenue_delta=float(plan.comparison.get("revenue_delta", 0.0)),
+                coverage_verdict=plan.comparison.get("coverage_verdict", "unknown"),
+                rank=index + 1,
+            )
+            for index, plan in enumerate(ranked)
+        ]
+
+        logger.info(
+            "scenarios.compared",
+            scenario_count=len(plans),
+            rank_by=request.rank_by,
+        )
+        return MultiScenarioComparison(
+            baseline_total_units=baseline_total,
+            baseline_revenue=baseline_revenue,
+            rank_by=request.rank_by,
+            scenarios=comparison_rows,
+            chart_series=self._build_chart_series(plans),
+        )
+
+    @staticmethod
+    def _build_chart_series(plans: list[ScenarioPlan]) -> list[dict[str, float | str]]:
+        """Merge every plan's per-day series into date-keyed chart rows.
+
+        Each row carries ``date``, the reference ``baseline`` (from the first
+        plan), and one entry per plan keyed by the plan name.
+        """
+        by_date: dict[str, dict[str, float | str]] = {}
+        for plan_index, plan in enumerate(plans):
+            points = cast("list[dict[str, Any]]", plan.comparison.get("points", []))
+            for point in points:
+                point_date = str(point.get("date", ""))
+                row = by_date.setdefault(point_date, {"date": point_date})
+                if plan_index == 0:
+                    row["baseline"] = float(point.get("baseline", 0.0))
+                row[plan.name] = float(point.get("scenario", 0.0))
+        return [by_date[key] for key in sorted(by_date)]
 
     async def get_plan(self, db: AsyncSession, scenario_id: str) -> ScenarioPlanResponse | None:
         """Fetch one saved plan by its external id, or ``None`` when absent."""
@@ -496,6 +596,8 @@ class ScenarioService:
             created_at=plan.created_at,
             assumptions=ScenarioAssumptions.model_validate(plan.assumptions),
             comparison=ScenarioComparison.model_validate(plan.comparison),
+            tags=list(plan.tags),
+            cloned_from=plan.cloned_from,
         )
 
     @staticmethod
@@ -510,4 +612,5 @@ class ScenarioService:
             units_delta=float(plan.comparison.get("units_delta", 0.0)),
             revenue_delta=float(plan.comparison.get("revenue_delta", 0.0)),
             created_at=plan.created_at,
+            tags=list(plan.tags),
         )

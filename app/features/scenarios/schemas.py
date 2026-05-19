@@ -200,6 +200,16 @@ class CreateScenarioRequest(BaseModel):
         default_factory=ScenarioAssumptions,
         description="What-if assumptions for this plan.",
     )
+    tags: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description="Optional library tags for filtering and grouping saved plans.",
+    )
+    cloned_from: str | None = Field(
+        default=None,
+        max_length=32,
+        description="scenario_id this plan was cloned from, when it originated as a clone.",
+    )
 
 
 # =============================================================================
@@ -287,6 +297,12 @@ class ScenarioPlanResponse(BaseModel):
     comparison: ScenarioComparison = Field(
         ..., description="The full baseline-vs-scenario snapshot, re-rendered without recompute."
     )
+    tags: list[str] = Field(
+        default_factory=list, description="Library tags attached to the plan."
+    )
+    cloned_from: str | None = Field(
+        default=None, description="scenario_id this plan was cloned from, if any."
+    )
 
 
 class ScenarioListItem(BaseModel):
@@ -302,6 +318,9 @@ class ScenarioListItem(BaseModel):
     units_delta: float = Field(..., description="Summed scenario-minus-baseline demand.")
     revenue_delta: float = Field(..., description="Scenario-minus-baseline revenue.")
     created_at: datetime = Field(..., description="When the plan was saved (UTC).")
+    tags: list[str] = Field(
+        default_factory=list, description="Library tags attached to the plan."
+    )
 
 
 class ScenarioListResponse(BaseModel):
@@ -313,3 +332,68 @@ class ScenarioListResponse(BaseModel):
         ..., description="Saved plans for the current page; empty when none exist."
     )
     total: int = Field(..., ge=0, description="Total saved plans matching the query.")
+
+
+# =============================================================================
+# Multi-scenario comparison (PRP-27 Phase C)
+# =============================================================================
+
+# Metric a multi-scenario comparison ranks by.
+RankBy = Literal["revenue_delta", "units_delta"]
+
+
+class CompareScenariosRequest(BaseModel):
+    """Request body for ``POST /scenarios/compare``.
+
+    The 2..5 bound keeps the multi-series chart legible — the upper bound is
+    the pinned ``MAX_COMPARE_SCENARIOS`` (PRP-27 DECISIONS LOCKED #12); the
+    literal ``5`` must stay in sync with that constant in ``feature_frame.py``.
+    """
+
+    model_config = ConfigDict(strict=True)
+
+    scenario_ids: list[str] = Field(
+        ...,
+        min_length=2,
+        max_length=5,
+        description="2-5 saved scenario_ids to compare side by side.",
+    )
+    rank_by: RankBy = Field(
+        default="revenue_delta",
+        description="Metric the ranked rows are ordered by (descending).",
+    )
+
+
+class ScenarioComparisonRow(BaseModel):
+    """One saved plan's headline numbers within a multi-scenario comparison."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    scenario_id: str = Field(..., description="The plan's external identifier.")
+    name: str = Field(..., description="The plan's human-readable name.")
+    units_delta: float = Field(..., description="Scenario-minus-baseline demand for the plan.")
+    revenue_delta: float = Field(..., description="Scenario-minus-baseline revenue for the plan.")
+    coverage_verdict: CoverageVerdict = Field(..., description="The plan's coverage verdict.")
+    rank: int = Field(..., ge=1, description="1-based rank by the chosen metric (1 == best).")
+
+
+class MultiScenarioComparison(BaseModel):
+    """A baseline compared against 2-5 saved scenarios, ranked."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    baseline_total_units: float = Field(
+        ..., description="Reference baseline demand (from the first compared plan)."
+    )
+    baseline_revenue: float = Field(
+        ..., description="Reference baseline revenue (from the first compared plan)."
+    )
+    rank_by: RankBy = Field(..., description="Metric the rows are ranked by.")
+    scenarios: list[ScenarioComparisonRow] = Field(
+        ..., description="The compared plans, ordered best-first by rank_by."
+    )
+    chart_series: list[dict[str, float | str]] = Field(
+        ...,
+        description="Date-keyed merged rows for the multi-series chart — each row "
+        "carries 'date', 'baseline', and one entry per scenario name.",
+    )

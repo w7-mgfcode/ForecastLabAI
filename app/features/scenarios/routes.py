@@ -16,7 +16,9 @@ from app.core.database import get_db
 from app.core.exceptions import BadRequestError, DatabaseError, NotFoundError
 from app.core.logging import get_logger
 from app.features.scenarios.schemas import (
+    CompareScenariosRequest,
     CreateScenarioRequest,
+    MultiScenarioComparison,
     ScenarioComparison,
     ScenarioListResponse,
     ScenarioPlanResponse,
@@ -127,17 +129,57 @@ async def create_scenario(
         ) from exc
 
 
+@router.post(
+    "/compare",
+    response_model=MultiScenarioComparison,
+    status_code=status.HTTP_200_OK,
+    summary="Compare saved scenario plans",
+    description="""
+Rank 2-5 saved scenario plans against a shared baseline.
+
+Each saved plan embeds its own comparison snapshot, so this is a pure
+aggregation — no model artifact is reloaded. An unknown `scenario_id` returns
+a 404 problem response.
+""",
+)
+async def compare_scenarios(
+    request: CompareScenariosRequest,
+    db: AsyncSession = Depends(get_db),
+) -> MultiScenarioComparison:
+    """Compare 2-5 saved scenario plans.
+
+    Args:
+        request: The 2-5 scenario_ids and the ranking metric.
+        db: Async database session from dependency.
+
+    Returns:
+        A ranked multi-scenario comparison plus merged chart series.
+
+    Raises:
+        NotFoundError: When any requested scenario_id does not exist.
+    """
+    try:
+        return await ScenarioService().compare_scenarios(db, request)
+    except FileNotFoundError as exc:
+        logger.warning("scenarios.compare_not_found", error=str(exc))
+        raise NotFoundError(message=str(exc)) from exc
+
+
 @router.get(
     "",
     response_model=ScenarioListResponse,
     summary="List saved scenario plans",
     description="List saved scenario plans, newest first. Returns 200 + an "
-    "empty list when no plans exist.",
+    "empty list when no plans exist. Pass one or more `tags` to filter to "
+    "plans carrying every listed tag.",
 )
 async def list_scenarios(
     db: AsyncSession = Depends(get_db),
     limit: int = Query(default=20, ge=1, le=100, description="Maximum plans to return."),
     offset: int = Query(default=0, ge=0, description="Number of plans to skip."),
+    tags: list[str] | None = Query(
+        default=None, description="Filter to plans carrying every listed tag."
+    ),
 ) -> ScenarioListResponse:
     """List saved scenario plans.
 
@@ -145,11 +187,12 @@ async def list_scenarios(
         db: Async database session from dependency.
         limit: Maximum plans to return (1-100).
         offset: Number of plans to skip.
+        tags: Optional library tags to filter by.
 
     Returns:
         A page of saved plans plus the total count.
     """
-    return await ScenarioService().list_plans(db, limit=limit, offset=offset)
+    return await ScenarioService().list_plans(db, limit=limit, offset=offset, tags=tags)
 
 
 @router.get(
