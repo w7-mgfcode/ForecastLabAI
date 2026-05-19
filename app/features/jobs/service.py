@@ -426,6 +426,7 @@ class JobService:
         from app.features.forecasting.schemas import (
             MovingAverageModelConfig,
             NaiveModelConfig,
+            RegressionModelConfig,
             SeasonalNaiveModelConfig,
         )
         from app.features.forecasting.service import ForecastingService
@@ -457,6 +458,12 @@ class JobService:
         elif model_type == "moving_average":
             window_size = params.get("window_size", 7)
             config = MovingAverageModelConfig(window_size=window_size)
+        elif model_type == "regression":
+            config = RegressionModelConfig(
+                max_iter=params.get("max_iter", 200),
+                learning_rate=params.get("learning_rate", 0.05),
+                max_depth=params.get("max_depth", 6),
+            )
         else:
             msg = f"Unsupported model_type: {model_type}"
             raise ValueError(msg)

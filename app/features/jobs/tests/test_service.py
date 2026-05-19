@@ -8,6 +8,11 @@ per-fold metrics, stability and the baseline comparison.
 
 import math
 from datetime import date
+from typing import Any, cast
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.features.backtesting.schemas import (
     BacktestResponse,
@@ -16,7 +21,9 @@ from app.features.backtesting.schemas import (
     SplitBoundary,
     SplitConfig,
 )
-from app.features.jobs.service import _finite, _shape_backtest_result
+from app.features.forecasting.schemas import RegressionModelConfig, TrainResponse
+from app.features.forecasting.service import ForecastingService
+from app.features.jobs.service import JobService, _finite, _shape_backtest_result
 
 
 def _fold(idx: int, mae: float, smape: float, wape: float, bias: float) -> FoldResult:
@@ -158,3 +165,59 @@ def test_finite_coerces_non_finite_values() -> None:
     assert _finite(math.nan) == 0.0
     assert _finite(math.inf) == 0.0
     assert _finite(-math.inf) == 0.0
+
+
+# =============================================================================
+# _execute_train regression-model support (#229)
+# =============================================================================
+
+
+def _fake_train_response(model_type: str) -> TrainResponse:
+    """Build a TrainResponse stub for mocking ForecastingService.train_model."""
+    return TrainResponse(
+        store_id=1,
+        product_id=1,
+        model_type=model_type,
+        model_path="/data/artifacts/model_abc123def456.joblib",
+        config_hash="cfg-hash",
+        n_observations=400,
+        train_start_date=date(2024, 1, 1),
+        train_end_date=date(2024, 12, 31),
+        duration_ms=12.0,
+    )
+
+
+_REGRESSION_PARAMS: dict[str, Any] = {
+    "model_type": "regression",
+    "store_id": 1,
+    "product_id": 1,
+    "start_date": "2024-01-01",
+    "end_date": "2024-12-31",
+}
+
+
+async def test_execute_train_builds_regression_config() -> None:
+    """A train job with model_type='regression' builds a RegressionModelConfig (#229)."""
+    fake = _fake_train_response("regression")
+    with patch.object(
+        ForecastingService, "train_model", new=AsyncMock(return_value=fake)
+    ) as mock_train:
+        result = await JobService()._execute_train(
+            db=cast(AsyncSession, AsyncMock()),
+            params=_REGRESSION_PARAMS,
+        )
+    assert mock_train.call_args is not None
+    config = mock_train.call_args.kwargs["config"]
+    assert isinstance(config, RegressionModelConfig)
+    assert result["model_type"] == "regression"
+    # run_id is parsed from the model_abc123def456.joblib artifact path.
+    assert result["run_id"] == "abc123def456"
+
+
+async def test_execute_train_rejects_unsupported_model_type() -> None:
+    """_execute_train still rejects a genuinely unsupported model_type (e.g. lightgbm)."""
+    with pytest.raises(ValueError, match="Unsupported model_type"):
+        await JobService()._execute_train(
+            db=cast(AsyncSession, AsyncMock()),
+            params={**_REGRESSION_PARAMS, "model_type": "lightgbm"},
+        )
