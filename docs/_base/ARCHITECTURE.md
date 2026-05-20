@@ -68,6 +68,30 @@ ForecastLabAI repo
 | RAG embeddings | RAG service → OpenAI / Ollama | HTTPS | `OPENAI_API_KEY` env or Ollama LAN URL |
 | Agent LLM calls | Agents → Anthropic/OpenAI/Gemini | HTTPS | provider API key env |
 
+### Cross-slice read-only import pattern
+
+When a feature slice needs to call a service method or read a schema from a
+**different** feature slice (e.g., `forecasting/service.py` → `RegistryService`):
+
+- Import at the **call site** (inside the method), not at module scope, IF
+  any of these are true:
+  - The upstream slice's `schemas.py` imports a type from this slice
+  - The downstream slice is loaded by `alembic/env.py` at migration time
+  - The import would close an SQLAlchemy registry cycle
+
+- Prefer importing the **service class** over the ORM model — calls go through
+  the public surface, not the persistence layer.
+
+- Document the lazy import with a single-line NOTE comment at the top of the
+  file naming the cycle it breaks.
+
+Existing precedents:
+- `app/features/explainability/service.py:57` — read-only `ModelRun` import
+- `app/features/forecasting/service.py` — lazy `RegistryService` / `JobService` /
+  `RunStatus` imports inside `get_feature_metadata_for_*` methods (added by
+  PRP-31; required because `RunResponse.model_family` computed_field closes
+  the cycle at alembic cold-boot)
+
 ## Deployment Flow (Causal Chain)
 
 ```
