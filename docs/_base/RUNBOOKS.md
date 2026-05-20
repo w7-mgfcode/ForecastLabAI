@@ -19,6 +19,23 @@ grep VITE_API_BASE_URL frontend/.env         # what URL is the SPA calling?
 2. Restart Vite: `cd frontend && ./node_modules/.bin/vite --host 0.0.0.0`.
 3. If CORS error in browser console, add the origin to `app/main.py` `allow_origins` (dev-only LAN regex already covers `10.x` / `192.168.x` / `172.16-31.x`).
 
+### Multi-container stack failed at step X
+**Symptoms:** `make docker-up` exits non-zero, or `docker compose ps` shows one of `postgres` / `backend` / `frontend` as `Health: unhealthy` (or `starting` past the `start_period`).
+**Diagnosis:**
+```bash
+docker compose ps --format json | python3 -c "import sys,json; [print(json.loads(l)['Service'],'=>',json.loads(l)['Health']) for l in sys.stdin if l.strip()]"
+docker compose logs <unhealthy-svc> --tail 50
+```
+**Resolution:** one of the following, by failure mode.
+
+1. **Backend logs show `getaddrinfo failed` on `postgres`.** Postgres wasn't healthy when the backend started despite the `depends_on: service_healthy` gate (rare — usually a cold-start race after a `docker system prune`). Restart: `docker compose restart backend`. If it persists, `docker compose down && make docker-up` from a clean state.
+2. **`curl http://localhost:8123/health` from the host returns ECONNREFUSED, but `docker compose ps` says `backend healthy`.** Port 8123 is held by a host-side process (a stale `uv run uvicorn` from an earlier session). Resolve: `lsof -iTCP:8123 -sTCP:LISTEN` to find the PID and kill it, or stop the container's port publish and try again.
+3. **Frontend reachable from the host but a backend `curl http://frontend:5173` fails.** This is **expected** — the browser is the consumer of the frontend, never the backend. No backend → frontend hop exists; if you have a feature that needs one, it belongs in a follow-up PRP (CORS + a container-DNS origin).
+4. **Frontend page shows `Loading...` after `make docker-up`.** A stale `frontend/.env` is overriding the container's `environment:` block with a LAN IP. Remove or reset the bind-mounted `frontend/.env`; the container ships `VITE_API_BASE_URL=http://localhost:8123` which is the browser-correct value.
+5. **`make docker-up-gpu` brought everything up but Ollama is `unhealthy` or `nvidia-smi` inside the container errors.** The host is missing `nvidia-container-runtime`. Verify with `docker info | grep -i runtime` (must show `nvidia`) and `nvidia-smi` on the host. If it isn't installed, install the NVIDIA Container Toolkit per <https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html>, then `sudo systemctl restart docker` and try again.
+6. **`make docker-up` returns 0 but a service is still `starting` 60 s later.** Inspect via `docker compose logs <svc> --tail 100`. The most common culprit is alembic taking longer than `start_period: 30s` to apply migrations on a slower host — bump the healthcheck `start_period` in `docker-compose.yml` if this is reproducible.
+7. **Migration error inside backend logs after the schema changed.** The backend container ran `alembic upgrade head` at entrypoint. If the migration is failing, check `docker compose logs backend --tail 80` for the SQLAlchemy / alembic stack trace, fix the migration on a branch, rebuild the backend image (`docker compose build backend`), and bring the stack back up.
+
 ### Database connection refused
 **Symptoms:** `asyncpg.exceptions.CannotConnectNowError` or `ConnectionRefusedError` on first request.
 **Diagnosis:**

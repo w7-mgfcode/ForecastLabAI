@@ -1,0 +1,27 @@
+# GPU override for Ollama — combined with the base file via:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile gpu up -d
+#
+# Gotcha (verified 2026-05-20): the `deploy.resources.reservations.devices`
+# block is silently no-op'd if `nvidia-container-runtime` is NOT the configured
+# Docker runtime. Verify the host BEFORE invoking the gpu profile:
+#
+#   docker info | grep -i runtime    # must show "nvidia"
+#   nvidia-smi                       # must show the GPU
+#
+# After bringing the stack up, confirm GPU passthrough inside the container:
+#
+#   docker exec forecastlab-ollama nvidia-smi
+#
+# See `docs/rag-ollama-setup.md` for embedding-model pull instructions
+# (`ollama pull nomic-embed-text`) and the in-cluster `http://ollama:11434` URL.
+
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

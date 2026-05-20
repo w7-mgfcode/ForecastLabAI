@@ -107,6 +107,12 @@ curl -s http://10.0.0.226:11434/v1/embeddings \
 # Output: 1536
 ```
 
+### Step 2.1: In-cluster URL vs host URL (Docker Compose mode) / In-cluster URL vs host URL (Docker Compose mód)
+
+**EN:** When ForecastLabAI runs via `make docker-up-gpu` (the four-service Compose stack with the `gpu` profile), the backend container reaches Ollama through the in-cluster DNS name `http://ollama:11434` — the backend service's `environment:` block in `docker-compose.yml` sets `OLLAMA_BASE_URL=http://ollama:11434` automatically, so no `.env` edit is needed for compose-mode. To run **host-mode** (`uv run uvicorn`) against the same containerized Ollama, set `OLLAMA_BASE_URL=http://localhost:11434` in your `.env` — the Ollama container publishes port 11434 on the host. The two settings cover the two access paths and are mutually compatible.
+
+**HU:** Amikor a ForecastLabAI a `make docker-up-gpu` paranccsal (a négyszolgáltatású Compose stack a `gpu` profillal) fut, a backend konténer az Ollama-t a klaszteren belüli DNS-néven (`http://ollama:11434`) éri el — a `docker-compose.yml` backend service `environment:` blokkja automatikusan beállítja az `OLLAMA_BASE_URL=http://ollama:11434` értéket, így compose-módhoz nem kell `.env`-et szerkeszteni. **Host-módban** (`uv run uvicorn`) ugyanahhoz a konténerizált Ollama-hoz a `.env`-ben állítsd be: `OLLAMA_BASE_URL=http://localhost:11434` — az Ollama konténer a 11434-es portot a hoston publikálja. A két beállítás a két elérési útvonalat fedi le, és kompatibilisek egymással.
+
 ### Step 3: Configure Environment / Környezet Konfigurálása
 
 **EN:** Add the following settings to `.env` file.

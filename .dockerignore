@@ -1,0 +1,67 @@
+# Build-context exclusions — keep `docker build` fast and keep secrets out.
+# Mirrors the host `.gitignore` plus a few build-only caches.
+
+# Git metadata (never needs to be in the image)
+.git/
+.gitignore
+.gitattributes
+
+# Local secrets and machine-specific overrides
+.env
+.env.cloud
+.env.local
+CLAUDE.local.md
+
+# Python virtualenvs and caches
+.venv/
+venv/
+venv_linux/
+venv_windows/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+
+# Frontend build outputs and node modules — rebuilt inside the image
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Generated artifacts (models, backtest results)
+artifacts/
+
+# Local session artifacts (plans, handoffs, current session notes)
+.agents/
+.handoffs/
+HANDOFF.md
+
+# Local CI / dogfood logs and screenshots
+.ci-logs/
+playwright-report/
+test-results/
+.playwright-mcp/
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store
+*.log
+
+# Claude Code local-only directory (gitignored upstream, redundant here for safety)
+.claude/
+
+# Documentation, examples and PRPs aren't needed at runtime; the backend image
+# bakes only `app/`, `alembic/`, `alembic.ini`, and `scripts/`. Excluding these
+# from the build context keeps the layer cache stable when docs change.
+# README.md is intentionally NOT excluded — `pyproject.toml`'s `readme =
+# "README.md"` makes uv read it during `uv sync`, so it must be present in the
+# build context.
+docs/
+examples/
+PRPs/
+HANDOFF.md
+CHANGELOG.md

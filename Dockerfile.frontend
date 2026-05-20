@@ -1,0 +1,90 @@
+# syntax=docker/dockerfile:1.7
+#
+# ForecastLabAI frontend image.
+#
+# Multi-stage:
+#   builder — Node 22 + pnpm via corepack, runs `pnpm install --frozen-lockfile`
+#             and `pnpm build` for a static SPA bundle
+#   prod    — nginx:1.27-alpine serving the built bundle with SPA try_files
+#   dev     — Node 22 + pnpm, mounts source for hot-reload via `vite --host 0.0.0.0`
+#
+# Build:
+#   docker build -t forecastlab-frontend:dev --target dev -f Dockerfile.frontend .
+#   docker build -t forecastlab-frontend:prod --target prod -f Dockerfile.frontend .
+#
+# Gotcha:
+#   `frontend/vite.config.ts` already sets `server.host: true` (== 0.0.0.0).
+#   The dev CMD's `--host 0.0.0.0` is belt-and-suspenders — harmless even if
+#   someone removes the config-file binding in a future edit.
+#
+#   pnpm.onlyBuiltDependencies: ["esbuild"] is already in frontend/package.json —
+#   the pnpm-11 depsStatusCheck stall documented in RUNBOOKS.md is mitigated
+#   at the source. We still call Vite directly in the dev target because
+#   explicit > implicit in a hot-reload container path.
+
+ARG NODE_VERSION=22-bookworm-slim
+
+# ---------- builder ----------
+FROM node:${NODE_VERSION} AS builder
+
+WORKDIR /app
+
+# pnpm 11 added a strict "ignored build scripts" check that exits 1 even when
+# `pnpm.onlyBuiltDependencies` in package.json approves the only script that
+# needs running (esbuild). The non-interactive override is the env var below —
+# safe because the only entry in `onlyBuiltDependencies` is `esbuild`, which
+# is a first-party Vite dep anyway. Verified on pnpm 11.0.9.
+ENV PNPM_CONFIG_DANGEROUSLY_ALLOW_ALL_BUILDS=true
+
+# corepack ships with Node 22; activate pnpm without a global install.
+RUN corepack enable pnpm
+
+# Lock-bound install first — invalidates only when the lockfile or manifest
+# changes, so source edits don't blow away the node_modules cache layer.
+COPY frontend/package.json frontend/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+# Project source.
+COPY frontend/ ./
+
+# Produces /app/dist for the prod target.
+RUN pnpm build
+
+# ---------- prod ----------
+FROM nginx:1.27-alpine AS prod
+
+# Static bundle.
+COPY --from=builder /app/dist/ /usr/share/nginx/html/
+
+# Minimal SPA conf: client-side routes fall back to /index.html so a deep link
+# like /showcase doesn't 404 on a hard refresh.
+RUN printf 'server {\n  listen 80;\n  server_name _;\n  root /usr/share/nginx/html;\n  index index.html;\n  location / {\n    try_files $uri $uri/ /index.html;\n  }\n}\n' > /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+
+# ---------- dev (default target) ----------
+FROM node:${NODE_VERSION} AS dev
+
+WORKDIR /app
+
+# Same pnpm-11 strict-build override as the builder stage — see comment above.
+ENV PNPM_CONFIG_DANGEROUSLY_ALLOW_ALL_BUILDS=true
+
+RUN corepack enable pnpm
+
+# Same lock-bound install pattern as builder, but kept as the dev install so
+# tools like vite + tsc + eslint are available in the image.
+COPY frontend/package.json frontend/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+# Bake the source into the image so a standalone `docker run` works without
+# any bind-mount. The compose file ADDS bind-mounts on top of this for the
+# hot-reload dev loop — but the image must be self-sufficient.
+COPY frontend/ ./
+
+EXPOSE 5173
+
+# `--host 0.0.0.0` is required so the host browser can reach the container.
+# Vite's default bind is 127.0.0.1 inside the container, which yields
+# ECONNREFUSED on http://localhost:5173 from the host.
+CMD ["./node_modules/.bin/vite", "--host", "0.0.0.0"]
