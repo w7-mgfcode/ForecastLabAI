@@ -163,6 +163,30 @@ pnpm dev
 
 The frontend proxies API requests to the backend at `http://localhost:8123`.
 
+### Run everything in containers
+
+For a zero-toolchain quick-start (no `uv`, `pnpm`, or `node` needed on the host beyond Docker itself), bring the full stack up in one command:
+
+```bash
+cp .env.example .env       # populate OPENAI_API_KEY / ANTHROPIC_API_KEY
+make docker-up             # http://localhost:8123 (API) + http://localhost:5173 (SPA), ~60s
+make docker-down           # stop containers; named volumes persist
+```
+
+`make docker-up` builds two new images (`forecastlab-backend:dev`, `forecastlab-frontend:dev`) and brings up Postgres + backend + frontend on a shared bridge network. Source edits hot-reload through the bind-mounts. The host-mode flow above (steps 1-9) keeps working unchanged — pick whichever fits the task.
+
+### GPU host (optional Ollama)
+
+On a host with `nvidia-container-runtime` configured, add Ollama via the `gpu` profile:
+
+```bash
+make docker-up-gpu         # adds ollama with NVIDIA passthrough
+docker exec forecastlab-ollama nvidia-smi    # confirm GPU is visible
+docker exec forecastlab-ollama ollama pull nomic-embed-text
+```
+
+The backend container is wired to reach Ollama at `http://ollama:11434` (in-cluster DNS) — see [`docs/rag-ollama-setup.md`](docs/rag-ollama-setup.md). For diagnosis when a service comes up unhealthy, see [`docs/_base/RUNBOOKS.md` → "Multi-container stack failed at step X"](docs/_base/RUNBOOKS.md#multi-container-stack-failed-at-step-x).
+
 ## Development
 
 ### Testing
