@@ -808,11 +808,12 @@ class ForecastingService:
         # in save) for the asymmetry.
         result = job.result or {}
         bundle_path_str = result.get("model_path")
-        if not bundle_path_str:
+        if not isinstance(bundle_path_str, str) or not bundle_path_str.strip():
             raise UnprocessableEntityError(
                 message=(
-                    "Train job result is missing model_path; the job may "
-                    "have failed mid-write or the result schema changed."
+                    "Train job result is missing or has an invalid "
+                    "model_path; the job may have failed mid-write or "
+                    "the result schema changed."
                 ),
             )
 
