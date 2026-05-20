@@ -1208,8 +1208,8 @@ prophet_like). Loads the saved joblib artifact lazily.
 **Error semantics (RFC 7807 application/problem+json):**
 - 400 — model_family is 'baseline' (no learned importance to extract)
 - 404 — run_id not found
-- 422 — run has no artifact_uri yet, or status is pending/running/failed
-- 500 — bundle file missing on disk (storage corruption)
+- 422 — run has no artifact_uri yet, status is pending/running/failed,
+  or the bundle file is missing on disk (storage corruption)
 """,
 )
 async def get_run_feature_metadata(
