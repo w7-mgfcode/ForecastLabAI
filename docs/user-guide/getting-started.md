@@ -92,6 +92,9 @@ You can also watch the same pipeline run live in the browser on the **Showcase**
   migrations are applied (`uv run alembic upgrade head`).
 - **API keys** — the AI agent and RAG features need `OPENAI_API_KEY` and/or
   `ANTHROPIC_API_KEY` set in `.env`. Forecasting and the dashboard work without them.
+- **Browser dogfood / UI verification** — run `./scripts/dogfood-browser.sh` to
+  verify Playwright + snap chromium are ready for headless dashboard exercises;
+  pass a Python file path to execute it through the prepared environment.
 
 ## Next Steps
 

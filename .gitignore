@@ -43,3 +43,6 @@ artifacts/
 .agents/
 .handoffs/
 HANDOFF.md
+
+# Local CI / dogfood logs and screenshots (per-session, never committed)
+.ci-logs/
