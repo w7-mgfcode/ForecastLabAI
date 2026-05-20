@@ -1,6 +1,6 @@
 [project]
 name = "forecastlabai"
-version = "0.2.16"
+version = "0.2.17"
 description = "Portfolio-grade end-to-end retail demand forecasting system"
 readme = "README.md"
 requires-python = ">=3.12"
