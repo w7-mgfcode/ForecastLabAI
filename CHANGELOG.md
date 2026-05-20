@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.2.17](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.16...v0.2.17) (2026-05-20)
+
+
+### Features
+
+* **forecast,ui:** MLZOO-D frontend, registry, and explainability polish ([#256](https://github.com/w7-mgfcode/ForecastLabAI/issues/256)) ([c81c92c](https://github.com/w7-mgfcode/ForecastLabAI/commit/c81c92ce2e574298a9b1962897f803e373b37cfc))
+* **forecast:** add feature-metadata endpoints + UnprocessableEntityError ([#256](https://github.com/w7-mgfcode/ForecastLabAI/issues/256)) ([e9c8ff8](https://github.com/w7-mgfcode/ForecastLabAI/commit/e9c8ff88c70d5e14d139d2074c564f1fc07d6f76))
+* **repo:** add scripts/dogfood-browser.sh wrapper for snap-chromium playwright ([#262](https://github.com/w7-mgfcode/ForecastLabAI/issues/262)) ([31599e2](https://github.com/w7-mgfcode/ForecastLabAI/commit/31599e226c4e82d6a00e8ae0795dae9204ba99a4))
+* **repo:** add scripts/dogfood-browser.sh wrapper for snap-chromium playwright ([#262](https://github.com/w7-mgfcode/ForecastLabAI/issues/262)) ([1511c24](https://github.com/w7-mgfcode/ForecastLabAI/commit/1511c24d24198bb33ac5a2b81a7bac03429b7416))
+* **ui:** MLZOO-D family badge, importance panel, page wiring ([#256](https://github.com/w7-mgfcode/ForecastLabAI/issues/256)) ([cbe9244](https://github.com/w7-mgfcode/ForecastLabAI/commit/cbe924479be822092125dfb84015a4d493482250))
+
+
+### Bug Fixes
+
+* **backtest:** return rfc 7807 problem+json on backtest validation errors ([#252](https://github.com/w7-mgfcode/ForecastLabAI/issues/252)) ([d659119](https://github.com/w7-mgfcode/ForecastLabAI/commit/d659119f334474493fc0189475c16f725d1ed120))
+* **forecast:** convert missing optional ML deps to 400-mapped ValueError ([#252](https://github.com/w7-mgfcode/ForecastLabAI/issues/252)) ([1492065](https://github.com/w7-mgfcode/ForecastLabAI/commit/1492065c7209a8d5b4a8dbb21392536d75487294))
+* **forecast:** emit rfc 7807 problem+json when a model flag is disabled ([#252](https://github.com/w7-mgfcode/ForecastLabAI/issues/252)) ([29dc97b](https://github.com/w7-mgfcode/ForecastLabAI/commit/29dc97bd9bc65a041db0121523530f7e3e0a79d0))
+* **forecast:** guard baseline_price before price-ratio math in feature rows ([#252](https://github.com/w7-mgfcode/ForecastLabAI/issues/252)) ([e550afe](https://github.com/w7-mgfcode/ForecastLabAI/commit/e550afe310ec6f472ca19cb430648647d886ecc0))
+* **forecast:** validate input vector alignment in historical feature rows ([#252](https://github.com/w7-mgfcode/ForecastLabAI/issues/252)) ([9b8568d](https://github.com/w7-mgfcode/ForecastLabAI/commit/9b8568d195635fade287db2148fa0ed7e584a3c6))
+
+
+### Documentation
+
+* **docs:** add PRP-31 for MLZOO-D frontend, registry, and explainability polish ([#256](https://github.com/w7-mgfcode/ForecastLabAI/issues/256)) ([c29d002](https://github.com/w7-mgfcode/ForecastLabAI/commit/c29d002f834de9315a9abcb824bf3c8e23706f78))
+* **docs:** add text language to PRP-MLZOO-B.2 tree fenced blocks ([#252](https://github.com/w7-mgfcode/ForecastLabAI/issues/252)) ([8648c03](https://github.com/w7-mgfcode/ForecastLabAI/commit/8648c03d37628130e73506402465c955e12188c2))
+* **docs:** document MLZOO-D advanced model metadata ([#256](https://github.com/w7-mgfcode/ForecastLabAI/issues/256)) ([227b378](https://github.com/w7-mgfcode/ForecastLabAI/commit/227b378fac28d04eec447245e82e0ba017b09a84))
+* **docs:** fix blockquote continuity in PRP-MLZOO-C2 sibling note ([#252](https://github.com/w7-mgfcode/ForecastLabAI/issues/252)) ([43cc6bd](https://github.com/w7-mgfcode/ForecastLabAI/commit/43cc6bd6cfc7ec665242cd165b3874e18989d43e))
+* **docs:** list prophet_like as a feature-aware backtesting model ([#252](https://github.com/w7-mgfcode/ForecastLabAI/issues/252)) ([e15b401](https://github.com/w7-mgfcode/ForecastLabAI/commit/e15b401d1482412d866633e1fb4872093e32c670))
+* **forecast:** add text language to feature-frame fenced block ([#252](https://github.com/w7-mgfcode/ForecastLabAI/issues/252)) ([ae4cf76](https://github.com/w7-mgfcode/ForecastLabAI/commit/ae4cf76441ad7973ab09fc4287262f0607db73a5))
+* **forecast:** add text language to model formula fenced blocks ([#252](https://github.com/w7-mgfcode/ForecastLabAI/issues/252)) ([31528d8](https://github.com/w7-mgfcode/ForecastLabAI/commit/31528d894ab0b1e3d78feb224ac2969f3e78d534))
+* **jobs:** list lightgbm, xgboost, prophet_like in model_type doc ([#252](https://github.com/w7-mgfcode/ForecastLabAI/issues/252)) ([feffc90](https://github.com/w7-mgfcode/ForecastLabAI/commit/feffc90bce155b397d51d25f70eb4c55f36ce2ef))
+* **repo:** name cross-slice read-only import pattern ([#264](https://github.com/w7-mgfcode/ForecastLabAI/issues/264)) ([37b9885](https://github.com/w7-mgfcode/ForecastLabAI/commit/37b988549d97c44d98e70d3f8282633bb083bda7))
+* **repo:** name cross-slice read-only import pattern ([#264](https://github.com/w7-mgfcode/ForecastLabAI/issues/264)) ([8d83792](https://github.com/w7-mgfcode/ForecastLabAI/commit/8d83792f41c9c23ec01c3239345bfe869c0bf20a))
+
 ## [0.2.16](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.15...v0.2.16) (2026-05-19)
 
 
