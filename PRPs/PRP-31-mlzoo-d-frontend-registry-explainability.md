@@ -14,8 +14,10 @@ same flat `model_type` string in the runs explorer that a `naive` baseline
 produces — even though the registry already stores richer config, dependency
 versions, and (inside the joblib bundle) the canonical 14-column feature frame
 and the fitted estimator's learned importances. This PRP closes that gap with
-the smallest possible surface: one new backend endpoint, one computed registry
-field, one new React panel, and additive in-place edits to four existing pages.
+the smallest possible surface: two new backend endpoints
+(`/forecasting/runs/{run_id}/feature-metadata` and
+`/forecasting/jobs/{job_id}/feature-metadata`), one computed registry field,
+one new React panel, and additive in-place edits to four existing pages.
 
 This PRP follows the staging contract in `PRPs/INITIAL/INITIAL-MLZOO-index.md`
 ("D. Frontend / registry / explainability") and the original brief at
@@ -1206,8 +1208,8 @@ prophet_like). Loads the saved joblib artifact lazily.
 **Error semantics (RFC 7807 application/problem+json):**
 - 400 — model_family is 'baseline' (no learned importance to extract)
 - 404 — run_id not found
-- 422 — run has no artifact_uri yet, or status is pending/running/failed
-- 500 — bundle file missing on disk (storage corruption)
+- 422 — run has no artifact_uri yet, status is pending/running/failed,
+  or the bundle file is missing on disk (storage corruption)
 """,
 )
 async def get_run_feature_metadata(
