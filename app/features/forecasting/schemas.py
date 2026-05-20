@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import date as date_type
+from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -411,3 +412,94 @@ class PredictResponse(BaseModel):
     config_hash: str
     horizon: int
     duration_ms: float
+
+
+# =============================================================================
+# Model Family + Feature Metadata Schemas (MLZOO-D / PRP-31)
+# =============================================================================
+
+
+class ModelFamily(str, Enum):
+    """Classifier for advanced-model UI surfacing.
+
+    Derived from ``model_type``; not persisted in the DB. Surfaced on
+    ``RunResponse`` via a computed field and consumed by the dashboard for the
+    family Badge and the feature-importance panel routing. Unknown model types
+    classify as ``BASELINE`` (forward-compatible for new families before the
+    map in ``feature_metadata.py`` is updated).
+    """
+
+    BASELINE = "baseline"  # naive, seasonal_naive, moving_average
+    TREE = "tree"  # regression (HistGBR), lightgbm, xgboost
+    ADDITIVE = "additive"  # prophet_like (Ridge pipeline)
+
+
+class FeatureImportanceItem(BaseModel):
+    """One row of model-derived feature importance, ready for the dashboard."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., description="Canonical feature column name (e.g. 'lag_7').")
+    importance: float = Field(
+        ...,
+        description=(
+            "For tree models: estimator.feature_importances_ value "
+            "(non-negative). For additive models: "
+            "pipeline.named_steps['ridge'].coef_ value (signed; the sign "
+            "carries directional information and MUST be preserved)."
+        ),
+    )
+    kind: Literal["tree", "linear_coef"] = Field(
+        ...,
+        description=(
+            "Display semantics: 'tree' → magnitude bar; "
+            "'linear_coef' → signed bar with direction icon."
+        ),
+    )
+    rank: int = Field(..., ge=1, description="1-indexed rank by |importance| desc.")
+
+
+class FeatureMetadataResponse(BaseModel):
+    """The /forecasting/runs/{run_id}/feature-metadata response.
+
+    Also the /forecasting/jobs/{job_id}/feature-metadata response. When sourced
+    from a job, ``run_id`` is the **artifact key** parsed from the bundle file
+    name (12-char hex), NOT a registry ``model_run.run_id``. Consumers MUST NOT
+    join this back to the registry by that field when the source was a job.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str = Field(
+        ...,
+        description=(
+            "Source identifier. For the runs-keyed endpoint: the registry "
+            "run_id. For the jobs-keyed endpoint: the forecast-artifact key "
+            "(``uuid.uuid4().hex[:12]``) parsed from the bundle path stem."
+        ),
+    )
+    model_type: str
+    model_family: ModelFamily
+    feature_columns: list[str] = Field(
+        ...,
+        description=(
+            "The canonical feature frame the model consumed at training time. "
+            "Always 14 columns for v0.2.16 feature-aware models (see "
+            "app/shared/feature_frames/contract.py:80)."
+        ),
+    )
+    features: list[FeatureImportanceItem] = Field(
+        ...,
+        description="Sorted by |importance| descending; len == len(feature_columns).",
+    )
+    importance_type: str | None = Field(
+        default=None,
+        description=(
+            "For LightGBM / XGBoost: the booster's ``importance_type`` "
+            "('split' / 'gain' / 'weight' / 'cover' depending on the library "
+            "default; ForecastLabAI does not override at training time). "
+            "For HistGBR-based RegressionForecaster: 'permutation'. "
+            "For prophet_like: 'ridge_coef'. Always populated so consumers "
+            "know what the numbers mean."
+        ),
+    )
