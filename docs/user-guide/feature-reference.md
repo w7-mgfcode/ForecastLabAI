@@ -53,12 +53,60 @@ features never use information from the future.
 
 Trains demand-forecasting models and generates predictions.
 
-- `POST /forecasting/train` — train a model. Supported model types: `naive`,
-  `seasonal_naive`, `moving_average` (baselines) and `lightgbm` (machine learning).
+- `POST /forecasting/train` — train a model. Supported model types:
+  - **Baselines**: `naive`, `seasonal_naive`, `moving_average` — always available.
+  - **Tree (feature-aware)**: `regression` (HistGradientBoostingRegressor, always
+    available), `lightgbm` (requires the `ml-lightgbm` extra), `xgboost` (requires
+    the `ml-xgboost` extra).
+  - **Additive (feature-aware)**: `prophet_like` — a Ridge regressor over the
+    canonical 14-column feature frame; always available.
 - `POST /forecasting/predict` — generate horizon predictions from a trained model.
+- `GET /forecasting/runs/{run_id}/feature-metadata` — return the canonical
+  feature columns the trained model consumed and the fitted estimator's native
+  feature importance (tree models) or signed coefficients (additive
+  `prophet_like`). See **Advanced Model Metadata** below.
+- `GET /forecasting/jobs/{job_id}/feature-metadata` — the job-keyed sibling of
+  the run endpoint; use it from the forecast viz page, which only holds a
+  `job_id`.
 
 The three baselines exist as honest comparison points — a machine-learning model is
 only worth using if it beats them.
+
+### Advanced Model Metadata
+
+Every model returned by `/registry/runs` carries a computed `model_family` field
+— `baseline` (naive / seasonal_naive / moving_average), `tree` (regression /
+lightgbm / xgboost), or `additive` (prophet_like). The dashboard surfaces this
+in four places: a **Family** badge column on the runs explorer, a badge + cards
+on the run detail page (the 14 canonical feature columns and a feature
+importance panel), a side-by-side comparison on the run compare page (rendered
+only when both runs share a non-baseline family), and a collapsible importance
+panel on the forecast viz page tied to the train job.
+
+For a `tree`-family run the panel renders non-negative bars whose length
+reflects relative magnitude (the boosters' native `feature_importances_`
+attribute — LightGBM's `'split'`, XGBoost's `'weight'`, etc.; the label is
+shown at the top of the panel). For an `additive` (`prophet_like`) run the
+panel preserves the **sign** of the Ridge coefficient — a positive coefficient
+renders green with a `TrendingUp` icon; a negative one renders red with
+`TrendingDown`.
+
+> **Correlation, not causation.** Feature importance is model-derived. It
+> reflects how much each feature reduced the model's training error — not
+> real-world causation. Two products with similar importance profiles are not
+> necessarily driven by the same business factors.
+
+Three error semantics map cleanly to RFC 7807 `application/problem+json`:
+- **400 `BAD_REQUEST`** — the run is a baseline (no native importance vector
+  exists). The panel renders a neutral muted message.
+- **404 `NOT_FOUND`** — the run or job is not in the registry.
+- **422 `UNPROCESSABLE_ENTITY`** — the run has no artifact yet
+  (`pending` / `running` / `failed`), the artifact file has been deleted from
+  disk, an optional `ml-*` extra is not installed at unpickle time, or the
+  underlying estimator does not expose `feature_importances_` (sklearn's
+  `HistGradientBoostingRegressor`, used by `regression`, does not).
+  The 422 type URI is `UNPROCESSABLE_ENTITY` (distinct from `VALIDATION_ERROR`,
+  which is reserved for input failures).
 
 ## Backtesting
 
