@@ -238,7 +238,7 @@ Predicts the average of the last `window_size` observations.
 
 ### Regression Forecaster
 
-```
+```text
 ŷ[t+h] = HistGradientBoostingRegressor.predict(X[t+h])
 ```
 
@@ -248,7 +248,7 @@ it REQUIRES a feature frame — see [`feature_frame_contract.md`](feature_frame_
 
 ### LightGBM Forecaster
 
-```
+```text
 ŷ[t+h] = LGBMRegressor.predict(X[t+h])
 ```
 
@@ -260,7 +260,7 @@ behind the `ml-lightgbm` extra and the `forecast_enable_lightgbm` flag.
 
 ### XGBoost Forecaster
 
-```
+```text
 ŷ[t+h] = XGBRegressor.predict(X[t+h])
 ```
 
@@ -273,7 +273,7 @@ fixed `random_state`, no stochastic subsampling), and NaN-tolerant
 
 ### Prophet-like Forecaster
 
-```
+```text
 ŷ[t+h] = intercept + trend[t+h] + seasonality[t+h] + holiday_regressor[t+h]
 ```
 

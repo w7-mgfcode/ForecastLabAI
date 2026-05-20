@@ -700,8 +700,15 @@ class LightGBMForecaster(BaseForecaster):
                 f"X has {X.shape[0]} rows but y has {len(y)} — feature/target rows must match"
             )
         # LAZY import — the optional ``ml-lightgbm`` dependency is only needed
-        # the first time a LightGBM model is actually fitted.
-        import lightgbm as lgb
+        # the first time a LightGBM model is actually fitted. A missing package
+        # becomes a ValueError so the route returns a controlled 400, not a 500.
+        try:
+            import lightgbm as lgb
+        except ImportError as exc:
+            raise ValueError(
+                "LightGBM is not installed. Install the optional 'ml-lightgbm' "
+                "extra (e.g. `uv sync --extra ml-lightgbm`)."
+            ) from exc
 
         estimator: Any = lgb.LGBMRegressor(
             n_estimators=self.n_estimators,
@@ -857,8 +864,15 @@ class XGBoostForecaster(BaseForecaster):
                 f"X has {X.shape[0]} rows but y has {len(y)} — feature/target rows must match"
             )
         # LAZY import — the optional ``ml-xgboost`` dependency is only needed
-        # the first time an XGBoost model is actually fitted.
-        import xgboost as xgb
+        # the first time an XGBoost model is actually fitted. A missing package
+        # becomes a ValueError so the route returns a controlled 400, not a 500.
+        try:
+            import xgboost as xgb
+        except ImportError as exc:
+            raise ValueError(
+                "XGBoost is not installed. Install the optional 'ml-xgboost' "
+                "extra (e.g. `uv sync --extra ml-xgboost`)."
+            ) from exc
 
         estimator: Any = xgb.XGBRegressor(
             n_estimators=self.n_estimators,

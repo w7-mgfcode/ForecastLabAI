@@ -52,7 +52,7 @@ same order*:
 
 `canonical_feature_columns()` returns these **14 columns, in this order**:
 
-```
+```text
 lag_1, lag_7, lag_14, lag_28,
 dow_sin, dow_cos, month_sin, month_cos, is_weekend, is_month_end,
 price_factor, promo_active, is_holiday, days_since_launch

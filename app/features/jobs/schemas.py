@@ -25,7 +25,8 @@ class JobCreate(BaseModel):
     **Job Types and Required Params**:
 
     - **train**: Train a forecasting model
-      - `model_type`: Required - 'naive', 'seasonal_naive', 'moving_average', 'regression'.
+      - `model_type`: Required - 'naive', 'seasonal_naive', 'moving_average',
+        'regression', 'lightgbm', 'xgboost', 'prophet_like'.
       - `store_id`: Required - Store ID from /dimensions/stores
       - `product_id`: Required - Product ID from /dimensions/products
       - `start_date`: Required - Training data start (YYYY-MM-DD)

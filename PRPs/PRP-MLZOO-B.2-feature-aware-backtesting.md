@@ -183,7 +183,7 @@ PRP may add an `assumptions` policy; v1 ships exactly one.
 
 ### Current Codebase tree (relevant — all already exist)
 
-```
+```text
 app/
   shared/feature_frames/
     __init__.py            # re-exports the contract surface
@@ -204,7 +204,7 @@ app/
 
 ### Desired Codebase tree — files to ADD
 
-```
+```text
 app/shared/feature_frames/
   rows.py                                    # build_historical_feature_rows (promoted),
                                              # build_future_feature_rows (NEW, leakage-safe)
@@ -216,7 +216,7 @@ PRPs/
 
 ### Files to MODIFY (all additive or behaviour-preserving)
 
-```
+```text
 app/shared/feature_frames/__init__.py        # export the two row builders
 app/shared/feature_frames/tests/test_leakage.py   # ADD build_future_feature_rows leakage spec
 app/shared/feature_frames/tests/test_contract.py  # ADD: rows.py imports nothing from app/features

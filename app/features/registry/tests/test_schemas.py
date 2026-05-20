@@ -1,15 +1,18 @@
 """Unit tests for registry schemas."""
 
-from datetime import date
+from datetime import UTC, date, datetime
+from typing import ClassVar
 
 import pytest
 from pydantic import ValidationError
 
+from app.features.forecasting.schemas import ModelFamily
 from app.features.registry.schemas import (
     VALID_TRANSITIONS,
     AgentContext,
     AliasCreate,
     RunCreate,
+    RunResponse,
     RunStatus,
     RuntimeInfo,
     RunUpdate,
@@ -381,3 +384,76 @@ class TestAliasCreate:
         with pytest.raises(ValidationError) as exc_info:
             AliasCreate(alias_name="test", run_id="x", description="x" * 501)
         assert "description" in str(exc_info.value)
+
+
+class TestRunResponseModelFamily:
+    """Tests for the computed ``model_family`` field on ``RunResponse``.
+
+    MLZOO-D / PRP-31: ``model_family`` is derived from ``model_type`` at
+    serialization time via a Pydantic ``@computed_field``. No DB column, no
+    migration, no backfill. Unknown types degrade to ``BASELINE`` and log a
+    warning (forward-compat).
+    """
+
+    _BASE_FIELDS: ClassVar[dict[str, object]] = {
+        "run_id": "abc123",
+        "status": RunStatus.SUCCESS,
+        "model_config_data": {"model_type": "naive"},
+        "config_hash": "deadbeefdeadbeef",
+        "data_window_start": date(2024, 1, 1),
+        "data_window_end": date(2024, 1, 31),
+        "store_id": 1,
+        "product_id": 1,
+        "created_at": datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC),
+        "updated_at": datetime(2024, 1, 2, 0, 0, 0, tzinfo=UTC),
+    }
+
+    def _make_response(self, model_type: str) -> RunResponse:
+        fields = {**self._BASE_FIELDS, "model_type": model_type}
+        return RunResponse.model_validate(fields)
+
+    @pytest.mark.parametrize(
+        ("model_type", "expected"),
+        [
+            ("naive", ModelFamily.BASELINE),
+            ("seasonal_naive", ModelFamily.BASELINE),
+            ("moving_average", ModelFamily.BASELINE),
+            ("regression", ModelFamily.TREE),
+            ("lightgbm", ModelFamily.TREE),
+            ("xgboost", ModelFamily.TREE),
+            ("prophet_like", ModelFamily.ADDITIVE),
+        ],
+    )
+    def test_model_family_computed_for_every_known_type(
+        self, model_type: str, expected: ModelFamily
+    ) -> None:
+        """All seven canonical model_types map to the expected ModelFamily."""
+        response = self._make_response(model_type)
+        assert response.model_family == expected
+
+    def test_model_family_unknown_type_falls_back_to_baseline(self) -> None:
+        """An unknown model_type degrades to BASELINE (logs a warning).
+
+        Forward-compat: a model_type added to ``forecasting/models.py`` before
+        the family map is updated should not crash the registry — it just
+        shows up in the dashboard as a baseline until the map catches up.
+        """
+        response = self._make_response("future_arima_v9")
+        assert response.model_family == ModelFamily.BASELINE
+
+    def test_model_family_serializes_alongside_model_config_alias(self) -> None:
+        """Both ``model_config`` (aliased) and ``model_family`` are top-level
+        keys on the serialized dict — no collision with the alias."""
+        response = self._make_response("lightgbm")
+        dumped = response.model_dump(by_alias=True)
+        assert dumped["model_config"] == {"model_type": "naive"}
+        assert dumped["model_family"] == ModelFamily.TREE
+        # Both alias and computed field present:
+        assert "model_config" in dumped
+        assert "model_family" in dumped
+
+    def test_model_family_propagates_to_serialized_json(self) -> None:
+        """model_family round-trips through model_dump_json with the str value."""
+        response = self._make_response("prophet_like")
+        json_str = response.model_dump_json(by_alias=True)
+        assert '"model_family":"additive"' in json_str
