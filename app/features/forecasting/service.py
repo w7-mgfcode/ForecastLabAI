@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_type
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import structlog
@@ -25,7 +25,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.core.exceptions import (
+    BadRequestError,
+    NotFoundError,
+    UnprocessableEntityError,
+)
 from app.features.data_platform.models import Calendar, Product, Promotion, SalesDaily
+from app.features.forecasting.feature_metadata import (
+    FeatureImportanceUnavailableError,
+    extract_feature_importance,
+    importance_type_for,
+    model_family_for,
+)
 from app.features.forecasting.models import model_factory
 from app.features.forecasting.persistence import (
     ModelBundle,
@@ -33,11 +44,21 @@ from app.features.forecasting.persistence import (
     save_model_bundle,
 )
 from app.features.forecasting.schemas import (
+    FeatureMetadataResponse,
     ForecastPoint,
     ModelConfig,
+    ModelFamily,
     PredictResponse,
     TrainResponse,
 )
+
+# NOTE: ``RegistryService`` / ``JobService`` and their status enums are imported
+# LAZILY inside the feature-metadata methods below. Importing them at module
+# scope would close a cycle with ``registry.schemas`` (which eagerly imports
+# ``ModelFamily`` from the forecasting slice for the ``model_family`` computed
+# field on ``RunResponse``). The explainability slice avoids the same trap by
+# importing only ``registry.models`` (a read-only ORM contract); we keep the
+# import-graph one-way by deferring our service-level imports.
 from app.shared.feature_frames import (
     HISTORY_TAIL_DAYS,
     build_historical_feature_rows,
@@ -623,4 +644,266 @@ class ForecastingService:
             history_tail_dates=tail_dates,
             launch_date_iso=launch_date.isoformat() if launch_date is not None else None,
             n_observations=len(dates),
+        )
+
+    # ------------------------------------------------------------------ #
+    # MLZOO-D / PRP-31 — feature-metadata extraction
+    #
+    # Two sibling entry points: one keyed by registry ``run_id`` (consumed by
+    # the runs explorer / run-detail / run-compare pages), one keyed by
+    # train-``job_id`` (consumed by ``forecast.tsx``, which only ever has a
+    # job_id — its ``trainJob.result.run_id`` is the **forecast-artifact key**
+    # ``uuid.uuid4().hex[:12]``, NOT a registry UUID; see service.py:270 and
+    # memory ``scenario-run-id-vs-registry-run-id``).
+    #
+    # Both methods load the saved joblib bundle lazily (mirroring the
+    # ``/registry/runs/{run_id}/verify`` precedent) and surface the four
+    # error categories as RFC 7807 problem+json via the existing
+    # :class:`ForecastLabError` subclasses:
+    #
+    #   - 404 :class:`NotFoundError` — unknown run/job
+    #   - 400 :class:`BadRequestError` — baseline family / wrong job type
+    #   - 422 :class:`UnprocessableEntityError` — no artifact yet, ML extra
+    #     missing at unpickle time, artifact file deleted off disk, or the
+    #     specific HistGBR ``feature_importances_`` gap
+    # ------------------------------------------------------------------ #
+
+    async def get_feature_metadata_for_run(
+        self,
+        db: AsyncSession,
+        run_id: str,
+    ) -> FeatureMetadataResponse:
+        """Extract the canonical feature columns + learned importances for a
+        registry run.
+
+        Args:
+            db: Async database session.
+            run_id: Registry ``model_run.run_id`` (full UUID).
+
+        Returns:
+            A :class:`FeatureMetadataResponse` — see schema for field detail.
+
+        Raises:
+            NotFoundError: When no run matches ``run_id``.
+            BadRequestError: When the run's model family is baseline (the
+                run has no native learned importance).
+            UnprocessableEntityError: When the run has no artifact yet
+                (``pending`` / ``running`` / ``failed`` status or
+                ``artifact_uri is None``), when ``joblib.load`` raises
+                :class:`ModuleNotFoundError` (missing ``ml-*`` extra),
+                when the artifact file is missing from disk
+                (:class:`FileNotFoundError`), or when the underlying
+                estimator does not expose
+                ``feature_importances_`` (``HistGradientBoostingRegressor``).
+        """
+        # Lazy cross-slice imports — see module-level NOTE.
+        from app.features.registry.schemas import RunStatus
+        from app.features.registry.service import RegistryService
+
+        run = await RegistryService().get_run(db, run_id)
+        if run is None:
+            raise NotFoundError(message=f"Model run not found: {run_id}")
+
+        if model_family_for(run.model_type) is ModelFamily.BASELINE:
+            raise BadRequestError(
+                message=(
+                    "Feature metadata is available for tree and additive "
+                    "families only; this run is a baseline model "
+                    f"({run.model_type})."
+                ),
+            )
+
+        if run.artifact_uri is None or run.status not in (
+            RunStatus.SUCCESS,
+            RunStatus.ARCHIVED,
+        ):
+            artifact_present = "absent" if run.artifact_uri is None else "present"
+            raise UnprocessableEntityError(
+                message=(
+                    "Run has no usable artifact yet; status="
+                    f"{run.status.value}, artifact_uri={artifact_present}."
+                ),
+            )
+
+        try:
+            bundle = load_model_bundle(
+                run.artifact_uri,
+                base_dir=self.settings.forecast_model_artifacts_dir,
+            )
+        except ModuleNotFoundError as exc:
+            raise UnprocessableEntityError(
+                message=(
+                    "Model artifact requires an optional ML extra that is not "
+                    f"installed: {exc.name}. Reinstall the backend with the "
+                    f"relevant extra enabled (e.g. `uv sync --extra ml-{exc.name}`)."
+                ),
+            ) from exc
+        except FileNotFoundError as exc:
+            raise UnprocessableEntityError(
+                message=(
+                    f"Model artifact file is missing from disk: "
+                    f"{run.artifact_uri}. The registry row references an "
+                    "artifact that has been deleted or moved."
+                ),
+            ) from exc
+
+        return self._build_metadata_response(
+            source_id=run.run_id,
+            model_type=run.model_type,
+            bundle=bundle,
+        )
+
+    async def get_feature_metadata_for_job(
+        self,
+        db: AsyncSession,
+        job_id: str,
+    ) -> FeatureMetadataResponse:
+        """Extract the canonical feature columns + learned importances for a
+        completed train job.
+
+        Mirrors PRP-28's ``/explain/jobs/{job_id}`` shape exactly so future
+        maintainers see the run-keyed / job-keyed pair as a structural twin.
+
+        Args:
+            db: Async database session.
+            job_id: Job identifier returned by ``POST /jobs``.
+
+        Returns:
+            A :class:`FeatureMetadataResponse` whose ``run_id`` field carries
+            the **forecast-artifact key** (12-char hex) parsed from the bundle
+            path stem — NOT a registry UUID. Documented on the schema field.
+
+        Raises:
+            NotFoundError: When no job matches ``job_id``.
+            BadRequestError: When the job is not a completed train job, or
+                when the underlying trained model is a baseline family.
+            UnprocessableEntityError: When the train job's
+                ``result["model_path"]`` is missing or points at a path that
+                ``load_model_bundle`` can no longer find, or when the
+                ``ml-*`` extra is missing at unpickle time.
+        """
+        # Lazy cross-slice imports — see module-level NOTE.
+        from app.features.jobs.models import JobStatus, JobType
+        from app.features.jobs.service import JobService
+
+        job = await JobService().get_job(db, job_id)
+        if job is None:
+            raise NotFoundError(message=f"Job not found: {job_id}")
+
+        if job.job_type != JobType.TRAIN or job.status != JobStatus.COMPLETED:
+            raise BadRequestError(
+                message=(
+                    "Feature metadata can only be derived from a completed "
+                    f"train job; got job_type={job.job_type.value}, "
+                    f"status={job.status.value}."
+                ),
+            )
+
+        # CRITICAL: read ``model_path`` (the full ``.joblib`` path written by
+        # ``_execute_train`` in jobs/service.py:517) — NOT ``run_id`` (the
+        # artifact key). ``load_model_bundle`` does not auto-inject the
+        # ``.joblib`` suffix, so reconstructing the path from ``run_id``
+        # would FileNotFoundError. See persistence.py:154,173 (verbatim
+        # ``path.exists()`` in load) vs persistence.py:88-89 (auto-`.joblib`
+        # in save) for the asymmetry.
+        result = job.result or {}
+        bundle_path_str = result.get("model_path")
+        if not bundle_path_str:
+            raise UnprocessableEntityError(
+                message=(
+                    "Train job result is missing model_path; the job may "
+                    "have failed mid-write or the result schema changed."
+                ),
+            )
+
+        try:
+            bundle = load_model_bundle(
+                bundle_path_str,
+                base_dir=self.settings.forecast_model_artifacts_dir,
+            )
+        except ModuleNotFoundError as exc:
+            raise UnprocessableEntityError(
+                message=(
+                    "Model artifact requires an optional ML extra that is not "
+                    f"installed: {exc.name}. Reinstall the backend with the "
+                    f"relevant extra enabled (e.g. `uv sync --extra ml-{exc.name}`)."
+                ),
+            ) from exc
+        except FileNotFoundError as exc:
+            raise UnprocessableEntityError(
+                message=(
+                    f"Model artifact file is missing from disk: "
+                    f"{bundle_path_str}. The job row references an artifact "
+                    "that has been deleted or moved."
+                ),
+            ) from exc
+
+        bundle_model_type = bundle.config.model_type
+        if model_family_for(bundle_model_type) is ModelFamily.BASELINE:
+            raise BadRequestError(
+                message=(
+                    "Feature metadata is available for tree and additive "
+                    "families only; this train job's underlying model is a "
+                    f"baseline ({bundle_model_type})."
+                ),
+            )
+
+        # Parse the artifact key from the bundle's filename stem so callers
+        # have a stable id for the response. The bundle file is named
+        # ``model_{artifact_id}.joblib`` (forecasting/service.py:270-272).
+        artifact_stem = Path(bundle_path_str).stem
+        artifact_id = artifact_stem.removeprefix("model_") or artifact_stem
+
+        return self._build_metadata_response(
+            source_id=artifact_id,
+            model_type=bundle_model_type,
+            bundle=bundle,
+        )
+
+    def _build_metadata_response(
+        self,
+        *,
+        source_id: str,
+        model_type: str,
+        bundle: ModelBundle,
+    ) -> FeatureMetadataResponse:
+        """Shared response-assembly path for the two feature-metadata endpoints.
+
+        Wraps the importance-extraction call so the
+        :class:`FeatureImportanceUnavailableError` raised for the
+        ``HistGradientBoostingRegressor`` gap is translated to a 422 with a
+        clear remediation hint, while the generic ``ValueError`` raised for a
+        truly non-feature-aware estimator becomes the existing 400 contract.
+        """
+        feature_columns_raw = bundle.metadata.get("feature_columns")
+        if not isinstance(feature_columns_raw, list):
+            raise UnprocessableEntityError(
+                message=(
+                    "Bundle metadata is missing feature_columns; this run was "
+                    "trained before MLZOO-A's feature-frame contract landed "
+                    "(or with a custom feature builder)."
+                ),
+            )
+        # The metadata dict is typed ``dict[str, object]``; cast each entry to
+        # str to satisfy the response schema's stricter contract.
+        feature_columns: list[str] = [str(c) for c in cast(list[object], feature_columns_raw)]
+
+        try:
+            features = extract_feature_importance(bundle.model, feature_columns)
+        except FeatureImportanceUnavailableError as exc:
+            raise UnprocessableEntityError(message=str(exc)) from exc
+        except ValueError as exc:
+            # ValueError here means "not feature-aware" (already gated by the
+            # family check above, but defence-in-depth).
+            raise BadRequestError(message=str(exc)) from exc
+
+        importance_type = importance_type_for(bundle.model)
+
+        return FeatureMetadataResponse(
+            run_id=source_id,
+            model_type=model_type,
+            model_family=model_family_for(model_type),
+            feature_columns=feature_columns,
+            features=features,
+            importance_type=importance_type,
         )

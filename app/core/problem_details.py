@@ -26,6 +26,7 @@ ERROR_TYPE_BASE = "/errors"
 ERROR_TYPES = {
     "NOT_FOUND": f"{ERROR_TYPE_BASE}/not-found",
     "VALIDATION_ERROR": f"{ERROR_TYPE_BASE}/validation",
+    "UNPROCESSABLE_ENTITY": f"{ERROR_TYPE_BASE}/unprocessable-entity",
     "DATABASE_ERROR": f"{ERROR_TYPE_BASE}/database",
     "CONFLICT": f"{ERROR_TYPE_BASE}/conflict",
     "UNAUTHORIZED": f"{ERROR_TYPE_BASE}/unauthorized",

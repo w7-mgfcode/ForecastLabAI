@@ -170,6 +170,35 @@ class BadRequestError(ForecastLabError):
         )
 
 
+class UnprocessableEntityError(ForecastLabError):
+    """Resource-state 422 error.
+
+    Use when the request itself is well-formed and routable, but the targeted
+    resource is in a state that prevents the operation from completing — e.g.,
+    a registry run with no artifact saved yet, a saved bundle whose pickle
+    references an optional ML extra that is not installed, or a bundle file
+    that has been deleted from disk while the registry row lives on.
+
+    Distinct from :class:`ValidationError` (``code="VALIDATION_ERROR"``), which
+    is for Pydantic input failures. Consumers and tests disambiguate the two
+    422s via the ``type`` URI in the RFC 7807 problem+json body.
+    """
+
+    error_type_uri: str = ERROR_TYPES["UNPROCESSABLE_ENTITY"]
+
+    def __init__(
+        self,
+        message: str = "Resource state prevents the operation",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            message=message,
+            code="UNPROCESSABLE_ENTITY",
+            status_code=422,
+            details=details,
+        )
+
+
 # =============================================================================
 # Exception Handlers (RFC 7807)
 # =============================================================================

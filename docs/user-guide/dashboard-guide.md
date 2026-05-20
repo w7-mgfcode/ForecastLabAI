@@ -37,9 +37,15 @@ row opens a detail page.
   its **detail page**: profile, KPIs, revenue and lifecycle-demand curves, and a
   top-stores drilldown.
 - **Model Runs** (`/explorer/runs`) — every trained model tracked in the registry.
-  A run **detail page** shows its configuration, metrics, and runtime info as JSON,
-  cross-links to the store/product, an artifact-integrity check, and a compare link.
-  Two runs can be compared side by side (config diff + metrics diff with deltas).
+  A **Family** badge column distinguishes baseline, tree, and additive models at
+  a glance. The run **detail page** shows configuration, metrics, runtime info,
+  cross-links to the store/product, an artifact-integrity check, a compare link,
+  and (for non-baseline runs) the canonical feature columns plus a feature
+  importance panel — see
+  [Advanced Model Metadata](./feature-reference.md#advanced-model-metadata) in the
+  Feature Reference for the data model and error semantics. Two runs can be
+  compared side by side (config diff, metrics diff with deltas, and same-family
+  feature importance side-by-side).
 - **Jobs** (`/explorer/jobs`) — submitted train/predict/backtest jobs. A job
   **detail page** shows parameters, result JSON, error details, the linked run, a
   cancel action, and live status polling.
