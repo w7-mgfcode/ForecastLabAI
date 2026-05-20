@@ -282,6 +282,110 @@ export interface JobCreate {
   params: Record<string, unknown>
 }
 
+// === Batch (PRP-33) ===
+
+export type BatchOperation =
+  | 'train'
+  | 'predict'
+  | 'backtest'
+  | 'train_backtest_register'
+
+export type BatchStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'partial'
+  | 'cancelled'
+
+export type BatchItemStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
+export type BatchScopeKind =
+  | 'manual'
+  | 'region'
+  | 'category'
+  | 'top_revenue'
+  | 'all'
+
+export interface BatchScope {
+  kind: BatchScopeKind
+  store_ids?: number[] | null
+  product_ids?: number[] | null
+  region?: string | null
+  category?: string | null
+  top_n?: number | null
+}
+
+export interface BatchModelConfig {
+  model_type:
+    | 'naive'
+    | 'seasonal_naive'
+    | 'moving_average'
+    | 'regression'
+    | 'lightgbm'
+    | 'xgboost'
+    | 'prophet_like'
+  params?: Record<string, unknown>
+}
+
+export interface BatchSubmitRequest {
+  operation: BatchOperation
+  scope: BatchScope
+  model_configs: BatchModelConfig[]
+  start_date: string
+  end_date: string
+  max_parallel?: number
+  default_child_priority?: number
+}
+
+export interface BatchSubmitResponse {
+  batch_id: string
+  operation: BatchOperation
+  status: BatchStatus
+  total_items: number
+  completed_items: number
+  failed_items: number
+  running_items: number
+  cancelled_items: number
+  started_at: string | null
+  completed_at: string | null
+  result_summary: Record<string, unknown> | null
+  created_at: string
+  updated_at: string
+}
+
+export interface BatchItemResponse {
+  item_id: string
+  batch_id: string
+  store_id: number
+  product_id: number
+  model_type: string
+  status: BatchItemStatus
+  priority: number
+  metrics: Record<string, number | null> | null
+  child_job_id: string | null
+  child_run_id: string | null
+  error_message: string | null
+  error_type: string | null
+  started_at: string | null
+  completed_at: string | null
+  duration_ms: number | null
+  created_at: string
+  updated_at: string
+}
+
+export interface BatchItemListResponse {
+  items: BatchItemResponse[]
+  total: number
+  page: number
+  page_size: number
+}
+
 // === RAG ===
 export interface RagSource {
   source_id: string
