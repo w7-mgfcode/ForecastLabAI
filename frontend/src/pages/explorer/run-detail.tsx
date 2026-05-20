@@ -11,10 +11,13 @@ import {
 } from 'lucide-react'
 import { useRun, useVerifyArtifact } from '@/hooks/use-runs'
 import { useRunExplanation } from '@/hooks/use-explanations'
+import { useRunFeatureMetadata } from '@/hooks/use-feature-metadata'
 import { ExplanationPanel } from '@/components/explainability/explanation-panel'
+import { FeatureImportancePanel } from '@/components/explainability/feature-importance-panel'
 import { JsonBlock } from '@/components/common/json-block'
 import { ErrorDisplay } from '@/components/common/error-display'
 import { LoadingState } from '@/components/common/loading-state'
+import { ModelFamilyBadge } from '@/components/common/model-family-badge'
 import { StatusBadge } from '@/components/common/status-badge'
 import { getStatusVariant } from '@/lib/status-utils'
 import { Button } from '@/components/ui/button'
@@ -45,6 +48,16 @@ export default function RunDetailPage() {
 
   // The explanation panel self-handles a 400 for non-baseline (lightgbm) runs.
   const explanationQuery = useRunExplanation(runId ?? '', !!runId)
+
+  // MLZOO-D / PRP-31 — load the new feature-metadata only for non-baseline
+  // runs. `enabled: false` makes TanStack Query skip the fetch entirely, so
+  // baseline runs render nothing extra and never see the 400 burst the panel
+  // would otherwise have to swallow.
+  const featureMetaQuery = useRunFeatureMetadata(
+    runId ?? '',
+    !!runId && runQuery.data?.model_family !== undefined &&
+      runQuery.data?.model_family !== 'baseline',
+  )
 
   if (!runId) {
     return (
@@ -88,6 +101,7 @@ export default function RunDetailPage() {
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="break-all font-mono text-2xl font-bold">{run.run_id}</h1>
             <StatusBadge variant={getStatusVariant(run.status)}>{run.status}</StatusBadge>
+            <ModelFamilyBadge family={run.model_family} />
           </div>
           <p className="text-sm text-muted-foreground">{run.model_type}</p>
         </div>
@@ -107,6 +121,12 @@ export default function RunDetailPage() {
         <CardContent>
           <dl className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
             <Field label="Model type" value={run.model_type} />
+            <div>
+              <dt className="text-xs text-muted-foreground">Family</dt>
+              <dd className="font-medium">
+                <ModelFamilyBadge family={run.model_family} />
+              </dd>
+            </div>
             <div>
               <dt className="text-xs text-muted-foreground">Store</dt>
               <dd className="font-medium">
@@ -168,6 +188,59 @@ export default function RunDetailPage() {
         isLoading={explanationQuery.isLoading}
         error={explanationQuery.error}
       />
+
+      {run.model_family !== 'baseline' && (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                Feature Metadata
+                <ModelFamilyBadge family={run.model_family} />
+              </CardTitle>
+              <CardDescription>
+                The canonical 14-column feature frame the model consumed at
+                training time.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {featureMetaQuery.isLoading ? (
+                <LoadingState message="Loading feature metadata..." />
+              ) : featureMetaQuery.data ? (
+                <>
+                  <ul className="flex flex-wrap gap-1.5">
+                    {featureMetaQuery.data.feature_columns.map((name) => (
+                      <li
+                        key={name}
+                        className="rounded-md border bg-muted/40 px-2 py-0.5 font-mono text-xs"
+                      >
+                        {name}
+                      </li>
+                    ))}
+                  </ul>
+                  {featureMetaQuery.data.importance_type && (
+                    <p className="mt-3 text-xs text-muted-foreground">
+                      Importance type:{' '}
+                      <span className="font-mono">
+                        {featureMetaQuery.data.importance_type}
+                      </span>
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Feature metadata unavailable for this run.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
+          <FeatureImportancePanel
+            data={featureMetaQuery.data}
+            isLoading={featureMetaQuery.isLoading}
+            error={featureMetaQuery.error}
+          />
+        </>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>

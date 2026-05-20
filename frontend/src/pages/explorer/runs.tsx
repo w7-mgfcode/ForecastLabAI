@@ -7,6 +7,7 @@ import { DataTable } from '@/components/data-table/data-table'
 import { DataTableToolbar } from '@/components/data-table/data-table-toolbar'
 import { DataTableColumnHeader } from '@/components/data-table/data-table-column-header'
 import { StatusBadge } from '@/components/common/status-badge'
+import { ModelFamilyBadge } from '@/components/common/model-family-badge'
 import { getStatusVariant } from '@/lib/status-utils'
 import { ErrorDisplay } from '@/components/common/error-display'
 import { Button } from '@/components/ui/button'
@@ -18,7 +19,15 @@ import { DEFAULT_PAGE_SIZE, ROUTES } from '@/lib/constants'
 // Allow-lists for the URL-driven filter/sort params. A hand-edited URL value
 // outside these is dropped (treated as "no filter") rather than blind-cast.
 const RUN_STATUSES: readonly RunStatus[] = ['pending', 'running', 'success', 'failed', 'archived']
-const MODEL_TYPES = ['naive', 'seasonal_naive', 'moving_average', 'lightgbm'] as const
+const MODEL_TYPES = [
+  'naive',
+  'seasonal_naive',
+  'moving_average',
+  'regression',
+  'lightgbm',
+  'xgboost',
+  'prophet_like',
+] as const
 const RUN_SORT_KEYS = ['created_at', 'model_type', 'status', 'store_id', 'product_id'] as const
 
 const columns: ColumnDef<ModelRun>[] = [
@@ -44,6 +53,12 @@ const columns: ColumnDef<ModelRun>[] = [
     accessorKey: 'model_type',
     header: ({ column }) => <DataTableColumnHeader column={column} title="Model Type" />,
     cell: ({ row }) => <span className="font-medium">{row.original.model_type}</span>,
+  },
+  {
+    accessorKey: 'model_family',
+    header: 'Family',
+    enableSorting: false,
+    cell: ({ row }) => <ModelFamilyBadge family={row.original.model_family} />,
   },
   {
     accessorKey: 'store_id',
@@ -84,6 +99,7 @@ const csvColumns: CsvColumn<ModelRun>[] = [
   { key: 'run_id', header: 'Run ID' },
   { key: 'status', header: 'Status' },
   { key: 'model_type', header: 'Model Type' },
+  { key: 'model_family', header: 'Family' },
   { key: 'store_id', header: 'Store' },
   { key: 'product_id', header: 'Product' },
   { key: 'data_window_start', header: 'Data Window Start' },
@@ -193,7 +209,10 @@ export default function RunsExplorerPage() {
                 { label: 'Naive', value: 'naive' },
                 { label: 'Seasonal Naive', value: 'seasonal_naive' },
                 { label: 'Moving Average', value: 'moving_average' },
+                { label: 'Regression', value: 'regression' },
                 { label: 'LightGBM', value: 'lightgbm' },
+                { label: 'XGBoost', value: 'xgboost' },
+                { label: 'Prophet-like', value: 'prophet_like' },
               ],
             },
             {

@@ -170,10 +170,17 @@ export interface LifecycleCurveResponse {
 // === Registry ===
 export type RunStatus = 'pending' | 'running' | 'success' | 'failed' | 'archived'
 
+// MLZOO-D / PRP-31: derived from model_type on the backend as a Pydantic
+// computed_field (no DB column, no migration). Surfaced on every ModelRun
+// response so the runs explorer, run detail, run compare, and forecast viz
+// pages can render a consistent Family badge.
+export type ModelFamily = 'baseline' | 'tree' | 'additive'
+
 export interface ModelRun {
   run_id: string
   status: RunStatus
   model_type: string
+  model_family: ModelFamily
   model_config: Record<string, unknown>
   feature_config: Record<string, unknown> | null
   config_hash: string
@@ -193,6 +200,26 @@ export interface ModelRun {
   completed_at: string | null
   created_at: string
   updated_at: string
+}
+
+// MLZOO-D / PRP-31: response shape for the two feature-metadata endpoints
+// (/forecasting/runs/{run_id}/feature-metadata and the jobs/{job_id} sibling).
+// When sourced from a job, `run_id` is the **artifact key** (12-char hex)
+// parsed from the bundle file name, NOT a registry UUID.
+export interface FeatureImportanceItem {
+  name: string
+  importance: number  // signed for kind='linear_coef' (prophet_like ridge coef)
+  kind: 'tree' | 'linear_coef'
+  rank: number  // 1-indexed by |importance| descending
+}
+
+export interface FeatureMetadataResponse {
+  run_id: string
+  model_type: string
+  model_family: ModelFamily
+  feature_columns: string[]
+  features: FeatureImportanceItem[]
+  importance_type: string | null
 }
 
 export interface RunListResponse extends PaginatedResponse<ModelRun> {

@@ -48,11 +48,18 @@ interface BacktestResult {
   }
 }
 
-/** Forecasting models a backtest can run (LightGBM needs a trained run, excluded). */
+// MLZOO-D / PRP-31 — Feature-aware backtesting (B.2) made the four advanced
+// families reachable from the UI. The allow-list now includes all seven
+// canonical model types; see PRP-MLZOO-B.2 for the per-fold X_train/X_future
+// split that keeps the feature-aware backtest leakage-safe.
 const MODEL_OPTIONS = [
   { value: 'naive', label: 'Naive' },
   { value: 'seasonal_naive', label: 'Seasonal Naive' },
   { value: 'moving_average', label: 'Moving Average' },
+  { value: 'regression', label: 'Regression (HistGBR)' },
+  { value: 'lightgbm', label: 'LightGBM' },
+  { value: 'xgboost', label: 'XGBoost' },
+  { value: 'prophet_like', label: 'Prophet-like (additive)' },
 ]
 
 const foldCsvColumns: CsvColumn<FoldMetric>[] = [

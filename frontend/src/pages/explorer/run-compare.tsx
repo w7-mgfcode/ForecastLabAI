@@ -2,9 +2,12 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { format } from 'date-fns'
 import { ArrowDown, ArrowLeft, ArrowUp } from 'lucide-react'
 import { useRuns, useCompareRuns } from '@/hooks/use-runs'
+import { useRunFeatureMetadata } from '@/hooks/use-feature-metadata'
+import { FeatureImportancePanel } from '@/components/explainability/feature-importance-panel'
 import { JsonBlock } from '@/components/common/json-block'
 import { ErrorDisplay } from '@/components/common/error-display'
 import { LoadingState } from '@/components/common/loading-state'
+import { ModelFamilyBadge } from '@/components/common/model-family-badge'
 import { StatusBadge } from '@/components/common/status-badge'
 import { getStatusVariant } from '@/lib/status-utils'
 import { Button } from '@/components/ui/button'
@@ -86,6 +89,15 @@ export default function RunComparePage() {
 
   const runsQuery = useRuns({ page: 1, pageSize: 100 })
   const compareQuery = useCompareRuns(a, b, !!a && !!b)
+
+  // MLZOO-D / PRP-31 — feature-importance side-by-side. Cross-family pairs
+  // render a muted message and DO NOT fetch (the muted muted message lives
+  // in `sameFamily === false` branch; both hooks gated on `enabled: sameFamily`).
+  const familyA = compareQuery.data?.run_a.model_family
+  const familyB = compareQuery.data?.run_b.model_family
+  const sameFamily = !!familyA && familyA === familyB && familyA !== 'baseline'
+  const metaA = useRunFeatureMetadata(a, sameFamily)
+  const metaB = useRunFeatureMetadata(b, sameFamily)
 
   function selectRun(slot: 'a' | 'b', runId: string) {
     setParams((prev) => {
@@ -170,6 +182,15 @@ export default function RunComparePage() {
                     <TableCell className="font-medium">Model type</TableCell>
                     <TableCell>{comparison.run_a.model_type}</TableCell>
                     <TableCell>{comparison.run_b.model_type}</TableCell>
+                  </TableRow>
+                  <TableRow>
+                    <TableCell className="font-medium">Family</TableCell>
+                    <TableCell>
+                      <ModelFamilyBadge family={comparison.run_a.model_family} />
+                    </TableCell>
+                    <TableCell>
+                      <ModelFamilyBadge family={comparison.run_b.model_family} />
+                    </TableCell>
                   </TableRow>
                   <TableRow>
                     <TableCell className="font-medium">Status</TableCell>
@@ -261,6 +282,38 @@ export default function RunComparePage() {
                     ))}
                   </TableBody>
                 </Table>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Feature Importance (Run A vs Run B)</CardTitle>
+              <CardDescription>
+                Native importance / coefficients side by side. Cross-family
+                comparisons are not rendered because magnitudes are not
+                comparable between tree and additive models.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {sameFamily ? (
+                <div className="grid gap-4 md:grid-cols-2">
+                  <FeatureImportancePanel
+                    data={metaA.data}
+                    isLoading={metaA.isLoading}
+                    error={metaA.error}
+                  />
+                  <FeatureImportancePanel
+                    data={metaB.data}
+                    isLoading={metaB.isLoading}
+                    error={metaB.error}
+                  />
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Feature-importance comparison is only meaningful when both
+                  runs share a non-baseline model family.
+                </p>
               )}
             </CardContent>
           </Card>
