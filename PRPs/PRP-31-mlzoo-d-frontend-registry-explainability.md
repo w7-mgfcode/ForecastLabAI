@@ -14,8 +14,10 @@ same flat `model_type` string in the runs explorer that a `naive` baseline
 produces — even though the registry already stores richer config, dependency
 versions, and (inside the joblib bundle) the canonical 14-column feature frame
 and the fitted estimator's learned importances. This PRP closes that gap with
-the smallest possible surface: one new backend endpoint, one computed registry
-field, one new React panel, and additive in-place edits to four existing pages.
+the smallest possible surface: two new backend endpoints
+(`/forecasting/runs/{run_id}/feature-metadata` and
+`/forecasting/jobs/{job_id}/feature-metadata`), one computed registry field,
+one new React panel, and additive in-place edits to four existing pages.
 
 This PRP follows the staging contract in `PRPs/INITIAL/INITIAL-MLZOO-index.md`
 ("D. Frontend / registry / explainability") and the original brief at
