@@ -1,0 +1,94 @@
+# syntax=docker/dockerfile:1.7
+#
+# ForecastLabAI backend image.
+#
+# Multi-stage:
+#   base  — python:3.12-slim-bookworm + curl (for healthcheck) + uv installer
+#   deps  — `uv sync --frozen --extra dev --no-install-project` against pyproject.toml/uv.lock
+#           ONLY (no `app/` yet — keeps the dep layer cacheable across source edits)
+#   dev   — copies the project, installs it, runs alembic+uvicorn with --reload
+#   prod  — re-syncs without dev extras, no --reload (smaller, immutable)
+#
+# Build:
+#   docker build -t forecastlab-backend:dev --target dev -f Dockerfile.backend .
+#   docker build -t forecastlab-backend:prod --target prod -f Dockerfile.backend .
+#
+# Gotchas (verified on this host):
+#   * asyncpg talks the Postgres wire protocol directly — NO libpq needed.
+#   * uv 0.11.8 supports `--no-install-project` (verified via `uv sync --help`).
+#   * Inside the container the Postgres DNS name is `postgres:5432`, NOT
+#     `localhost:5433` (that's the host-side published port).
+
+ARG PYTHON_VERSION=3.12-slim-bookworm
+
+# ---------- base ----------
+FROM python:${PYTHON_VERSION} AS base
+
+# curl for the healthcheck; ca-certificates for the uv install over HTTPS.
+# build-essential is intentionally NOT installed — every Python dep in uv.lock
+# ships a manylinux wheel, asyncpg includes a binary distribution, and pure-Python
+# packages need no compiler.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv (pinned by the official installer's stable URL; the binary lands
+# in /root/.local/bin which we add to PATH).
+ENV UV_INSTALL_DIR=/root/.local/bin
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Don't write .pyc files or buffer stdout — keeps logs clean and the image small.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/opt/venv
+
+WORKDIR /app
+
+# ---------- deps ----------
+FROM base AS deps
+
+# Bring in JUST the dependency manifests. `--no-install-project` keeps uv from
+# trying to install the workspace itself when `app/` isn't present yet.
+COPY pyproject.toml uv.lock README.md ./
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --extra dev --no-install-project
+
+# ---------- dev (default target) ----------
+FROM deps AS dev
+
+# Project source. Keep these in their own layer so an `app/` edit doesn't
+# invalidate the (much heavier) deps layer above.
+COPY app/ ./app/
+COPY alembic/ ./alembic/
+COPY alembic.ini ./
+COPY scripts/ ./scripts/
+
+# Now register the project itself against the existing venv. Cheap — deps are
+# cached above, only the project's editable install runs.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --extra dev
+
+EXPOSE 8123
+
+# Inline entrypoint:
+#   1. Wait for Postgres? — handled by `depends_on: condition: service_healthy`
+#      in docker-compose; the container only starts after pg_isready is green.
+#   2. Run migrations (forward-only — idempotent if already applied).
+#   3. Hand off to uvicorn with --reload for the dev hot-loop.
+ENTRYPOINT ["sh", "-c", "uv run alembic upgrade head && exec uv run uvicorn app.main:app --host 0.0.0.0 --port 8123 --reload"]
+
+# ---------- prod ----------
+FROM dev AS prod
+
+# Re-sync WITHOUT the dev extra to drop pytest/ruff/mypy/pyright from the image.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen
+
+# No --reload in prod. The migration step stays — first container of a new
+# release applies migrations idempotently; subsequent containers see "no-op".
+ENTRYPOINT ["sh", "-c", "uv run alembic upgrade head && exec uv run uvicorn app.main:app --host 0.0.0.0 --port 8123"]
