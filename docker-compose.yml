@@ -15,7 +15,109 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks: [forecastlab]
     restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      target: dev
+    container_name: forecastlab-backend
+    env_file: .env
+    # The `environment:` block wins over `env_file` (OS env > .env), so these
+    # override the host-mode defaults baked into `.env`. Inside the network the
+    # DB hostname is `postgres` on the container port 5432 — NOT localhost:5433.
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://forecastlab:forecastlab@postgres:5432/forecastlab"
+      OLLAMA_BASE_URL: "http://ollama:11434"
+      APP_ENV: "development"
+    ports:
+      - "8123:8123"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8123/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # uvicorn boot + alembic upgrade takes ~5-15s cold; give it 30s before
+      # the first probe so a slow first boot doesn't mark the service unhealthy.
+      start_period: 30s
+    volumes:
+      # Hot-reload bind-mounts: source edits trigger uvicorn --reload. The
+      # image is self-sufficient (it COPYs app/ and alembic/), so the mounts
+      # are a development convenience layered ON TOP of the baked image.
+      - ./app:/app/app
+      - ./alembic:/app/alembic
+      - forecastlab_artifacts:/app/artifacts
+    networks: [forecastlab]
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      target: dev
+    container_name: forecastlab-frontend
+    # The BROWSER is the consumer of these URLs, never another container.
+    # The browser reaches the backend via the host-published port 8123, so
+    # the origin stays `http://localhost:8123` even in compose mode.
+    environment:
+      VITE_API_BASE_URL: "http://localhost:8123"
+      VITE_WS_URL: "ws://localhost:8123/agents/stream"
+    ports:
+      - "5173:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+    # Node 22's built-in `fetch` doubles as a healthcheck — no curl/wget
+    # dependency in the dev image. Vite's first compile takes a few seconds,
+    # so start_period gives it slack before the first probe.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:5173/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    volumes:
+      # Source bind-mounts so a frontend edit triggers Vite HMR. Same
+      # belt-and-suspenders pattern as the backend: the image bakes the source,
+      # the mounts overlay live edits on top.
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/index.html:/app/index.html
+      - ./frontend/vite.config.ts:/app/vite.config.ts
+    networks: [forecastlab]
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: forecastlab-ollama
+    # Gated by the `gpu` profile — non-GPU laptops never start this service.
+    # The override file `docker-compose.gpu.yml` adds NVIDIA device reservations.
+    profiles: ["gpu"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - forecastlab_ollama_models:/root/.ollama
+    healthcheck:
+      # `/api/tags` returns 200 even with zero models pulled, so it's a good
+      # readiness probe.
+      test: ["CMD", "curl", "-fsS", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks: [forecastlab]
+    restart: unless-stopped
+
+networks:
+  forecastlab:
+    driver: bridge
 
 volumes:
   forecastlab_pgdata:
+  forecastlab_ollama_models:
+  forecastlab_artifacts:
