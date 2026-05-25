@@ -18,7 +18,7 @@ from datetime import date, datetime
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from app.features.batch.models import BatchItemStatus, BatchOperation, BatchStatus
 
@@ -162,7 +162,14 @@ class BatchItemResponse(BaseModel):
 
 
 class BatchSubmitResponse(BaseModel):
-    """Parent batch record — returned by submit + GET /batch/{id}."""
+    """Parent batch record — returned by submit + GET /batch/{id}.
+
+    ``effective_max_parallel`` is a :func:`computed_field` resolved from
+    ``result_summary["effective_max_parallel"]`` — the PRP-34 runner writes
+    that key on every batch it executes. Legacy batches (pre-PRP-34) and any
+    batch where the key is missing return ``0``. Storing the value in JSONB
+    (rather than a real column) means PRP-34 ships with NO Alembic migration.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -174,11 +181,28 @@ class BatchSubmitResponse(BaseModel):
     failed_items: int
     running_items: int
     cancelled_items: int
+    max_parallel: int
     started_at: datetime | None
     completed_at: datetime | None
     result_summary: dict[str, Any] | None
     created_at: datetime
     updated_at: datetime
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def effective_max_parallel(self) -> int:
+        """Resolved ``min(max_parallel, settings.batch_global_max_parallel)``.
+
+        The PRP-34 runner persists this under ``result_summary`` on settle.
+        Returns ``0`` for legacy pre-PRP-34 rows or where the key is missing.
+        """
+        if self.result_summary is None:
+            return 0
+        value = self.result_summary.get("effective_max_parallel", 0)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
 
 
 class BatchItemListResponse(BaseModel):

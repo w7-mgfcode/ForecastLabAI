@@ -103,11 +103,28 @@ VALID_BATCH_TRANSITIONS: dict[BatchStatus, set[BatchStatus]] = {
 
 VALID_BATCH_ITEM_TRANSITIONS: dict[BatchItemStatus, set[BatchItemStatus]] = {
     BatchItemStatus.PENDING: {BatchItemStatus.RUNNING, BatchItemStatus.CANCELLED},
-    BatchItemStatus.RUNNING: {BatchItemStatus.COMPLETED, BatchItemStatus.FAILED},
+    # PRP-34 added ``RUNNING → CANCELLED`` so a child that observes
+    # ``CancelledError`` mid-flight can write its terminal state truthfully —
+    # the PRP-33 MVP runner never wrote ``CANCELLED`` so the path was unused.
+    BatchItemStatus.RUNNING: {
+        BatchItemStatus.COMPLETED,
+        BatchItemStatus.FAILED,
+        BatchItemStatus.CANCELLED,
+    },
     BatchItemStatus.COMPLETED: set(),
     BatchItemStatus.FAILED: set(),
     BatchItemStatus.CANCELLED: set(),
 }
+
+
+# Derived from the state machine: a status with no out-edges is terminal. The
+# PRP-34 ``DELETE /batch/{batch_id}`` route reads this constant — keeping the
+# definition next to the dict guarantees any future state-machine edit (e.g.,
+# a re-open path) updates the cancel surface at the same time.
+TERMINAL_BATCH_STATES: frozenset[BatchStatus] = frozenset(
+    status for status, out_edges in VALID_BATCH_TRANSITIONS.items() if not out_edges
+)
+"""Statuses a parent batch cannot transition out of. The cancel-route 409 set."""
 
 
 class BatchJob(TimestampMixin, Base):

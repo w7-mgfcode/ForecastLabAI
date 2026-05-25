@@ -298,6 +298,17 @@ export type BatchStatus =
   | 'partial'
   | 'cancelled'
 
+// Terminal parent statuses — mirrors ``TERMINAL_BATCH_STATES`` derived from
+// the backend ``VALID_BATCH_TRANSITIONS`` state machine. Any UI that needs
+// to gate on "this batch is settled" reads from here so the API and UI
+// definitions cannot drift.
+export const TERMINAL_BATCH_STATES: ReadonlySet<BatchStatus> = new Set([
+  'completed',
+  'failed',
+  'partial',
+  'cancelled',
+])
+
 export type BatchItemStatus =
   | 'pending'
   | 'running'
@@ -352,6 +363,10 @@ export interface BatchSubmitResponse {
   failed_items: number
   running_items: number
   cancelled_items: number
+  max_parallel: number
+  // PRP-34: resolved server-side from
+  // result_summary.effective_max_parallel — 0 for legacy pre-PRP-34 rows.
+  effective_max_parallel: number
   started_at: string | null
   completed_at: string | null
   result_summary: Record<string, unknown> | null

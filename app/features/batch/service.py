@@ -26,8 +26,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
 from app.core.config import get_settings
+from app.core.database import get_session_maker
 from app.core.exceptions import ValidationError
 from app.core.logging import get_logger
+from app.features.batch import runner
 from app.features.batch.models import (
     BatchItemStatus,
     BatchJob,
@@ -118,6 +120,7 @@ class BatchService:
             max_parallel=req.max_parallel,
         )
         db.add(batch)
+        inserted_items: list[BatchJobItem] = []
         for store_id, product_id, mc in triples:
             item = BatchJobItem(
                 item_id=uuid.uuid4().hex,
@@ -130,6 +133,7 @@ class BatchService:
                 params=self._frozen_item_params(req, store_id, product_id, mc),
             )
             db.add(item)
+            inserted_items.append(item)
         await db.commit()
         await db.refresh(batch)
 
@@ -145,19 +149,50 @@ class BatchService:
         batch.started_at = datetime.now(UTC)
         await db.commit()
 
-        # 3. Loop the picker until no PENDING item remains. The explicit
-        # ``BatchJobItem | None`` annotation prevents mypy from re-narrowing
-        # ``item`` to ``BatchJobItem`` on the second iteration after the
-        # first ``if item is None: break`` branch.
-        while True:
-            next_item: BatchJobItem | None = await self._pick_next(db, batch.batch_id)
-            if next_item is None:
-                break
-            await self._execute_item(db, next_item)
+        # 3. Run the batch through the PRP-34 bounded-concurrency runner. A
+        # SHARED session_maker is created once and passed to every child so
+        # the SQLAlchemy connection pool is shared (pool_size=5,
+        # max_overflow=10 by default — sufficient headroom for
+        # batch_global_max_parallel ≤ 12; see
+        # PRPs/ai_docs/asyncio-taskgroup-cancellation.md § "SQLAlchemy async
+        # pool defaults").
+        session_maker_local = get_session_maker()
 
-        # 4. Settle the parent.
-        await self._settle(db, batch)
-        await db.refresh(batch)
+        async def _exec_one(item_id: str) -> None:
+            """Per-child: open own session, fetch item, delegate to _execute_item.
+
+            Each child owns its own ``AsyncSession`` — never share the
+            request's ``db`` here, that would corrupt SQLAlchemy's
+            identity map across concurrent children.
+            """
+            async with session_maker_local() as child_session:
+                item = (
+                    await child_session.execute(
+                        select(BatchJobItem).where(BatchJobItem.item_id == item_id)
+                    )
+                ).scalar_one()
+                await self._execute_item(child_session, item)
+
+        effective_max_parallel = 0
+        try:
+            effective_max_parallel = await runner.run_batch(
+                batch_id=batch.batch_id,
+                item_ids=[it.item_id for it in inserted_items],
+                max_parallel=req.max_parallel,
+                global_max_parallel=self.settings.batch_global_max_parallel,
+                session_maker=session_maker_local,
+                execute_item=_exec_one,
+            )
+        finally:
+            # 4. Settle the parent regardless of how the runner exited. Pass
+            # ``effective_max_parallel`` so the JSONB result_summary carries
+            # the value PRP-34's BatchSubmitResponse.effective_max_parallel
+            # computed_field reads at serialisation time.
+            await self._settle(db, batch, effective_max_parallel=effective_max_parallel)
+            await db.refresh(batch)
+            # Unblock any DELETE /batch/{batch_id} waiter — must happen AFTER
+            # settle so the drained handler observes the settled parent.
+            runner.mark_completed(batch.batch_id)
 
         logger.info(
             "batch.completed",
@@ -165,6 +200,8 @@ class BatchService:
             status=batch.status,
             completed_items=batch.completed_items,
             failed_items=batch.failed_items,
+            cancelled_items=batch.cancelled_items,
+            effective_max_parallel=effective_max_parallel,
         )
 
         return BatchSubmitResponse.model_validate(batch)
@@ -347,13 +384,24 @@ class BatchService:
             "sample_size": sample_size,
         }
 
-    async def _settle(self, db: AsyncSession, batch: BatchJob) -> None:
+    async def _settle(
+        self,
+        db: AsyncSession,
+        batch: BatchJob,
+        effective_max_parallel: int = 0,
+    ) -> None:
         """Aggregate per-status counts and settle the parent.
 
         - all COMPLETED → ``completed``
         - all FAILED → ``failed``
-        - mixed (>=1 of each) → ``partial``
+        - all CANCELLED (≥1 cancel, no other terminal) → ``cancelled``
+        - mixed COMPLETED + FAILED → ``partial``
         - 0 items (degenerate empty batch) → ``completed`` (vacuous)
+
+        ``effective_max_parallel`` is stored in the JSONB ``result_summary``
+        so the PRP-34 ``BatchSubmitResponse.effective_max_parallel``
+        computed_field can resolve it at response-time without an Alembic
+        migration.
         """
         stmt = (
             select(BatchJobItem.status, func.count())
@@ -367,16 +415,23 @@ class BatchService:
         failed = counts.get(BatchItemStatus.FAILED.value, 0)
         cancelled = counts.get(BatchItemStatus.CANCELLED.value, 0)
 
-        if completed > 0 and failed == 0:
+        if cancelled > 0 and completed == 0 and failed == 0:
+            # PRP-34: a cancel that fired before any sibling completed
+            # settles the parent to CANCELLED so the operator's intent is
+            # preserved.
+            final = BatchStatus.CANCELLED
+        elif completed > 0 and failed == 0 and cancelled == 0:
             final = BatchStatus.COMPLETED
-        elif failed > 0 and completed == 0:
+        elif failed > 0 and completed == 0 and cancelled == 0:
             final = BatchStatus.FAILED
-        elif completed > 0 and failed > 0:
+        elif completed > 0 or failed > 0:
+            # Mixed terminals: any of (completed, failed, cancelled) > 0
+            # with COMPLETED or FAILED also present → PARTIAL.
             final = BatchStatus.PARTIAL
         else:
-            # No completed + no failed: empty batch or all-cancelled. Treat
-            # as ``completed`` (vacuous) — the integration test asserts on
-            # completed_items=N, not on status when items=0.
+            # No completed + no failed + no cancelled: empty batch. Treat as
+            # ``completed`` (vacuous) — preserves the PRP-33 invariant the
+            # integration test asserts on.
             final = BatchStatus.COMPLETED
 
         batch.status = final.value
@@ -387,6 +442,7 @@ class BatchService:
         batch.result_summary = {
             "by_status": counts,
             "final_status": final.value,
+            "effective_max_parallel": effective_max_parallel,
         }
         await db.commit()
 
