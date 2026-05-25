@@ -16,8 +16,8 @@ migration:
 - ``batch_job_item.priority`` — downstream-2 (MVP NORMAL only)
 
 The partial picker index ``ix_batch_job_item_picker`` (``WHERE status =
-'pending'``) is created in the Alembic migration, not here — SQLAlchemy's
-``Index()`` cannot express a portable partial predicate.
+'pending'``) is declared on the model with ``postgresql_where`` so the
+Alembic autogenerate drift check sees it alongside the migration.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ from sqlalchemy import (
     Integer,
     SmallInteger,
     String,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -212,6 +213,12 @@ class BatchJobItem(TimestampMixin, Base):
         ),
         Index("ix_batch_job_item_batch_status", "batch_id", "status"),
         Index("ix_batch_job_item_metrics_gin", "metrics", postgresql_using="gin"),
-        # Partial picker index (postgresql_where) lives in the Alembic migration —
-        # SQLAlchemy's Index() lacks a portable partial-predicate kwarg.
+        Index(
+            "ix_batch_job_item_picker",
+            "batch_id",
+            "status",
+            "priority",
+            "created_at",
+            postgresql_where=text("status = 'pending'"),
+        ),
     )
