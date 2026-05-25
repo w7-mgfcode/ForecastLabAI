@@ -50,9 +50,11 @@ def test_valid_transitions_dict_item() -> None:
         BatchItemStatus.RUNNING,
         BatchItemStatus.CANCELLED,
     }
+    # PRP-34 added ``RUNNING → CANCELLED`` for the cooperative-cancel path.
     assert VALID_BATCH_ITEM_TRANSITIONS[BatchItemStatus.RUNNING] == {
         BatchItemStatus.COMPLETED,
         BatchItemStatus.FAILED,
+        BatchItemStatus.CANCELLED,
     }
     for terminal in (
         BatchItemStatus.COMPLETED,
