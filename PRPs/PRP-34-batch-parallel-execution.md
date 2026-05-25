@@ -551,7 +551,7 @@ CREATE app/features/batch/tests/test_runner.py:
       test_cancel_pending_child_marks_cancelled_without_running
         - max_parallel=1, 3 items. After first starts, cancel event fires.
         - Assert items 2 and 3 transition pending → cancelled, never opened a session.
-      test_cancel_running_child_propagates_cancellederror
+      test_cancel_running_child_propagates_cancelled_error
         - One child sleeps 1s; cancel after 0.05s. Child observes CancelledError, finally block writes cancelled.
 
 Task 9 — Cancel-endpoint route tests
@@ -871,7 +871,7 @@ uv run pytest -v -m "not integration" app/features/batch/
 #  app/features/batch/tests/test_runner.py::test_settings_global_cap_clamps_max_parallel PASSED
 #  app/features/batch/tests/test_runner.py::test_child_failure_does_not_abort_siblings PASSED
 #  app/features/batch/tests/test_runner.py::test_cancel_pending_child_marks_cancelled_without_running PASSED
-#  app/features/batch/tests/test_runner.py::test_cancel_running_child_propagates_cancellederror PASSED
+#  app/features/batch/tests/test_runner.py::test_cancel_running_child_propagates_cancelled_error PASSED
 #  app/features/batch/tests/test_routes_cancel.py::test_delete_404_unknown_batch PASSED
 #  app/features/batch/tests/test_routes_cancel.py::test_delete_409_terminal_batch PASSED
 #  app/features/batch/tests/test_routes_cancel.py::test_delete_504_drain_timeout PASSED

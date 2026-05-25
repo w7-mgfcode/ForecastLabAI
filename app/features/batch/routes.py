@@ -18,23 +18,13 @@ from app.core.database import get_db
 from app.core.exceptions import ConflictError, GatewayTimeoutError, NotFoundError
 from app.core.logging import get_logger
 from app.features.batch import runner
-from app.features.batch.models import BatchStatus
+from app.features.batch.models import TERMINAL_BATCH_STATES
 from app.features.batch.schemas import (
     BatchItemListResponse,
     BatchSubmitRequest,
     BatchSubmitResponse,
 )
 from app.features.batch.service import BatchService
-
-# PRP-34 — parent statuses that block ``DELETE /batch/{batch_id}`` with a 409.
-_TERMINAL_BATCH_STATES: frozenset[str] = frozenset(
-    {
-        BatchStatus.COMPLETED.value,
-        BatchStatus.FAILED.value,
-        BatchStatus.PARTIAL.value,
-        BatchStatus.CANCELLED.value,
-    }
-)
 
 logger = get_logger(__name__)
 
@@ -110,7 +100,7 @@ async def cancel_batch_route(
             message=f"Batch not found: {batch_id}",
             details={"batch_id": batch_id},
         )
-    if parent.status.value in _TERMINAL_BATCH_STATES:
+    if parent.status in TERMINAL_BATCH_STATES:
         raise ConflictError(
             message=f"Batch already terminal: {parent.status.value}",
             details={"batch_id": batch_id, "status": parent.status.value},

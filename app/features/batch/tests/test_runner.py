@@ -12,8 +12,9 @@ docker-compose. The DB invariants those helpers guard (no orphaned
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from typing import Any, cast
-from unittest.mock import Mock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -34,6 +35,8 @@ def patch_db_helpers(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
 
     Returns a call-tracker dict the test can read to assert which helper
     fired for which item — the only contract this fixture cares about.
+    The helpers now accept an ``AsyncSession`` (refactor per code review)
+    but the unit tests don't exercise SQL — the session arg is ignored.
     """
     calls: dict[str, list[Any]] = {
         "bump_running": [],
@@ -42,16 +45,16 @@ def patch_db_helpers(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
         "mark_failed_unexpected": [],
     }
 
-    async def _bump_running(session_maker: Any, batch_id: str, delta: int) -> None:
+    async def _bump_running(_session: Any, batch_id: str, delta: int) -> None:
         calls["bump_running"].append((batch_id, delta))
 
-    async def _mark_cancelled_skipped(session_maker: Any, item_id: str) -> None:
+    async def _mark_cancelled_skipped(_session: Any, item_id: str) -> None:
         calls["mark_cancelled_skipped"].append(item_id)
 
-    async def _mark_cancelled_running(session_maker: Any, item_id: str) -> None:
+    async def _mark_cancelled_running(_session: Any, item_id: str) -> None:
         calls["mark_cancelled_running"].append(item_id)
 
-    async def _mark_failed_unexpected(session_maker: Any, item_id: str) -> None:
+    async def _mark_failed_unexpected(_session: Any, item_id: str) -> None:
         calls["mark_failed_unexpected"].append(item_id)
 
     monkeypatch.setattr(runner, "_bump_running", _bump_running)
@@ -62,8 +65,21 @@ def patch_db_helpers(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
 
 
 def _fake_session_maker() -> Any:
-    """A Mock the patched helpers never actually call — typed ``Any``."""
-    return cast(Any, Mock())
+    """An ``async_sessionmaker``-shaped callable that yields a Mock session.
+
+    ``runner.run_batch`` calls ``session_maker()`` and uses the result as an
+    async context manager (``async with session_maker() as session:``). The
+    Mock session is never touched because the patched helpers ignore it.
+    """
+
+    @asynccontextmanager
+    async def _ctx() -> Any:
+        yield AsyncMock()
+
+    def _maker() -> Any:
+        return _ctx()
+
+    return cast(Any, _maker)
 
 
 # ---------------------------------------------------------------- semaphore
@@ -212,7 +228,7 @@ async def test_cancel_pending_child_marks_cancelled_without_running(
     assert started == ["i0"]
 
 
-async def test_cancel_running_child_propagates_cancellederror(
+async def test_cancel_running_child_propagates_cancelled_error(
     patch_db_helpers: dict[str, list[Any]],
 ) -> None:
     """A running child observes CancelledError; finally block writes cancelled."""

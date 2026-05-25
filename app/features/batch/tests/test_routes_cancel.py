@@ -67,6 +67,54 @@ async def test_delete_409_terminal_batch(
     assert body["code"] == "CONFLICT"
 
 
+async def test_delete_200_clean_drain(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Happy-path DELETE: registered handle, drain succeeds immediately, 200.
+
+    Seeds a ``running`` parent row and pre-fires the registry handle's
+    ``completed_event`` so the route's ``runner.await_drain`` returns
+    ``True`` without waiting — the same observable shape as
+    ``BatchService.submit`` finishing settle and calling ``mark_completed``
+    a microsecond before the DELETE handler's drain check. Verifies the
+    route then reloads the parent and serialises a 200 ``BatchSubmitResponse``.
+
+    The genuine *mid-flight* cancel-and-drain path is covered end-to-end
+    by ``test_runner_chaos.test_cancel_mid_flight_does_not_orphan_running_items``.
+    """
+    batch = BatchJob(
+        batch_id="test_200_drain",
+        operation="backtest",
+        scope={"kind": "manual"},
+        model_configs=[],
+        status=BatchStatus.RUNNING.value,
+        total_items=0,
+        params={},
+        max_parallel=4,
+    )
+    db_session.add(batch)
+    await db_session.commit()
+
+    handle = runner.CancelHandle()
+    handle.completed_event.set()  # drain returns True immediately
+    runner._ACTIVE_BATCHES["test_200_drain"] = handle
+
+    try:
+        resp = await client.delete("/batch/test_200_drain")
+        assert resp.status_code == 200, resp.text
+        assert resp.headers["content-type"].startswith("application/json")
+        body = resp.json()
+        assert body["batch_id"] == "test_200_drain"
+        assert body["max_parallel"] == 4
+        # The parent was never run through _settle, so it stays ``running``
+        # — the route's contract is "return the current parent record after
+        # drain", not "force settle"; settle is the submit handler's job.
+        assert body["status"] == "running"
+    finally:
+        runner._ACTIVE_BATCHES.pop("test_200_drain", None)
+
+
 async def test_delete_504_drain_timeout(
     client: AsyncClient,
     db_session: AsyncSession,

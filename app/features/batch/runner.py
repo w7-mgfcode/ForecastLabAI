@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from app.core.logging import get_logger
 from app.features.batch.models import (
@@ -88,12 +88,16 @@ async def run_batch(
         max_parallel: per-batch cap declared in ``batch_job.max_parallel``.
         global_max_parallel: host-wide cap from
             :attr:`app.core.config.Settings.batch_global_max_parallel`.
-        session_maker: shared ``async_sessionmaker`` — each child opens its
-            own ``AsyncSession`` from this maker; reusing the request's
-            session would corrupt SQLAlchemy's identity map.
-        execute_item: one-arg coroutine the caller provides. It opens its
-            own ``AsyncSession`` from the same ``session_maker`` and runs
-            the batch item's work (e.g., delegating to ``JobService``).
+        session_maker: shared ``async_sessionmaker`` — each child opens
+            **one** ``AsyncSession`` from this maker and reuses it for the
+            DB writes the runner emits (state transitions + ``running_items``
+            counter). The caller-supplied ``execute_item`` opens its own
+            session from the same maker (the runner does not pass its
+            session in — keeps the contract symmetric with
+            ``BatchService._execute_item``).
+        execute_item: one-arg coroutine the caller provides. Opens its own
+            ``AsyncSession`` from the same ``session_maker`` and runs the
+            batch item's work (e.g., delegating to ``JobService``).
 
     Returns:
         ``effective_max_parallel = min(max_parallel, global_max_parallel)``.
@@ -120,58 +124,64 @@ async def run_batch(
     )
 
     async def _child(item_id: str) -> None:
-        # FAST-CANCEL before semaphore acquire — skips not-yet-started work
-        # cleanly (the cancel_event check is sync; no await window for a
-        # late ``task.cancel()`` to interrupt).
-        if handle.cancel_event.is_set():
-            await _mark_cancelled_skipped(session_maker, item_id)
-            return
+        # One ``AsyncSession`` per child — used for every DB write the runner
+        # emits below. Each helper commits its own UPDATE on this session so
+        # individual state transitions are visible to concurrent observers
+        # (``running_items`` counter is observable to DELETE handlers, etc.).
+        async with session_maker() as session:
+            # FAST-CANCEL before semaphore acquire — skips not-yet-started
+            # work cleanly (the cancel_event check is sync; no await window
+            # for a late ``task.cancel()`` to interrupt).
+            if handle.cancel_event.is_set():
+                await _mark_cancelled_skipped(session, item_id)
+                return
 
-        # ``acquired`` tracks whether we entered the semaphore-guarded body.
-        # When ``task.cancel()`` fires while we are *waiting* on the
-        # semaphore, ``async with sem:`` raises ``CancelledError`` before
-        # the inner re-check runs; the outer except below routes the item
-        # to ``mark_cancelled_skipped`` so the cancel surface is consistent.
-        acquired = False
-        try:
-            async with sem:
-                acquired = True
-                # Re-check after acquire — a sibling may have signalled
-                # cancel while we waited on the semaphore.
-                if handle.cancel_event.is_set():
-                    await _mark_cancelled_skipped(session_maker, item_id)
-                    return
-                await _bump_running(session_maker, batch_id, +1)
-                try:
-                    await execute_item(item_id)
-                except asyncio.CancelledError:
-                    # ``execute_item`` catches ``Exception`` but NOT
-                    # ``BaseException``; ``CancelledError`` (BaseException
-                    # in 3.8+) bubbles up cleanly. Persist the cancelled
-                    # terminal state before re-raising so the TaskGroup
-                    # absorbs the cancel.
-                    await _mark_cancelled_running(session_maker, item_id)
-                    raise
-                except Exception:
-                    # Defensive: ``execute_item`` should have persisted its
-                    # own failure; if it didn't, mark FAILED so the parent
-                    # settle aggregates correctly. Do NOT re-raise — that
-                    # would tear down sibling children
-                    # (test_child_failure_does_not_abort_siblings).
-                    logger.exception(
-                        "batch.runner_unexpected_child_error",
-                        batch_id=batch_id,
-                        item_id=item_id,
-                    )
-                    await _mark_failed_unexpected(session_maker, item_id)
-                finally:
-                    await _bump_running(session_maker, batch_id, -1)
-        except asyncio.CancelledError:
-            if not acquired:
-                # Cancel reached us before we entered the semaphore body —
-                # never started work, never bumped running_items.
-                await _mark_cancelled_skipped(session_maker, item_id)
-            raise
+            # ``acquired`` tracks whether we entered the semaphore-guarded
+            # body. When ``task.cancel()`` fires while we are *waiting* on
+            # the semaphore, ``async with sem:`` raises ``CancelledError``
+            # before the inner re-check runs; the outer except below routes
+            # the item to ``mark_cancelled_skipped`` so the cancel surface
+            # is consistent.
+            acquired = False
+            try:
+                async with sem:
+                    acquired = True
+                    # Re-check after acquire — a sibling may have signalled
+                    # cancel while we waited on the semaphore.
+                    if handle.cancel_event.is_set():
+                        await _mark_cancelled_skipped(session, item_id)
+                        return
+                    await _bump_running(session, batch_id, +1)
+                    try:
+                        await execute_item(item_id)
+                    except asyncio.CancelledError:
+                        # ``execute_item`` catches ``Exception`` but NOT
+                        # ``BaseException``; ``CancelledError`` (BaseException
+                        # in 3.8+) bubbles up cleanly. Persist the cancelled
+                        # terminal state before re-raising so the TaskGroup
+                        # absorbs the cancel.
+                        await _mark_cancelled_running(session, item_id)
+                        raise
+                    except Exception:
+                        # Defensive: ``execute_item`` should have persisted
+                        # its own failure; if it didn't, mark FAILED so the
+                        # parent settle aggregates correctly. Do NOT
+                        # re-raise — that would tear down sibling children
+                        # (test_child_failure_does_not_abort_siblings).
+                        logger.exception(
+                            "batch.runner_unexpected_child_error",
+                            batch_id=batch_id,
+                            item_id=item_id,
+                        )
+                        await _mark_failed_unexpected(session, item_id)
+                    finally:
+                        await _bump_running(session, batch_id, -1)
+            except asyncio.CancelledError:
+                if not acquired:
+                    # Cancel reached us before we entered the semaphore body
+                    # — never started work, never bumped running_items.
+                    await _mark_cancelled_skipped(session, item_id)
+                raise
 
     try:
         async with asyncio.TaskGroup() as tg:
@@ -246,6 +256,9 @@ async def await_drain(batch_id: str, timeout_seconds: float) -> bool:
         )
         return True
     except TimeoutError:
+        # ``asyncio.TimeoutError`` is aliased to the built-in ``TimeoutError``
+        # since Python 3.11 (PEP 678 / asyncio docs). The project pins
+        # Python >= 3.12, so this catch IS the asyncio.wait_for timeout.
         logger.warning(
             "batch.cancel_drain_timeout",
             batch_id=batch_id,
@@ -268,47 +281,46 @@ def mark_completed(batch_id: str) -> None:
 
 
 # --------------------------------------------------------------------- helpers
-# Each helper opens its own short-lived ``AsyncSession`` and commits a single
-# UPDATE. They do not call ``BatchService`` (would close an import cycle) and
-# they do not throw on missing rows (a race where the parent was deleted is
-# survivable — log + move on).
+# Each helper accepts an already-open ``AsyncSession`` (one per child;
+# managed by ``_child``) and commits its single UPDATE on that session. They
+# do NOT call ``BatchService`` (would close an import cycle) and they do not
+# raise on missing rows (a race where the parent was deleted is survivable
+# — log + move on).
 
 
 async def _bump_running(
-    session_maker: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
     batch_id: str,
     delta: int,
 ) -> None:
     """Atomically bump ``batch_job.running_items`` by ``delta`` (±1)."""
-    async with session_maker() as session:
-        await session.execute(
-            update(BatchJob)
-            .where(BatchJob.batch_id == batch_id)
-            .values(running_items=BatchJob.running_items + delta)
-        )
-        await session.commit()
+    await session.execute(
+        update(BatchJob)
+        .where(BatchJob.batch_id == batch_id)
+        .values(running_items=BatchJob.running_items + delta)
+    )
+    await session.commit()
 
 
 async def _mark_cancelled_skipped(
-    session_maker: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
     item_id: str,
 ) -> None:
     """Mark a not-yet-started item as cancelled (pending → cancelled)."""
     now = datetime.now(UTC)
-    async with session_maker() as session:
-        await session.execute(
-            update(BatchJobItem)
-            .where(BatchJobItem.item_id == item_id)
-            .values(
-                status=BatchItemStatus.CANCELLED.value,
-                completed_at=now,
-            )
+    await session.execute(
+        update(BatchJobItem)
+        .where(BatchJobItem.item_id == item_id)
+        .values(
+            status=BatchItemStatus.CANCELLED.value,
+            completed_at=now,
         )
-        await session.commit()
+    )
+    await session.commit()
 
 
 async def _mark_cancelled_running(
-    session_maker: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
     item_id: str,
 ) -> None:
     """Mark a running item as cancelled (running → cancelled).
@@ -318,51 +330,45 @@ async def _mark_cancelled_running(
     parent's ``running_items`` counter. The decrement happens in the
     surrounding ``finally`` block.
     """
-    from sqlalchemy import select
-
     now = datetime.now(UTC)
-    async with session_maker() as session:
-        row = (
-            await session.execute(
-                select(BatchJobItem.started_at).where(BatchJobItem.item_id == item_id)
-            )
-        ).first()
-        started_at = row[0] if row is not None else None
-        duration_ms = (
-            int((now - started_at).total_seconds() * 1000) if started_at is not None else None
-        )
+    row = (
         await session.execute(
-            update(BatchJobItem)
-            .where(BatchJobItem.item_id == item_id)
-            .values(
-                status=BatchItemStatus.CANCELLED.value,
-                completed_at=now,
-                duration_ms=duration_ms,
-            )
+            select(BatchJobItem.started_at).where(BatchJobItem.item_id == item_id)
         )
-        await session.commit()
+    ).first()
+    started_at = row[0] if row is not None else None
+    duration_ms = int((now - started_at).total_seconds() * 1000) if started_at is not None else None
+    await session.execute(
+        update(BatchJobItem)
+        .where(BatchJobItem.item_id == item_id)
+        .values(
+            status=BatchItemStatus.CANCELLED.value,
+            completed_at=now,
+            duration_ms=duration_ms,
+        )
+    )
+    await session.commit()
 
 
 async def _mark_failed_unexpected(
-    session_maker: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
     item_id: str,
 ) -> None:
     """Defensive: mark an item ``failed`` when ``execute_item`` raised an
     uncaught exception (its own ``except Exception`` should normally absorb).
     """
     now = datetime.now(UTC)
-    async with session_maker() as session:
-        await session.execute(
-            update(BatchJobItem)
-            .where(BatchJobItem.item_id == item_id)
-            .values(
-                status=BatchItemStatus.FAILED.value,
-                completed_at=now,
-                error_message="Runner caught unexpected exception (see structlog)",
-                error_type="UnexpectedRunnerError",
-            )
+    await session.execute(
+        update(BatchJobItem)
+        .where(BatchJobItem.item_id == item_id)
+        .values(
+            status=BatchItemStatus.FAILED.value,
+            completed_at=now,
+            error_message="Runner caught unexpected exception (see structlog)",
+            error_type="UnexpectedRunnerError",
         )
-        await session.commit()
+    )
+    await session.commit()
 
 
 __all__ = [

@@ -298,6 +298,17 @@ export type BatchStatus =
   | 'partial'
   | 'cancelled'
 
+// Terminal parent statuses — mirrors ``TERMINAL_BATCH_STATES`` derived from
+// the backend ``VALID_BATCH_TRANSITIONS`` state machine. Any UI that needs
+// to gate on "this batch is settled" reads from here so the API and UI
+// definitions cannot drift.
+export const TERMINAL_BATCH_STATES: ReadonlySet<BatchStatus> = new Set([
+  'completed',
+  'failed',
+  'partial',
+  'cancelled',
+])
+
 export type BatchItemStatus =
   | 'pending'
   | 'running'

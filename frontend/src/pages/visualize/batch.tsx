@@ -54,14 +54,10 @@ import {
   useCancelBatch,
   useSubmitBatch,
 } from '@/hooks/use-batches'
-import type { BatchStatus, BatchSubmitRequest } from '@/types/api'
-
-const TERMINAL_BATCH_STATES: ReadonlySet<BatchStatus> = new Set<BatchStatus>([
-  'completed',
-  'failed',
-  'partial',
-  'cancelled',
-])
+import {
+  TERMINAL_BATCH_STATES,
+  type BatchSubmitRequest,
+} from '@/types/api'
 
 export default function BatchRunnerPage() {
   // Last-submitted batch the page tracks. null = nothing yet.

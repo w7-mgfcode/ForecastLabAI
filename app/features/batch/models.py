@@ -117,6 +117,16 @@ VALID_BATCH_ITEM_TRANSITIONS: dict[BatchItemStatus, set[BatchItemStatus]] = {
 }
 
 
+# Derived from the state machine: a status with no out-edges is terminal. The
+# PRP-34 ``DELETE /batch/{batch_id}`` route reads this constant — keeping the
+# definition next to the dict guarantees any future state-machine edit (e.g.,
+# a re-open path) updates the cancel surface at the same time.
+TERMINAL_BATCH_STATES: frozenset[BatchStatus] = frozenset(
+    status for status, out_edges in VALID_BATCH_TRANSITIONS.items() if not out_edges
+)
+"""Statuses a parent batch cannot transition out of. The cancel-route 409 set."""
+
+
 class BatchJob(TimestampMixin, Base):
     """Parent batch record — one row per submission.
 
