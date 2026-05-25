@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.2.18](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.17...v0.2.18) (2026-05-25)
+
+
+### Features
+
+* **batch:** implement batch-runner MVP per PRP-33 ([#280](https://github.com/w7-mgfcode/ForecastLabAI/issues/280)) ([c495357](https://github.com/w7-mgfcode/ForecastLabAI/commit/c495357230c09f775ef0f7b57fafef34a818230c))
+* **batch:** implement batch-runner MVP per PRP-33 ([#280](https://github.com/w7-mgfcode/ForecastLabAI/issues/280)) ([73584c8](https://github.com/w7-mgfcode/ForecastLabAI/commit/73584c83b5f3aa0278c67b04c283101ee466e819))
+* **repo:** add backend + frontend Dockerfiles and .dockerignore ([#275](https://github.com/w7-mgfcode/ForecastLabAI/issues/275)) ([1946dfc](https://github.com/w7-mgfcode/ForecastLabAI/commit/1946dfcd7fd82f2ba1ab8cbc25022651e7874f7e))
+* **repo:** dockerize full stack ([#275](https://github.com/w7-mgfcode/ForecastLabAI/issues/275)) ([917a54c](https://github.com/w7-mgfcode/ForecastLabAI/commit/917a54cb4a955365b096586f8517a37cfb2bb67e))
+* **repo:** extend docker-compose for full stack + GPU profile ([#275](https://github.com/w7-mgfcode/ForecastLabAI/issues/275)) ([797e899](https://github.com/w7-mgfcode/ForecastLabAI/commit/797e899e4d2022b480dd11ef24e1eb097bc42e1c))
+
+
+### Bug Fixes
+
+* **batch:** clean leaked data-platform rows in test db_session ([#280](https://github.com/w7-mgfcode/ForecastLabAI/issues/280)) ([37dd038](https://github.com/w7-mgfcode/ForecastLabAI/commit/37dd03804d78e6065b76b7921721c4724689d709))
+* **batch:** declare partial picker index on model so autogenerate sees it ([#280](https://github.com/w7-mgfcode/ForecastLabAI/issues/280)) ([d8e6098](https://github.com/w7-mgfcode/ForecastLabAI/commit/d8e60982bc38fb0f285c63ffa8b76f56c2021230))
+* **db:** register batch models with alembic env for autogenerate ([#280](https://github.com/w7-mgfcode/ForecastLabAI/issues/280)) ([7403743](https://github.com/w7-mgfcode/ForecastLabAI/commit/7403743ea2eb88745f00cf816b7c1020b6f16d9f))
+* **forecast,docs:** address CodeRabbit feedback on PR [#266](https://github.com/w7-mgfcode/ForecastLabAI/issues/266) (3 quick wins) ([#267](https://github.com/w7-mgfcode/ForecastLabAI/issues/267)) ([5bc681a](https://github.com/w7-mgfcode/ForecastLabAI/commit/5bc681a4270940610f53fed857dbc21ca9383f27))
+
+
+### Documentation
+
+* **docs:** add tech-stack badges to README (shields.io for-the-badge) ([#273](https://github.com/w7-mgfcode/ForecastLabAI/issues/273)) ([c994842](https://github.com/w7-mgfcode/ForecastLabAI/commit/c99484205da679396d628cc25d70ac95b6eafbc8))
+* **docs:** add tech-stack badges to README (shields.io for-the-badge) ([#273](https://github.com/w7-mgfcode/ForecastLabAI/issues/273)) ([a06c32b](https://github.com/w7-mgfcode/ForecastLabAI/commit/a06c32ba1cc44b329ce712aa4db4235f3204a39b))
+* **docs:** MLZOO index — mark D as PRP-31 ([#280](https://github.com/w7-mgfcode/ForecastLabAI/issues/280)) ([d2c674a](https://github.com/w7-mgfcode/ForecastLabAI/commit/d2c674adda6f00b23e02614180b0c571df3110a2))
+* **docs:** refresh batch-parallel-execution INITIAL post-PRP-33 ([#280](https://github.com/w7-mgfcode/ForecastLabAI/issues/280)) ([c9428db](https://github.com/w7-mgfcode/ForecastLabAI/commit/c9428db113aab0ca590a46d884f8732f6f8f552d))
+* **docs:** refresh batch-parallel-execution INITIAL post-PRP-33 ([#280](https://github.com/w7-mgfcode/ForecastLabAI/issues/280)) ([631c7de](https://github.com/w7-mgfcode/ForecastLabAI/commit/631c7deaef8b275f6433d710f95b417865c6c893))
+* **docs:** update MLZOO index — mark D as PRP-31 ([#280](https://github.com/w7-mgfcode/ForecastLabAI/issues/280)) ([458bb9f](https://github.com/w7-mgfcode/ForecastLabAI/commit/458bb9f7f58c92e0108c2bb5926ab1b45c1afe04))
+* **repo:** add 5 batch-runner INITIAL docs ([1397261](https://github.com/w7-mgfcode/ForecastLabAI/commit/1397261a370986395da369e59bdc6fea2368fad8))
+* **repo:** add 5 batch-runner INITIAL docs ([#277](https://github.com/w7-mgfcode/ForecastLabAI/issues/277)) ([5925fc4](https://github.com/w7-mgfcode/ForecastLabAI/commit/5925fc458ff039ad24ececc7e1c435fd81b1f26f))
+* **repo:** add PRP-33 batch-runner-mvp ([#277](https://github.com/w7-mgfcode/ForecastLabAI/issues/277)) ([df90d22](https://github.com/w7-mgfcode/ForecastLabAI/commit/df90d22c21d73ea3c54fa6968a00be1026b690d7))
+* **repo:** add PRP-33 batch-runner-mvp ([#277](https://github.com/w7-mgfcode/ForecastLabAI/issues/277)) ([cb5c96e](https://github.com/w7-mgfcode/ForecastLabAI/commit/cb5c96e8eb06370260ce2bf5975e79d47334da29))
+* **repo:** document compose-mode stack and failure runbook ([#275](https://github.com/w7-mgfcode/ForecastLabAI/issues/275)) ([3ac976b](https://github.com/w7-mgfcode/ForecastLabAI/commit/3ac976b185181a6694764acc0fc00e4c4dab7372))
+
 ## [0.2.17](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.16...v0.2.17) (2026-05-20)
 
 
