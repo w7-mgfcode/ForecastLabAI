@@ -20,7 +20,7 @@ Recommended PRP sequence:
 | 2.5 | `INITIAL-MLZOO-B.2-feature-aware-backtesting.md` | PRP-MLZOO-B.2 | Wire feature-aware models into the backtesting fold loop (per-fold leakage-safe `X_train` / `X_future`) |
 | 3a | `INITIAL-MLZOO-C-xgboost-prophet-extensions.md` (XGBoost half) | PRP-MLZOO-C1 | XGBoost feature-aware model — a low-risk follow-up mirroring the merged LightGBM design (optional `ml-xgboost` extra) |
 | 3b | `INITIAL-MLZOO-C-xgboost-prophet-extensions.md` (Prophet-like half) | PRP-MLZOO-C2 | Prophet-like additive model — a distinct model-family design (pure scikit-learn; trend / seasonality / regressor decomposition) |
-| 4 | `INITIAL-MLZOO-D-frontend-registry-explainability.md` | Future PRP | UI, registry surfacing, and explanation polish |
+| 4 | `INITIAL-MLZOO-D-frontend-registry-explainability.md` | PRP-31 | UI, registry surfacing, and explanation polish |
 
 **C is two PRPs, not one.** `INITIAL-MLZOO-C` briefs both XGBoost and a Prophet-like model,
 but they are deliberately split into **two separate PRPs, branches, and review units** —
