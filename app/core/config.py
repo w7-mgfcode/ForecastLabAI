@@ -118,6 +118,9 @@ class Settings(BaseSettings):
     # Jobs
     jobs_retention_days: int = 30
 
+    # Batch runner (PRP-33) — cap on scope expansion (pairs x model_configs).
+    batch_max_scope_expansion: int = 1000
+
     # RAG Embedding Configuration
     rag_embedding_provider: Literal["openai", "ollama"] = "openai"
     openai_api_key: str = ""

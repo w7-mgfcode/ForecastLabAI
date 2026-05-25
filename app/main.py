@@ -16,6 +16,7 @@ from app.features.agents.routes import router as agents_router
 from app.features.agents.websocket import router as agents_ws_router
 from app.features.analytics.routes import router as analytics_router
 from app.features.backtesting.routes import router as backtesting_router
+from app.features.batch.routes import router as batch_router
 from app.features.config.routes import router as config_router
 from app.features.config.service import apply_overrides_on_startup
 from app.features.demo.routes import router as demo_router
@@ -138,6 +139,7 @@ def create_app() -> FastAPI:
     app.include_router(analytics_router)
     app.include_router(ops_router)
     app.include_router(jobs_router)
+    app.include_router(batch_router)
     app.include_router(ingest_router)
     app.include_router(featuresets_router)
     app.include_router(forecasting_router)
