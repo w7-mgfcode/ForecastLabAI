@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.19](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.18...v0.2.19) (2026-05-25)
+
+
+### Features
+
+* **batch,ui:** activate max_parallel + cooperative cancellation ([#290](https://github.com/w7-mgfcode/ForecastLabAI/issues/290)) ([7b844f4](https://github.com/w7-mgfcode/ForecastLabAI/commit/7b844f410b9649f2fbffe526dd305c8ad617e48b))
+* **batch,ui:** activate max_parallel + cooperative cancellation (PRP-34) ([36fff6e](https://github.com/w7-mgfcode/ForecastLabAI/commit/36fff6ed68d16a6aa166e4a0882aafec7d45f9ca))
+
+
+### Documentation
+
+* **docs:** add PRP-34 + asyncio ai_docs for batch parallel execution ([#290](https://github.com/w7-mgfcode/ForecastLabAI/issues/290)) ([f20f82d](https://github.com/w7-mgfcode/ForecastLabAI/commit/f20f82d51c9f74b9c2cc9570bd28c54ada99f9a0))
+
 ## [0.2.18](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.17...v0.2.18) (2026-05-25)
 
 
