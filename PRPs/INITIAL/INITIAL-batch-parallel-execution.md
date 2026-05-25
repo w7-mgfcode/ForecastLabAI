@@ -1,7 +1,7 @@
 # INITIAL-batch-parallel-execution.md — Parallel Execution Controls for the Portfolio Forecasting Batch Runner
 
 **Status:** proposed
-**Depends on:** `batch-runner-mvp` (parent `batch_job` + child `batch_job_item` + `POST /batch/forecasting` — **NEW**, not yet scaffolded)
+**Depends on:** PRP-33 batch-runner MVP (merged in #281).
 **Source feature doc:** `docs/optional-features/06-portfolio-forecasting-batch-runner.md` § Full Version → "Parallel execution controls"
 **Scope:** one Full-Version enhancement on top of the (unbuilt) batch-runner MVP — DB delta, backend service shape, API surface, frontend control, tests.
 
@@ -76,18 +76,18 @@ Rationale (2-3 sentences as required by the prompt): `asyncio.Semaphore` is the 
 
 ## Data Model Delta
 
-The MVP INITIAL will create the table; this INITIAL specifies the column it MUST include so the parallel-execution layer never needs a second migration to add it. Both the column and the MVP migration land together — this is not a follow-up migration (matches the source doc's "Full Version" framing).
+PRP-33 already shipped `max_parallel`, `running_items`, and `cancelled_items` on `batch_job` as **forward-compat columns** (see `app/features/batch/models.py:136-139` and migration `alembic/versions/c1d2e3f40512_create_batch_tables.py:49-51`). The MVP runner ignores `max_parallel` (it executes children serially) and never writes the two live counters; this PRP **activates** all three columns. No new migration is required.
 
-**`batch_job` columns this feature touches (column-level deltas only, MVP owns the rest of the schema):**
+**`batch_job` columns this feature activates (already in the schema):**
 
 | Column | Type | Default | Notes |
 |--------|------|---------|-------|
-| `max_parallel` | `Integer NOT NULL` | `4` (server-side default) | Per-batch concurrency cap. Bounded by `Settings.batch_global_max_parallel` at create-time validation. **NEW** — added by the MVP migration on the explicit instruction of this INITIAL. |
-| `running_items` | `Integer NOT NULL DEFAULT 0` | `0` | Live count, incremented when a child task enters the semaphore-acquired body, decremented on exit. Lets the UI show "X of Y in flight" without a `COUNT(*) WHERE status='running'` poll. **NEW** — added by the MVP migration. |
-| `cancelled_items` | `Integer NOT NULL DEFAULT 0` | `0` | Live count of items the operator cancelled. Mirrors `failed_items` / `completed_items` from the source doc § Data Model. **NEW** — MVP must include it (cancellation is a first-class lifecycle state in this plan). |
-| (existing MVP) `status` | `String(20)` | `'pending'` | This INITIAL adds two transitions to the MVP state machine — see § API Delta. |
+| `max_parallel` | `Integer NOT NULL` | `4` (server-side default) | Per-batch concurrency cap. Bounded by `Settings.batch_global_max_parallel` at create-time validation. **Shipped by PRP-33** — this PRP wires it into the runner. |
+| `running_items` | `Integer NOT NULL DEFAULT 0` | `0` | Live count, incremented when a child task enters the semaphore-acquired body, decremented on exit. Lets the UI show "X of Y in flight" without a `COUNT(*) WHERE status='running'` poll. **Shipped by PRP-33** — this PRP starts writing to it. |
+| `cancelled_items` | `Integer NOT NULL DEFAULT 0` | `0` | Live count of items the operator cancelled. Mirrors `failed_items` / `completed_items` from the source doc § Data Model. **Shipped by PRP-33** — this PRP starts writing to it once `DELETE /batch/{id}` lands. |
+| (existing MVP) `status` | `String(20)` | `'pending'` | This PRP adds two transitions to the MVP state machine — see § API Delta. |
 
-**Migration policy:** per `.claude/rules/security-patterns.md` ("Migrations are forward-only after merge") and `docs/_base/RULES.md`, the migration that ships the MVP table MUST already include these three columns. If the MVP migration lands without them, this INITIAL becomes infeasible without adding a forward-only migration; the MVP author MUST coordinate.
+**Migration policy:** per `.claude/rules/security-patterns.md` ("Migrations are forward-only after merge") and `docs/_base/RULES.md`, the three columns landed forward-only in the MVP migration. This PRP adds no new migration — it only adds behaviour against the existing schema.
 
 **No schema changes to `batch_job_item`** beyond what the MVP defines. Child cancellation is a status transition, not a schema change.
 
@@ -101,7 +101,7 @@ All requests/responses follow `.claude/rules/security-patterns.md` § "Pydantic 
 
 ```python
 # app/features/batch/schemas.py  (NEW — created by MVP)
-class BatchCreateRequest(BaseModel):
+class BatchSubmitRequest(BaseModel):
     model_config = ConfigDict(strict=True)
 
     # ... MVP fields: operation, scope, model_configs ...
@@ -122,7 +122,7 @@ A request with `max_parallel > settings.batch_global_max_parallel` is **accepted
 ### Response schema delta
 
 ```python
-class BatchResponse(BaseModel):
+class BatchSubmitResponse(BaseModel):
     # ... MVP fields: batch_id, operation, status, total_items, completed_items, failed_items, ... ...
 
     max_parallel: int           # requested value, echoed
@@ -155,7 +155,7 @@ running   →  cancelled                  (operator cancel DURING execution, chi
 
 ### `DELETE /batch/{batch_id}` — cancellation contract
 
-- 200: `BatchResponse` with parent `status='cancelled'` and per-child statuses settled.
+- 200: `BatchSubmitResponse` with parent `status='cancelled'` and per-child statuses settled.
 - 404: unknown batch_id.
 - 409: parent already in a terminal state (`completed`, `failed`, `partial`, `cancelled`) — nothing to cancel.
 
@@ -177,8 +177,8 @@ NEW slice: `app/features/batch/` per `.claude/rules/product-vision.md` § "Verti
 
 ```
 app/features/batch/
-├── models.py           # batch_job, batch_job_item (NEW — owned by MVP)
-├── schemas.py          # BatchCreateRequest / BatchResponse (NEW — owned by MVP)
+├── models.py           # batch_job, batch_job_item (shipped by PRP-33)
+├── schemas.py          # BatchSubmitRequest / BatchSubmitResponse (shipped by PRP-33)
 ├── service.py          # BatchRunnerService (NEW — this INITIAL fills in the runner)
 ├── runner.py           # NEW — semaphore + TaskGroup + registry of active batches
 ├── routes.py           # POST /batch/forecasting, GET /batch/{id}, DELETE /batch/{id} (NEW — MVP)
@@ -354,7 +354,7 @@ Per `.claude/rules/ui-design.md` and `.claude/rules/shadcn-ui.md`: drive UI work
 
 ### Type-safety gate
 
-The `src/types/api.ts` augmentation for `BatchResponse.max_parallel` / `effective_max_parallel` / `running_items` / `cancelled_items` MUST keep `pnpm tsc --noEmit` green (per `.claude/rules/test-requirements.md`).
+The `src/types/api.ts` augmentation for `BatchSubmitResponse.max_parallel` / `effective_max_parallel` / `running_items` / `cancelled_items` MUST keep `pnpm tsc --noEmit` green (per `.claude/rules/test-requirements.md`).
 
 ---
 
