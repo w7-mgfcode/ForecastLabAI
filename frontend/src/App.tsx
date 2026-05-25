@@ -25,6 +25,7 @@ const ForecastPage = lazy(() => import('@/pages/visualize/forecast'))
 const BacktestPage = lazy(() => import('@/pages/visualize/backtest'))
 const DemandPlannerPage = lazy(() => import('@/pages/visualize/demand'))
 const WhatIfPlannerPage = lazy(() => import('@/pages/visualize/planner'))
+const BatchRunnerPage = lazy(() => import('@/pages/visualize/batch'))
 const ChatPage = lazy(() => import('@/pages/chat'))
 const KnowledgePage = lazy(() => import('@/pages/knowledge'))
 const GuidePage = lazy(() => import('@/pages/guide'))
@@ -174,6 +175,14 @@ function App() {
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <WhatIfPlannerPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.VISUALIZE.BATCH}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <BatchRunnerPage />
                   </Suspense>
                 }
               />

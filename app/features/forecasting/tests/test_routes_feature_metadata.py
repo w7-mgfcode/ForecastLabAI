@@ -509,6 +509,30 @@ async def test_get_job_metadata_returns_422_for_missing_model_path(
     assert "model_path" in body["detail"]
 
 
+@pytest.mark.parametrize(
+    "bad_value",
+    [123, 12.5, True, [], {}, "", "   "],
+    ids=["int", "float", "bool", "list", "dict", "empty-string", "whitespace"],
+)
+@pytest.mark.asyncio
+async def test_get_job_metadata_returns_422_for_invalid_model_path_type(
+    monkeypatch: pytest.MonkeyPatch,
+    bad_value: object,
+) -> None:
+    monkeypatch.setattr(
+        JobService,
+        "get_job",
+        AsyncMock(return_value=_make_job(result={"model_path": bad_value})),
+    )
+    async with _client() as ac:
+        response = await ac.get("/forecasting/jobs/job-bad/feature-metadata")
+    assert response.status_code == 422
+    body = response.json()
+    _assert_problem_detail(body, 422)
+    assert body["code"] == "UNPROCESSABLE_ENTITY"
+    assert "model_path" in body["detail"]
+
+
 @pytest.mark.asyncio
 async def test_get_job_metadata_returns_422_for_deleted_artifact(
     monkeypatch: pytest.MonkeyPatch,
