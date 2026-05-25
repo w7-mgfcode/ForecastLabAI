@@ -48,7 +48,10 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Async database session for integration tests.
 
     Cleans up rows whose ``batch_id`` starts with ``test`` after each test —
-    cascade FK removes their child items automatically.
+    cascade FK removes their child items automatically. Also removes the
+    data-platform rows the seed fixtures create (`BATCH-%` stores / products,
+    the 2024-01-01..2024-04-29 calendar window, and any sales they touch) so
+    they don't leak into sibling test files — mirrors the backtesting conftest.
     """
     settings = get_settings()
     engine = create_async_engine(settings.database_url, echo=False)
@@ -62,6 +65,14 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
             # explicit batch_job_item DELETE handles orphans from prior failed runs.
             await session.execute(delete(BatchJobItem).where(BatchJobItem.batch_id.like("test%")))
             await session.execute(delete(BatchJob).where(BatchJob.batch_id.like("test%")))
+            await session.execute(delete(SalesDaily))
+            await session.execute(delete(Product).where(Product.sku.like("BATCH-%")))
+            await session.execute(delete(Store).where(Store.code.like("BATCH-%")))
+            await session.execute(
+                delete(Calendar).where(
+                    (Calendar.date >= date(2024, 1, 1)) & (Calendar.date <= date(2024, 4, 29))
+                )
+            )
             await session.commit()
     await engine.dispose()
 
