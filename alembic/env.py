@@ -13,6 +13,7 @@ from app.core.database import Base
 
 # Import all models for Alembic autogenerate detection
 from app.features.agents import models as agents_models  # noqa: F401
+from app.features.batch import models as batch_models  # noqa: F401
 from app.features.config import models as config_models  # noqa: F401
 from app.features.data_platform import models as data_platform_models  # noqa: F401
 from app.features.explainability import models as explainability_models  # noqa: F401
