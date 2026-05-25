@@ -103,7 +103,14 @@ VALID_BATCH_TRANSITIONS: dict[BatchStatus, set[BatchStatus]] = {
 
 VALID_BATCH_ITEM_TRANSITIONS: dict[BatchItemStatus, set[BatchItemStatus]] = {
     BatchItemStatus.PENDING: {BatchItemStatus.RUNNING, BatchItemStatus.CANCELLED},
-    BatchItemStatus.RUNNING: {BatchItemStatus.COMPLETED, BatchItemStatus.FAILED},
+    # PRP-34 added ``RUNNING → CANCELLED`` so a child that observes
+    # ``CancelledError`` mid-flight can write its terminal state truthfully —
+    # the PRP-33 MVP runner never wrote ``CANCELLED`` so the path was unused.
+    BatchItemStatus.RUNNING: {
+        BatchItemStatus.COMPLETED,
+        BatchItemStatus.FAILED,
+        BatchItemStatus.CANCELLED,
+    },
     BatchItemStatus.COMPLETED: set(),
     BatchItemStatus.FAILED: set(),
     BatchItemStatus.CANCELLED: set(),

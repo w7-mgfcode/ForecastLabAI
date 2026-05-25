@@ -24,6 +24,21 @@ export function useSubmitBatch() {
   })
 }
 
+// Cancel an in-flight batch (PRP-34). Server-side semantics — 200 settled
+// parent on clean drain, 404 if unknown, 409 if already terminal, 504 if
+// the drain exceeded ``Settings.batch_cancel_drain_timeout_seconds``.
+export function useCancelBatch() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (batchId: string) =>
+      api<BatchSubmitResponse>(`/batch/${batchId}`, { method: 'DELETE' }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(['batch', data.batch_id], data)
+      void queryClient.invalidateQueries({ queryKey: ['batch'] })
+    },
+  })
+}
+
 // Get a batch's parent record. Polls every 2s while the run is in-flight;
 // stops polling once the parent settles to a terminal state.
 export function useBatch(batchId: string | null, enabled = true) {

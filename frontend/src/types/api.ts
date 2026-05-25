@@ -352,6 +352,10 @@ export interface BatchSubmitResponse {
   failed_items: number
   running_items: number
   cancelled_items: number
+  max_parallel: number
+  // PRP-34: resolved server-side from
+  // result_summary.effective_max_parallel — 0 for legacy pre-PRP-34 rows.
+  effective_max_parallel: number
   started_at: string | null
   completed_at: string | null
   result_summary: Record<string, unknown> | null

@@ -121,6 +121,18 @@ class Settings(BaseSettings):
     # Batch runner (PRP-33) — cap on scope expansion (pairs x model_configs).
     batch_max_scope_expansion: int = 1000
 
+    # Batch runner concurrency (PRP-34) — hard upper bound on concurrent
+    # in-flight batch_job_item executions across all active batches on this
+    # host. Sized for the docker-compose Postgres pool (pool_size=5,
+    # max_overflow=10). Effective per-batch parallelism is
+    # min(batch_job.max_parallel, this). Env override:
+    # BATCH_GLOBAL_MAX_PARALLEL=8 — requires uvicorn restart.
+    batch_global_max_parallel: int = 4
+    # Max seconds DELETE /batch/{batch_id} waits for in-flight children to
+    # settle before returning RFC 7807 504. In-flight sklearn/LightGBM fits
+    # are uncancellable mid-call, so a long fit can stall the drain.
+    batch_cancel_drain_timeout_seconds: int = 30
+
     # RAG Embedding Configuration
     rag_embedding_provider: Literal["openai", "ollama"] = "openai"
     openai_api_key: str = ""

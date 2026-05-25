@@ -199,6 +199,30 @@ class UnprocessableEntityError(ForecastLabError):
         )
 
 
+class GatewayTimeoutError(ForecastLabError):
+    """504 — server's own internal drain or upstream wait exceeded its budget.
+
+    Use when a bounded server-side wait (e.g., ``DELETE /batch/{batch_id}``
+    draining in-flight children) exceeds its configured budget. Distinct from
+    a 408 client-timeout: the client did not time out, the server's own
+    drain budget did. The PRP-34 batch cancel path is the canonical caller.
+    """
+
+    error_type_uri: str = ERROR_TYPES["GATEWAY_TIMEOUT"]
+
+    def __init__(
+        self,
+        message: str = "Operation drain exceeded budget",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            message=message,
+            code="GATEWAY_TIMEOUT",
+            status_code=504,
+            details=details,
+        )
+
+
 # =============================================================================
 # Exception Handlers (RFC 7807)
 # =============================================================================

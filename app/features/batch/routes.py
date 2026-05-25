@@ -13,15 +13,28 @@ All 4xx responses route through ``app.core.exceptions`` to RFC 7807
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.database import get_db
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import ConflictError, GatewayTimeoutError, NotFoundError
 from app.core.logging import get_logger
+from app.features.batch import runner
+from app.features.batch.models import BatchStatus
 from app.features.batch.schemas import (
     BatchItemListResponse,
     BatchSubmitRequest,
     BatchSubmitResponse,
 )
 from app.features.batch.service import BatchService
+
+# PRP-34 — parent statuses that block ``DELETE /batch/{batch_id}`` with a 409.
+_TERMINAL_BATCH_STATES: frozenset[str] = frozenset(
+    {
+        BatchStatus.COMPLETED.value,
+        BatchStatus.FAILED.value,
+        BatchStatus.PARTIAL.value,
+        BatchStatus.CANCELLED.value,
+    }
+)
 
 logger = get_logger(__name__)
 
@@ -67,6 +80,82 @@ async def get_batch(
             details={"batch_id": batch_id},
         )
     return result
+
+
+@router.delete(
+    "/{batch_id}",
+    response_model=BatchSubmitResponse,
+    summary="Cancel an in-flight batch (cooperative drain)",
+    description=(
+        "Cancel an in-flight batch (PRP-34). Pending children skip execution; "
+        "running children observe ``asyncio.CancelledError`` at the next safe "
+        "yield point — sklearn / LightGBM fits are uncancellable mid-call, so "
+        "an in-flight fit may stall the drain (504 surfaces that). Returns:\n\n"
+        "- ``200`` settled parent on clean drain\n"
+        "- ``404`` RFC 7807 if the batch does not exist\n"
+        "- ``409`` RFC 7807 if the batch is already terminal\n"
+        "- ``504`` RFC 7807 if the drain exceeds "
+        "``Settings.batch_cancel_drain_timeout_seconds``"
+    ),
+)
+async def cancel_batch_route(
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> BatchSubmitResponse:
+    """Cancel an in-flight batch and return its settled parent record."""
+    service = BatchService()
+    parent = await service.get(db=db, batch_id=batch_id)
+    if parent is None:
+        raise NotFoundError(
+            message=f"Batch not found: {batch_id}",
+            details={"batch_id": batch_id},
+        )
+    if parent.status.value in _TERMINAL_BATCH_STATES:
+        raise ConflictError(
+            message=f"Batch already terminal: {parent.status.value}",
+            details={"batch_id": batch_id, "status": parent.status.value},
+        )
+
+    fired = runner.cancel_batch(batch_id)
+    if not fired:
+        # Race: the submit handler's ``_settle`` committed and
+        # ``mark_completed`` removed the registry handle between our
+        # ``service.get`` above and ``cancel_batch`` here. The parent is now
+        # terminal in DB but we still raise 409 so the operator's intent
+        # ("I want this stopped") gets a truthful answer.
+        raise ConflictError(
+            message="Batch settled before cancel could fire",
+            details={"batch_id": batch_id},
+        )
+
+    settings = get_settings()
+    drained = await runner.await_drain(
+        batch_id=batch_id,
+        timeout_seconds=float(settings.batch_cancel_drain_timeout_seconds),
+    )
+    if not drained:
+        raise GatewayTimeoutError(
+            message=(
+                f"Drain exceeded {settings.batch_cancel_drain_timeout_seconds}s; "
+                "parent settle still pending. In-flight sklearn / LightGBM fits "
+                "are uncancellable mid-call — retry once the fit completes."
+            ),
+            details={
+                "batch_id": batch_id,
+                "drain_timeout_seconds": settings.batch_cancel_drain_timeout_seconds,
+            },
+        )
+
+    final = await service.get(db=db, batch_id=batch_id)
+    if final is None:
+        # Defensive — ``batch_job`` rows are never deleted, so this branch
+        # should be unreachable. Surface as 404 if it ever happens.
+        raise NotFoundError(
+            message=f"Batch not found after drain: {batch_id}",
+            details={"batch_id": batch_id},
+        )
+    logger.info("batch.cancelled", batch_id=batch_id, status=final.status.value)
+    return final
 
 
 @router.get(
