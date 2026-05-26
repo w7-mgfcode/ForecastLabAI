@@ -98,6 +98,10 @@ class ExplainabilityService:
             as_of_date=request.as_of_date,
             season_length=request.season_length,
             window_size=request.window_size,
+            weight_strategy=request.weight_strategy,
+            decay=request.decay,
+            lookback_cycles=request.lookback_cycles,
+            trim_outliers=request.trim_outliers,
         )
 
     async def explain_run(self, db: AsyncSession, run_id: str) -> ForecastExplanation | None:
@@ -127,6 +131,10 @@ class ExplainabilityService:
             as_of_date=run.data_window_end,
             season_length=config.get("season_length"),
             window_size=config.get("window_size"),
+            weight_strategy=config.get("weight_strategy"),
+            decay=config.get("decay"),
+            lookback_cycles=config.get("lookback_cycles"),
+            trim_outliers=config.get("trim_outliers"),
             run_id=run_id,
         )
 
@@ -181,6 +189,10 @@ class ExplainabilityService:
             # the explainer falls back to the forecaster defaults (7).
             season_length=None,
             window_size=None,
+            weight_strategy=None,
+            decay=None,
+            lookback_cycles=None,
+            trim_outliers=None,
             job_id=job_id,
         )
 
@@ -198,11 +210,23 @@ class ExplainabilityService:
         as_of_date: date_type,
         season_length: int | None,
         window_size: int | None,
+        weight_strategy: str | None = None,
+        decay: float | None = None,
+        lookback_cycles: int | None = None,
+        trim_outliers: bool | None = None,
         run_id: str | None = None,
         job_id: str | None = None,
     ) -> ForecastExplanation:
         """Build, persist, and return one rule-based explanation."""
-        explainer = explainer_factory(model_type, season_length, window_size)
+        explainer = explainer_factory(
+            model_type,
+            season_length=season_length,
+            window_size=window_size,
+            weight_strategy=weight_strategy,
+            decay=decay,
+            lookback_cycles=lookback_cycles,
+            trim_outliers=trim_outliers,
+        )
         y, _dates = await self._load_series(db, store_id, product_id, as_of_date)
         forecast_value, drivers = explainer.explain(y)
         confidence = explainer.confidence(y)
@@ -358,6 +382,10 @@ class ExplainabilityService:
             return 2 * (season_length or 7)
         if model_type == "moving_average":
             return 2 * (window_size or 7)
+        if model_type == "weighted_moving_average":
+            return 2 * (window_size or 7)
+        if model_type == "seasonal_average":
+            return 2 * (season_length or 7)
         return 14
 
     @staticmethod

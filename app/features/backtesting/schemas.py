@@ -154,6 +154,12 @@ class FoldResult(BaseModel):
         actuals: Actual values for the test period.
         predictions: Predicted values for the test period.
         metrics: Dictionary of metric names to values.
+        horizon_bucket_metrics: PRP-36 — per-horizon-bucket metric block.
+            Keys are stable bucket ids from
+            :data:`app.features.backtesting.metrics.HORIZON_BUCKETS`
+            (``"h_1_7"``, ``"h_8_14"``, ``"h_15_28"``, ``"h_29_plus"``).
+            Empty buckets are dropped, so a 14-day horizon's payload omits
+            ``h_29_plus`` rather than emitting NaN.
     """
 
     fold_index: int
@@ -162,6 +168,13 @@ class FoldResult(BaseModel):
     actuals: list[float]
     predictions: list[float]
     metrics: dict[str, float]
+    horizon_bucket_metrics: dict[str, dict[str, float]] = Field(
+        default_factory=dict,
+        description=(
+            "PRP-36 — per-horizon-bucket metrics keyed by bucket id "
+            "('h_1_7', 'h_8_14', 'h_15_28', 'h_29_plus'). Empty buckets are dropped."
+        ),
+    )
 
 
 class ModelBacktestResult(BaseModel):
@@ -173,6 +186,10 @@ class ModelBacktestResult(BaseModel):
         fold_results: Results for each fold.
         aggregated_metrics: Mean metrics across folds.
         metric_std: Standard deviation of metrics across folds.
+        bucketed_aggregated_metrics: PRP-36 — per-horizon-bucket aggregated
+            means across folds. ``None`` when no fold emitted a non-empty
+            bucket dict; otherwise keyed by the same bucket ids as
+            :attr:`FoldResult.horizon_bucket_metrics`.
         feature_aware: True when the model consumed a per-fold feature matrix
             (``requires_features``); False for target-only baseline models.
         exogenous_policy: How the test-window exogenous columns were sourced.
@@ -186,6 +203,13 @@ class ModelBacktestResult(BaseModel):
     fold_results: list[FoldResult]
     aggregated_metrics: dict[str, float]
     metric_std: dict[str, float]
+    bucketed_aggregated_metrics: dict[str, dict[str, float]] | None = Field(
+        default=None,
+        description=(
+            "PRP-36 — per-horizon-bucket aggregated metrics across folds. "
+            "None when no fold emitted bucket metrics."
+        ),
+    )
     feature_aware: bool = False
     exogenous_policy: Literal["observed"] | None = None
 

@@ -4,7 +4,19 @@ These run without a database (-m "not integration"): the helpers are pure
 functions with no I/O.
 """
 
-from app.features.ops.service import classify_drift, extract_wape, score_retraining_candidate
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import cast
+
+from app.features.ops.schemas import StaleReason
+from app.features.ops.service import (
+    _alias_staleness,
+    _run_feature_frame_version,
+    classify_drift,
+    extract_wape,
+    score_retraining_candidate,
+)
+from app.features.registry.models import ModelRun
 
 # =============================================================================
 # score_retraining_candidate
@@ -133,3 +145,103 @@ def test_classify_drift_zero_baseline_guard() -> None:
 def test_classify_drift_never_raises_on_sparse_history() -> None:
     """Sparse / all-None history degrades gracefully to 'unknown'."""
     assert classify_drift([None, None, None]) == ("unknown", None)
+
+
+# =============================================================================
+# PRP-36 — _alias_staleness V-mismatch path
+# =============================================================================
+
+
+def _make_run(
+    *,
+    run_id: str,
+    store_id: int = 1,
+    product_id: int = 1,
+    status: str = "success",
+    created_at: datetime | None = None,
+    feature_frame_version: int | None = None,
+) -> ModelRun:
+    """Minimal duck-typed ModelRun the helpers consume.
+
+    The helpers only read ``.status / .store_id / .product_id / .created_at
+    / .id / .runtime_info`` so a SimpleNamespace is sufficient at runtime;
+    we ``cast`` to ``ModelRun`` so static checking is happy.
+    """
+    runtime_info: dict[str, object] = {}
+    if feature_frame_version is not None:
+        runtime_info["feature_frame_version"] = feature_frame_version
+    fake = SimpleNamespace(
+        run_id=run_id,
+        id=hash(run_id) & 0xFFFFFFFF,
+        store_id=store_id,
+        product_id=product_id,
+        status=status,
+        created_at=created_at or datetime(2026, 1, 1, tzinfo=UTC),
+        runtime_info=runtime_info if runtime_info else None,
+    )
+    return cast(ModelRun, fake)
+
+
+def test_run_feature_frame_version_reads_runtime_info() -> None:
+    """V is read from runtime_info JSONB; missing key resolves to None."""
+    assert _run_feature_frame_version(_make_run(run_id="a", feature_frame_version=2)) == 2
+    assert _run_feature_frame_version(_make_run(run_id="b")) is None
+
+
+def test_alias_staleness_status_branch_wins() -> None:
+    """A non-SUCCESS aliased run is stale with RUN_NOT_SUCCESS regardless of V."""
+    run = _make_run(run_id="r1", status="failed", feature_frame_version=1)
+    latest_map: dict[tuple[int, int], ModelRun] = {
+        (1, 1): _make_run(run_id="r2", feature_frame_version=2)
+    }
+    is_stale, reason, alias_v, comparable_v = _alias_staleness(run, latest_map)
+    assert is_stale is True
+    assert reason == StaleReason.RUN_NOT_SUCCESS.value
+    assert alias_v == 1
+    assert comparable_v is None
+
+
+def test_alias_staleness_v_mismatch_wins_over_newer_run() -> None:
+    """A V1 alias with a newer V2 comparable run reports MISMATCH, not NEWER."""
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    newer = datetime(2026, 5, 1, tzinfo=UTC)
+    run = _make_run(run_id="v1", created_at=older, feature_frame_version=1)
+    latest = _make_run(run_id="v2", created_at=newer, feature_frame_version=2)
+    is_stale, reason, alias_v, comparable_v = _alias_staleness(run, {(1, 1): latest})
+    assert is_stale is True
+    assert reason == StaleReason.FEATURE_FRAME_VERSION_MISMATCH.value
+    assert alias_v == 1
+    assert comparable_v == 2
+
+
+def test_alias_staleness_same_v_newer_run_uses_newer_reason() -> None:
+    """V matches but the comparable is newer → NEWER_SUCCESS_RUN reason."""
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    newer = datetime(2026, 5, 1, tzinfo=UTC)
+    run = _make_run(run_id="v2-old", created_at=older, feature_frame_version=2)
+    latest = _make_run(run_id="v2-new", created_at=newer, feature_frame_version=2)
+    is_stale, reason, alias_v, comparable_v = _alias_staleness(run, {(1, 1): latest})
+    assert is_stale is True
+    assert reason == StaleReason.NEWER_SUCCESS_RUN.value
+    assert alias_v == 2
+    assert comparable_v is None
+
+
+def test_alias_staleness_v1_alias_v1_latest_legacy_back_compat() -> None:
+    """A V1 alias whose latest comparable is also legacy V1 (no key) → not stale."""
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    run = _make_run(run_id="legacy", created_at=older)  # no V key
+    # Same run is latest_by_grain — no newer comparable.
+    is_stale, reason, alias_v, comparable_v = _alias_staleness(run, {(1, 1): run})
+    assert is_stale is False
+    assert reason is None
+    assert alias_v is None  # legacy run carries no V key
+    assert comparable_v is None
+
+
+def test_alias_staleness_legacy_v1_vs_explicit_v1_no_mismatch_when_same_run() -> None:
+    """A legacy run carrying no V key compared to itself is not stale (same id)."""
+    run = _make_run(run_id="self", feature_frame_version=1)
+    is_stale, reason, _, _ = _alias_staleness(run, {(1, 1): run})
+    assert is_stale is False
+    assert reason is None

@@ -192,6 +192,45 @@ class MetricsCalculator:
         )
 
     @staticmethod
+    def rmse(
+        actuals: np.ndarray[Any, np.dtype[np.floating[Any]]],
+        predictions: np.ndarray[Any, np.dtype[np.floating[Any]]],
+    ) -> MetricResult:
+        """Root Mean Squared Error.
+
+        Formula: ``sqrt(mean((A - F) ** 2))``
+
+        Penalises large errors more than MAE — useful when a forecast that
+        misses a single point badly is operationally worse than one that
+        misses many points by a little.
+
+        Args:
+            actuals: Ground truth values.
+            predictions: Predicted values.
+
+        Returns:
+            MetricResult with RMSE value (NaN for empty arrays).
+
+        Raises:
+            ValueError: If arrays have different lengths.
+        """
+        warnings: list[str] = []
+
+        if len(actuals) == 0:
+            return MetricResult(name="rmse", value=np.nan, n_samples=0, warnings=["Empty array"])
+
+        if len(actuals) != len(predictions):
+            raise ValueError(
+                f"Length mismatch: actuals={len(actuals)}, predictions={len(predictions)}"
+            )
+
+        rmse_value = float(np.sqrt(np.mean((actuals - predictions) ** 2)))
+
+        return MetricResult(
+            name="rmse", value=rmse_value, n_samples=len(actuals), warnings=warnings
+        )
+
+    @staticmethod
     def bias(
         actuals: np.ndarray[Any, np.dtype[np.floating[Any]]],
         predictions: np.ndarray[Any, np.dtype[np.floating[Any]]],
@@ -307,6 +346,7 @@ class MetricsCalculator:
         """
         return {
             "mae": self.mae(actuals, predictions).value,
+            "rmse": self.rmse(actuals, predictions).value,
             "smape": self.smape(actuals, predictions).value,
             "wape": self.wape(actuals, predictions).value,
             "bias": self.bias(actuals, predictions).value,
@@ -342,3 +382,109 @@ class MetricsCalculator:
                 stability[f"{name}_stability"] = np.nan
 
         return aggregated, stability
+
+    def aggregate_bucket_metrics(
+        self,
+        fold_bucket_metrics: list[dict[str, dict[str, float]]],
+    ) -> dict[str, dict[str, float]]:
+        """Aggregate per-horizon-bucket metrics across folds (PRP-36).
+
+        For each bucket id present in any fold, compute the per-metric mean
+        across the folds that emitted that bucket. Folds that did NOT emit
+        a bucket (because no test point fell inside its horizon range — e.g.
+        ``h_29_plus`` on a 14-day forecast) are silently skipped: their
+        absence reduces the sample count, not the aggregated value.
+
+        Args:
+            fold_bucket_metrics: List of per-fold bucket dicts (the structure
+                returned by :func:`compute_bucket_metrics`).
+
+        Returns:
+            Per-bucket aggregated mean dict; empty when every fold reported
+            an empty bucket dict (degenerate "horizon shorter than the
+            shortest bucket" case — shouldn't happen given bucket starts
+            at 1).
+        """
+        if not fold_bucket_metrics:
+            return {}
+
+        # Collect every (bucket_id, metric) pair that appeared in any fold.
+        bucket_metric_values: dict[str, dict[str, list[float]]] = {}
+        for fold in fold_bucket_metrics:
+            for bucket_id, metric_dict in fold.items():
+                bucket = bucket_metric_values.setdefault(bucket_id, {})
+                for metric_name, metric_value in metric_dict.items():
+                    if not np.isnan(metric_value):
+                        bucket.setdefault(metric_name, []).append(metric_value)
+
+        # Compute mean across folds per (bucket, metric).
+        aggregated: dict[str, dict[str, float]] = {}
+        for bucket_id, metrics in bucket_metric_values.items():
+            bucket_means: dict[str, float] = {}
+            for metric_name, values in metrics.items():
+                if values:
+                    bucket_means[metric_name] = float(np.mean(values))
+            if bucket_means:
+                aggregated[bucket_id] = bucket_means
+        return aggregated
+
+
+HORIZON_BUCKETS: tuple[tuple[str, int, int | None], ...] = (
+    ("h_1_7", 1, 7),
+    ("h_8_14", 8, 14),
+    ("h_15_28", 15, 28),
+    ("h_29_plus", 29, None),
+)
+"""Per-horizon-bucket boundaries (1-based, inclusive ends; ``None`` = unbounded).
+
+Bucket ids are stable JSON-key-safe strings — keep them in sync with
+``app/features/backtesting/schemas.py`` and the Slice C frontend reader.
+"""
+
+
+def compute_bucket_metrics(
+    actuals: np.ndarray[Any, np.dtype[np.floating[Any]]],
+    predictions: np.ndarray[Any, np.dtype[np.floating[Any]]],
+    horizon_offsets: list[int],
+) -> dict[str, dict[str, float]]:
+    """Compute per-horizon-bucket metrics for a single fold (PRP-36).
+
+    Slices the (actuals, predictions) pair by ``horizon_offsets`` lying in
+    each bucket's ``[start, end]`` range, then calls
+    :meth:`MetricsCalculator.calculate_all` on the slice. Empty buckets are
+    dropped from the output (a 14-day horizon's ``h_29_plus`` bucket simply
+    does not appear) — Slice C never has to interpret a NaN slot.
+
+    Args:
+        actuals: Ground-truth array, length ``H``.
+        predictions: Predicted array, length ``H``.
+        horizon_offsets: Per-row horizon position, 1-based. Length ``H``.
+
+    Returns:
+        ``dict[bucket_id, dict[metric_name, value]]`` keyed by the bucket
+        ids from :data:`HORIZON_BUCKETS`. Empty buckets are omitted.
+
+    Raises:
+        ValueError: If the three arrays have different lengths.
+    """
+    if not (len(actuals) == len(predictions) == len(horizon_offsets)):
+        raise ValueError(
+            f"array length mismatch: actuals={len(actuals)}, "
+            f"predictions={len(predictions)}, horizon_offsets={len(horizon_offsets)}"
+        )
+    if len(actuals) == 0:
+        return {}
+
+    calc = MetricsCalculator()
+    out: dict[str, dict[str, float]] = {}
+    h = np.asarray(horizon_offsets, dtype=np.int64)
+    max_h = int(h.max())
+    for bucket_id, start, end in HORIZON_BUCKETS:
+        upper = end if end is not None else max_h
+        mask = (h >= start) & (h <= upper)
+        if not mask.any():
+            continue
+        bucket_actuals = actuals[mask]
+        bucket_predictions = predictions[mask]
+        out[bucket_id] = calc.calculate_all(bucket_actuals, bucket_predictions)
+    return out

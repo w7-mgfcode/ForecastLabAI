@@ -82,6 +82,17 @@ class RunCreate(BaseModel):
     product_id: int = Field(..., ge=1)
     agent_context: AgentContext | None = None
     git_sha: str | None = Field(None, max_length=40)
+    runtime_info_extras: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "PRP-36 — optional caller-supplied extras merged INTO the runtime "
+            "info captured by the service (Python/sklearn versions). The "
+            "intended payload is the V2 metadata the forecasting service "
+            "wrote to the model bundle: feature_frame_version, "
+            "feature_groups, feature_safety_classes, feature_pinned_constants. "
+            "Caller-supplied keys win over service-captured keys."
+        ),
+    )
 
     @field_validator("data_window_end")
     @classmethod
@@ -164,6 +175,36 @@ class RunResponse(BaseModel):
         from app.features.forecasting.feature_metadata import model_family_for
 
         return model_family_for(self.model_type)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def feature_frame_version(self) -> int | None:
+        """PRP-36 — V1 (1) or V2 (2), read from ``runtime_info`` JSONB.
+
+        ``None`` for runs that pre-date PRP-35 / PRP-36 and never wrote
+        the key. Plain Python ``int`` type — no cross-slice import.
+        """
+        if not self.runtime_info:
+            return None
+        value = self.runtime_info.get("feature_frame_version")
+        if isinstance(value, int):
+            return value
+        return None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def feature_groups(self) -> dict[str, list[str]] | None:
+        """PRP-36 — V2 per-group canonical column manifest, read from ``runtime_info``.
+
+        ``None`` for V1 runs (the key is only populated when training
+        with feature_frame_version=2) and for runs that pre-date PRP-35.
+        """
+        if not self.runtime_info:
+            return None
+        value = self.runtime_info.get("feature_groups")
+        if isinstance(value, dict):
+            return value
+        return None
 
 
 class RunListResponse(BaseModel):

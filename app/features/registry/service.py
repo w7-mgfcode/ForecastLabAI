@@ -19,7 +19,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import Integer, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
@@ -200,6 +200,11 @@ class RegistryService:
         run_id = uuid.uuid4().hex
         config_hash = self._compute_config_hash(run_data.model_config_data)
 
+        # PRP-36 — fish feature_frame_version out of the caller-supplied
+        # runtime_info_extras so the duplicate predicate distinguishes V1 vs V2.
+        # Default 1 when absent (V1 back-compat: every legacy run is V1).
+        request_v = self._extract_feature_frame_version(run_data.runtime_info_extras)
+
         # Check for duplicates based on policy
         if self.settings.registry_duplicate_policy in ("deny", "detect"):
             existing = await self._find_duplicate(
@@ -209,6 +214,7 @@ class RegistryService:
                 product_id=run_data.product_id,
                 data_window_start=run_data.data_window_start,
                 data_window_end=run_data.data_window_end,
+                feature_frame_version=request_v,
             )
             if existing:
                 if self.settings.registry_duplicate_policy == "deny":
@@ -220,8 +226,13 @@ class RegistryService:
                         config_hash=config_hash,
                     )
 
-        # Capture runtime info
+        # Capture runtime info and merge caller-supplied extras (PRP-36).
+        # Caller-supplied keys win over service-captured keys so the
+        # forecasting layer can pin feature_frame_version, feature_groups,
+        # feature_safety_classes, feature_pinned_constants on the run.
         runtime_info = self._capture_runtime_info()
+        if run_data.runtime_info_extras:
+            runtime_info.update(run_data.runtime_info_extras)
 
         # Convert agent context to dict if present
         agent_context_dict = None
@@ -626,6 +637,22 @@ class RegistryService:
             metrics_diff=metrics_diff,
         )
 
+    @staticmethod
+    def _extract_feature_frame_version(
+        runtime_info_extras: dict[str, Any] | None,
+    ) -> int:
+        """Pull ``feature_frame_version`` from caller-supplied extras (PRP-36).
+
+        Missing key OR malformed value → V=1 (legacy back-compat: every
+        run that pre-dates PRP-35 / PRP-36 is V1 by definition).
+        """
+        if not runtime_info_extras:
+            return 1
+        value = runtime_info_extras.get("feature_frame_version")
+        if isinstance(value, int) and value in (1, 2):
+            return value
+        return 1
+
     async def _find_duplicate(
         self,
         db: AsyncSession,
@@ -634,8 +661,13 @@ class RegistryService:
         product_id: int,
         data_window_start: date,
         data_window_end: date,
+        feature_frame_version: int = 1,
     ) -> ModelRun | None:
-        """Find existing run with same config and data window.
+        """Find existing run with same config, data window, AND feature_frame_version.
+
+        PRP-36 — the match key now includes feature_frame_version. A V1 run and
+        a V2 run with otherwise-identical fields are NOT duplicates; the
+        comparable-runs / champion-alias logic depends on this distinction.
 
         Args:
             db: Database session.
@@ -644,6 +676,8 @@ class RegistryService:
             product_id: Product ID.
             data_window_start: Data window start date.
             data_window_end: Data window end date.
+            feature_frame_version: V1 (1) or V2 (2). Rows with a missing JSONB
+                key are treated as V=1 (legacy back-compat).
 
         Returns:
             The most recent matching run, or None.
@@ -664,12 +698,84 @@ class RegistryService:
                 & (ModelRun.data_window_start == data_window_start)
                 & (ModelRun.data_window_end == data_window_end)
                 & (ModelRun.status != RunStatusORM.ARCHIVED.value)
+                & self._feature_frame_version_filter(feature_frame_version)
             )
             .order_by(ModelRun.created_at.desc())
             .limit(1)
         )
         result = await db.execute(stmt)
         return result.scalars().first()
+
+    @staticmethod
+    def _feature_frame_version_filter(feature_frame_version: int) -> Any:  # noqa: ANN401
+        """SQLAlchemy WHERE clause selecting runs whose V matches (PRP-36).
+
+        Missing JSONB key resolves to V=1 — that is the load-bearing
+        back-compat seam (legacy V1 runs never wrote the key).
+        """
+        v_column = cast(ModelRun.runtime_info["feature_frame_version"].astext, Integer)
+        if feature_frame_version == 1:
+            # Legacy rows without the key are V1; match BOTH "key absent" AND
+            # "key explicitly set to 1".
+            return or_(
+                v_column == 1,
+                ModelRun.runtime_info["feature_frame_version"].astext.is_(None),
+            )
+        return v_column == feature_frame_version
+
+    async def find_comparable_runs(
+        self,
+        db: AsyncSession,
+        *,
+        store_id: int,
+        product_id: int,
+        feature_frame_version: int,
+        data_window_start: date,
+        data_window_end: date,
+        model_type: str | None = None,
+        limit: int = 20,
+    ) -> list[ModelRun]:
+        """Return runs comparable to the (grain, window, V) tuple given (PRP-36).
+
+        Comparable predicate:
+          - same ``(store_id, product_id)`` grain;
+          - data windows OVERLAP
+            (``run.data_window_end >= data_window_start`` AND
+            ``run.data_window_start <= data_window_end``);
+          - same ``feature_frame_version`` (legacy rows without the JSONB
+            key are treated as V=1);
+          - ``status == SUCCESS`` (champion-eligible).
+
+        Args:
+            db: Database session.
+            store_id: Store ID grain anchor.
+            product_id: Product ID grain anchor.
+            feature_frame_version: V1 or V2 — cross-V runs are NOT comparable.
+            data_window_start: Caller's data window start.
+            data_window_end: Caller's data window end.
+            model_type: Optional further filter; ``None`` returns all model types.
+            limit: Maximum rows returned, ordered by ``created_at desc``.
+
+        Returns:
+            List of comparable :class:`ModelRun` rows, newest first.
+        """
+        stmt = (
+            select(ModelRun)
+            .where(
+                (ModelRun.store_id == store_id)
+                & (ModelRun.product_id == product_id)
+                & (ModelRun.status == RunStatusORM.SUCCESS.value)
+                & (ModelRun.data_window_end >= data_window_start)
+                & (ModelRun.data_window_start <= data_window_end)
+                & self._feature_frame_version_filter(feature_frame_version)
+            )
+            .order_by(ModelRun.created_at.desc())
+            .limit(limit)
+        )
+        if model_type is not None:
+            stmt = stmt.where(ModelRun.model_type == model_type)
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
 
     def _model_to_response(self, model_run: ModelRun) -> RunResponse:
         """Convert ORM model to response schema.

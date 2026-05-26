@@ -19,9 +19,9 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 | analytics | GET | `/analytics/inventory-status` | Latest `inventory_snapshot_daily` row per `(store, product)` grain (Postgres `DISTINCT ON`); optional `store_id`/`product_id` filters; `200` + empty list on an empty table (never `404`) |
 | featuresets | POST | `/featuresets/compute` | Compute time-safe features (lag/rolling/calendar, leakage-prevented) |
 | featuresets | POST | `/featuresets/preview` | Preview features with sample rows |
-| forecasting | POST | `/forecasting/train` | Train a model (naive / seasonal_naive / moving_average / lightgbm / regression). `regression` wraps `HistGradientBoostingRegressor` on lag + calendar + exogenous features — the baseline a `model_exogenous` scenario re-forecasts through |
+| forecasting | POST | `/forecasting/train` | Train a model. PRP-36 expands the model set: target-only `naive`/`seasonal_naive`/`moving_average`/`weighted_moving_average`/`seasonal_average`/`trend_regression_baseline`; feature-aware `regression`/`prophet_like` (always-on); opt-in `lightgbm`/`xgboost`/`random_forest` behind the matching `forecast_enable_*` flag. `regression` wraps `HistGradientBoostingRegressor` on lag + calendar + exogenous features — the baseline a `model_exogenous` scenario re-forecasts through |
 | forecasting | POST | `/forecasting/predict` | Generate horizon predictions from a trained model |
-| backtesting | POST | `/backtesting/run` | Time-series CV (rolling/expanding splits, MAE/sMAPE/WAPE/bias/stability) |
+| backtesting | POST | `/backtesting/run` | Time-series CV. PRP-36 — `aggregated_metrics` now carries `rmse` alongside MAE/sMAPE/WAPE/bias; every `fold_results[i].horizon_bucket_metrics` is a per-bucket metric dict keyed by `h_1_7`/`h_8_14`/`h_15_28`/`h_29_plus` (empty buckets dropped); `main_model_results.bucketed_aggregated_metrics` (and same on each `baseline_results[i]`) carries per-bucket means across folds, or `null` when no fold emitted a bucket dict |
 | explainability | POST | `/explain/forecast` | Rule-based explanation of the h=1 forecast a named baseline model (`naive`/`seasonal_naive`/`moving_average`) produces on the series ending at `as_of_date`; returns a `ForecastExplanation` — driver contributions, advisory retail reason codes (correlation, not causation), confidence band, caveats, agent summary. Time-safe (`<= as_of_date`); a non-baseline `model_type` or a too-short series → RFC 7807 400 |
 | explainability | GET | `/explain/runs/{run_id}` | Explain a registry `model_run` — config reconstructed from `model_run.model_config`, cutoff `data_window_end`. Missing run → 404; a non-baseline (`lightgbm`/`regression`) run → 400 |
 | explainability | GET | `/explain/jobs/{job_id}` | Explain a completed `predict` job — store/product/model read from `job.result`, cutoff = day before the first forecast date. Missing job → 404; a job that is not a completed predict job → 400 |
@@ -33,7 +33,7 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 | scenarios | DELETE | `/scenarios/{scenario_id}` | Delete a saved plan; `404` when missing |
 | registry | POST | `/registry/runs` | Create model run (pending) |
 | registry | GET | `/registry/runs` | List with filters + pagination + optional allow-listed `sort_by`/`sort_order` (created_at/model_type/status/store_id/product_id; unknown → default `created_at desc`) |
-| registry | GET | `/registry/runs/{run_id}` | Run details + JSONB metrics + runtime_info |
+| registry | GET | `/registry/runs/{run_id}` | Run details + JSONB metrics + runtime_info. PRP-36 — response gains Optional computed fields `feature_frame_version: int \| null` and `feature_groups: dict[str, list[str]] \| null` (both read from `runtime_info`; `null` for V1 / pre-PRP-35 runs) |
 | registry | PATCH | `/registry/runs/{run_id}` | Update status / metrics / artifact_uri |
 | registry | GET | `/registry/runs/{run_id}/verify` | SHA-256 artifact integrity check |
 | registry | POST | `/registry/aliases` | Create/update alias (only on `success` runs) |

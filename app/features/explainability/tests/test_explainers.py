@@ -159,3 +159,110 @@ class TestExplainerFactory:
         """An unknown model type raises ValueError."""
         with pytest.raises(ValueError, match="Unknown model type"):
             explainer_factory("transformer")
+
+    # PRP-36 — new baseline explainers
+    def test_builds_weighted_moving_average(self) -> None:
+        """The factory dispatches the weighted MA explainer with correct params."""
+        from app.features.explainability.explainers import WeightedMovingAverageExplainer
+
+        explainer = explainer_factory(
+            "weighted_moving_average",
+            window_size=14,
+            weight_strategy="exponential",
+            decay=0.5,
+        )
+        assert isinstance(explainer, WeightedMovingAverageExplainer)
+        assert explainer.window_size == 14
+        assert explainer.weight_strategy == "exponential"
+        assert explainer.decay == 0.5
+
+    def test_builds_seasonal_average(self) -> None:
+        """The factory dispatches the seasonal-average explainer with correct params."""
+        from app.features.explainability.explainers import SeasonalAverageExplainer
+
+        explainer = explainer_factory(
+            "seasonal_average",
+            season_length=7,
+            lookback_cycles=3,
+            trim_outliers=True,
+        )
+        assert isinstance(explainer, SeasonalAverageExplainer)
+        assert explainer.season_length == 7
+        assert explainer.lookback_cycles == 3
+        assert explainer.trim_outliers is True
+
+    def test_builds_trend_regression_baseline_with_bundle(self) -> None:
+        """The trend baseline factory requires a fitted Ridge bundle."""
+        from app.features.explainability.explainers import (
+            TrendRegressionBaselineExplainer,
+        )
+
+        explainer = explainer_factory(
+            "trend_regression_baseline",
+            trend_baseline_bundle=(0.5, [1.0] * 20, True, True),
+        )
+        assert isinstance(explainer, TrendRegressionBaselineExplainer)
+        assert explainer.intercept == 0.5
+
+    def test_trend_regression_baseline_without_bundle_raises(self) -> None:
+        """Trend baseline without a fitted Ridge bundle fails with a clear message."""
+        with pytest.raises(ValueError, match="trend_baseline_bundle"):
+            explainer_factory("trend_regression_baseline")
+
+    @pytest.mark.parametrize(
+        "model_type",
+        ["lightgbm", "regression", "xgboost", "random_forest", "prophet_like"],
+    )
+    def test_feature_aware_models_routed_to_scope_guard(self, model_type: str) -> None:
+        """PRP-36 — every feature-aware model surfaces the scope guard 422 message."""
+        with pytest.raises(ValueError, match="baseline models only"):
+            explainer_factory(model_type)
+
+
+class TestWeightedMovingAverageExplainer:
+    """PRP-36 — h=1 forecast equals the matching forecaster's prediction."""
+
+    def test_explanation_matches_forecaster_linear(self) -> None:
+        from app.features.explainability.explainers import (
+            WeightedMovingAverageExplainer,
+        )
+        from app.features.forecasting.models import WeightedMovingAverageForecaster
+
+        y = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0])
+        forecaster = WeightedMovingAverageForecaster(window_size=7).fit(y)
+        explainer = WeightedMovingAverageExplainer(window_size=7)
+        forecast, drivers = explainer.explain(y)
+        assert forecast == pytest.approx(float(forecaster.predict(1)[0]))
+        names = [d.name for d in drivers]
+        assert "weighted_window_mean" in names
+
+    def test_explanation_matches_forecaster_exponential(self) -> None:
+        from app.features.explainability.explainers import (
+            WeightedMovingAverageExplainer,
+        )
+        from app.features.forecasting.models import WeightedMovingAverageForecaster
+
+        y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        forecaster = WeightedMovingAverageForecaster(
+            window_size=5, weight_strategy="exponential", decay=0.5
+        ).fit(y)
+        explainer = WeightedMovingAverageExplainer(
+            window_size=5, weight_strategy="exponential", decay=0.5
+        )
+        forecast, _ = explainer.explain(y)
+        assert forecast == pytest.approx(float(forecaster.predict(1)[0]))
+
+
+class TestSeasonalAverageExplainer:
+    """PRP-36 — h=1 forecast equals the matching forecaster's prediction."""
+
+    def test_explanation_matches_forecaster_on_weekly_cycle(self) -> None:
+        from app.features.explainability.explainers import SeasonalAverageExplainer
+        from app.features.forecasting.models import SeasonalAverageForecaster
+
+        weekly = np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0])
+        y = np.tile(weekly, 4)
+        forecaster = SeasonalAverageForecaster(season_length=7, lookback_cycles=4).fit(y)
+        explainer = SeasonalAverageExplainer(season_length=7, lookback_cycles=4)
+        forecast, _ = explainer.explain(y)
+        assert forecast == pytest.approx(float(forecaster.predict(1)[0]))
