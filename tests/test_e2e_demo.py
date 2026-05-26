@@ -466,8 +466,7 @@ def test_run_demo_showcase_rich_full_epic(
     hitl = by_name.get("agent_hitl_flow")
     if hitl is not None:
         assert hitl["status"] in {"pass", "skip"}, (
-            f"agent_hitl_flow unexpected status={hitl['status']!r} "
-            f"detail={hitl['detail']!r}"
+            f"agent_hitl_flow unexpected status={hitl['status']!r} detail={hitl['detail']!r}"
         )
         if hitl["status"] == "pass":
             # When the LLM key is configured, the data carries the approval decision.
@@ -482,8 +481,7 @@ def test_run_demo_showcase_rich_full_epic(
     ops = by_name.get("ops_snapshot")
     if ops is not None:
         assert ops["status"] in {"pass", "warn"}, (
-            f"ops_snapshot unexpected status={ops['status']!r} "
-            f"detail={ops['detail']!r}"
+            f"ops_snapshot unexpected status={ops['status']!r} detail={ops['detail']!r}"
         )
         for key in (
             "stale_aliases_count",
@@ -504,8 +502,7 @@ def test_run_demo_showcase_rich_full_epic(
     if result["overall_status"] == "fail":
         for step in failed:
             assert step["step_name"] in KNOWN_PREEXISTING_FAILURES, (
-                f"PRP-41 regression: {step['step_name']!r} failed with "
-                f"detail={step['detail']!r}"
+                f"PRP-41 regression: {step['step_name']!r} failed with detail={step['detail']!r}"
             )
 
 
