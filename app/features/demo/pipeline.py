@@ -72,6 +72,24 @@ HISTORICAL_BACKFILL_MODELS: tuple[str, ...] = ("naive", "seasonal_naive")
 # coefficients), NOT regression (HGBR has no feature_importances_).
 SHOWCASE_V2_MODEL_TYPE = "prophet_like"
 
+# PRP-39 — quick_baseline_sweep portfolio preset.
+# SOURCE: frontend/src/components/forecast-intelligence/batch-preset-utils.ts:22-28
+# First 3 of the 5 quick_baseline_sweep baselines — gives 3 stores x 2 products
+# x 3 models = 18 items, matching INITIAL-39 § Scope. Keep this list in sync
+# with the frontend preset definition; the demo slice cannot import frontend
+# code (vertical-slice rule), so a comment is the only drift signal.
+BATCH_PRESET_QUICK_BASELINE_SWEEP_MODELS: tuple[str, ...] = (
+    "naive",
+    "seasonal_naive",
+    "moving_average",
+)
+
+# PRP-39 — per probe report § D3, /batch/forecasting settles synchronously in
+# most cases. The poll loop is a safety net guarding against a future
+# async-runner mode.
+_BATCH_POLL_INTERVAL_SECONDS = 2.0
+_BATCH_POLL_TIMEOUT_SECONDS = 90.0
+
 # Per-step HTTP timeout. /seeder/generate on demo_minimal is slow; 120 s leaves
 # margin. connect=5 s because the ASGI transport connects instantly.
 _HTTP_TIMEOUT = httpx.Timeout(120.0, connect=5.0)
@@ -193,6 +211,13 @@ class DemoContext:
     v2_run_id: str | None = None
     v2_model_path: str | None = None
     bucketed_aggregated_metrics: dict[str, dict[str, float]] | None = None
+    # PRP-39 — additive Optional fields populated only on SHOWCASE_RICH runs
+    # AND only by their respective step functions.
+    compat_compare_result: dict[str, Any] | None = None
+    stale_alias_run_id: str | None = None
+    original_demo_alias_run_id: str | None = None
+    batch_id: str | None = None
+    batch_status: str | None = None
 
 
 # =============================================================================
@@ -1085,16 +1110,498 @@ async def step_agent(ctx: DemoContext, client: _Client) -> StepResult:
     )
 
 
+async def step_champion_compat_compare(ctx: DemoContext, client: _Client) -> StepResult:
+    """PRP-39 — Compare V1 baseline vs V2 prophet_like (champion-compat).
+
+    Derives ``compatible`` + ``comparable_reason`` client-side per probe
+    report § D1 (the compare endpoint envelope has only ``run_a``,
+    ``run_b``, ``config_diff``, ``metrics_diff`` — no top-level
+    compatibility flags). Mirrors the predicate at
+    ``frontend/src/components/forecast-intelligence/champion-compatibility-utils.ts:14-47``
+    so the same reason key works for both the compare card and the ops
+    chip.
+    """
+    if ctx.v2_run_id is None or ctx.winning_run_id is None:
+        # R14 — no V2 run on the showcase grain (user ran scenario=demo_minimal).
+        return (
+            "skip",
+            "no V2 run on the showcase grain — run with scenario=showcase_rich",
+            {},
+        )
+
+    # Discover a V1 baseline run on the same grain. Use the registry's
+    # status filter to narrow to SUCCESS runs, then pick the first one
+    # whose feature_frame_version is None-or-1 and that isn't the V2 run.
+    runs_body = await client.request(
+        "champion_compat_compare[runs]",
+        "GET",
+        (
+            f"/registry/runs?store_id={ctx.store_id}&product_id={ctx.product_id}"
+            "&status=success&page_size=20"
+        ),
+    )
+    runs_raw = runs_body.get("runs", [])
+    runs = runs_raw if isinstance(runs_raw, list) else []
+    v1_run_id: str | None = None
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        ffv = run.get("feature_frame_version")
+        run_id_raw = run.get("run_id")
+        if (
+            (ffv is None or ffv == 1)
+            and isinstance(run_id_raw, str)
+            and run_id_raw != ctx.v2_run_id
+        ):
+            v1_run_id = run_id_raw
+            break
+    if v1_run_id is None:
+        return ("skip", "no V1 baseline run on the showcase grain", {})
+
+    # GET the compare envelope. Per D1, derive compatible + reason client-side.
+    compare_body = await client.request(
+        "champion_compat_compare[compare]",
+        "GET",
+        f"/registry/compare/{v1_run_id}/{ctx.v2_run_id}",
+    )
+    run_a_raw = compare_body.get("run_a", {})
+    run_b_raw = compare_body.get("run_b", {})
+    run_a = run_a_raw if isinstance(run_a_raw, dict) else {}
+    run_b = run_b_raw if isinstance(run_b_raw, dict) else {}
+    v_a = run_a.get("feature_frame_version")  # None for legacy V1
+    v_b = run_b.get("feature_frame_version")  # 2 for PRP-38's V2 run
+    # Coerce legacy V1 (None) to V=1 for the compat predicate, matching the
+    # frontend computeCompatibility logic AND OpsService._run_feature_frame_version.
+    v_a_norm = 1 if v_a is None else v_a
+    v_b_norm = 1 if v_b is None else v_b
+    compatible = v_a_norm == v_b_norm  # grain + window equal by construction
+    reason: str | None = None if compatible else "feature_frame_version_mismatch"
+
+    ctx.compat_compare_result = {
+        "v1_run_id": v1_run_id,
+        "v2_run_id": ctx.v2_run_id,
+        "compatible": compatible,
+        "comparable_reason": reason,
+    }
+
+    return (
+        "pass",
+        f"V_a={v_a_norm} V_b={v_b_norm} compatible={compatible}",
+        {
+            "v1_run_id": v1_run_id,
+            "v2_run_id": ctx.v2_run_id,
+            "feature_frame_version_a": v_a,
+            "feature_frame_version_b": v_b,
+            "compatible": compatible,
+            "comparable_reason": reason,
+        },
+    )
+
+
+async def step_stale_alias_trigger(ctx: DemoContext, client: _Client) -> StepResult:
+    """PRP-39 — trigger feature_frame_version_mismatch stale-alias verdict.
+
+    Registers a SECOND prophet_like run on the SAME grain as PRP-38's V2 run,
+    with ``runtime_info_extras.feature_frame_version`` set to a value
+    DIFFERENT from PRP-38's V2 (which is V=2). The integer JSONB key is
+    opaque to the ops service, so V=3 is a valid "synthetic" value that
+    fires the V-mismatch branch (see probe report § (b)).
+    """
+    if ctx.v2_run_id is None or ctx.date_start is None or ctx.date_end is None:
+        return (
+            "skip",
+            "no V2 run / date range — run with scenario=showcase_rich",
+            {},
+        )
+
+    # Register the V=3 run. Mirror step_v2_train's create+running+success chain.
+    create_body = await client.request(
+        "stale_alias_trigger[create]",
+        "POST",
+        "/registry/runs",
+        json_body={
+            "model_type": "prophet_like",
+            "model_config": _model_config_payload("prophet_like"),
+            "feature_config": None,
+            "data_window_start": ctx.date_start.isoformat(),
+            "data_window_end": ctx.date_end.isoformat(),
+            "store_id": ctx.store_id,
+            "product_id": ctx.product_id,
+            # The whole point of this step — controlled V different from V=2.
+            "runtime_info_extras": {"feature_frame_version": 3},
+        },
+    )
+    second_run_id_raw = create_body.get("run_id")
+    if not isinstance(second_run_id_raw, str):
+        return ("fail", "POST /registry/runs returned no run_id", {})
+    ctx.stale_alias_run_id = second_run_id_raw
+
+    # PATCH pending → running → success.
+    await client.request(
+        "stale_alias_trigger[running]",
+        "PATCH",
+        f"/registry/runs/{second_run_id_raw}",
+        json_body={"status": "running"},
+    )
+    await client.request(
+        "stale_alias_trigger[success]",
+        "PATCH",
+        f"/registry/runs/{second_run_id_raw}",
+        json_body={
+            "status": "success",
+            "metrics": {"wape": 999.0},
+            "artifact_uri": "demo/stale-alias-placeholder.joblib",
+            "artifact_hash": "0" * 64,
+            "artifact_size_bytes": 1,
+        },
+    )
+
+    # Hit /ops/summary to confirm the stale-alias verdict surfaces.
+    ops_body = await client.request("stale_alias_trigger[ops]", "GET", "/ops/summary")
+    aliases_raw = ops_body.get("aliases", [])
+    aliases = aliases_raw if isinstance(aliases_raw, list) else []
+    target: dict[str, Any] | None = None
+    for alias in aliases:
+        if isinstance(alias, dict) and alias.get("alias_name") == DEMO_ALIAS:
+            target = alias
+            break
+    if target is None:
+        return ("fail", f"alias {DEMO_ALIAS} missing from /ops/summary", {})
+
+    stale_reason = target.get("stale_reason")
+    if stale_reason != "feature_frame_version_mismatch":
+        return (
+            "fail",
+            (f"expected stale_reason=feature_frame_version_mismatch, got {stale_reason}"),
+            {},
+        )
+
+    alias_v = target.get("alias_feature_frame_version")
+    comparable_v = target.get("comparable_run_feature_frame_version")
+    return (
+        "pass",
+        (
+            f"alias={DEMO_ALIAS} stale_reason={stale_reason} "
+            f"V_alias={alias_v}→V_comparable={comparable_v}"
+        ),
+        {
+            "alias_name": DEMO_ALIAS,
+            "stale_reason": stale_reason,
+            "alias_feature_frame_version": alias_v,
+            "comparable_run_feature_frame_version": comparable_v,
+            "second_v2_run_id": second_run_id_raw,
+        },
+    )
+
+
+async def step_safer_promote_flow(ctx: DemoContext, client: _Client) -> StepResult:
+    """PRP-39 — swap ``demo-production`` to a worse-WAPE run.
+
+    Mirrors step_register's create+running+success+alias chain at
+    ``pipeline.py``. Deliberately registers a worse-WAPE run so the
+    safer-Promote dialog gates fire when a human visits /ops. The
+    original alias target is captured BEFORE the swap so step_cleanup can
+    restore it (R15).
+    """
+    if ctx.winning_run_id is None or ctx.date_start is None or ctx.date_end is None:
+        return (
+            "skip",
+            "no winning run / date range — run with scenario=showcase_rich",
+            {},
+        )
+
+    # Capture the current alias target BEFORE the swap (R15).
+    alias_body = await client.request(
+        "safer_promote[alias_pre]",
+        "GET",
+        f"/registry/aliases/{DEMO_ALIAS}",
+    )
+    pre_run_id_raw = alias_body.get("run_id")
+    if not isinstance(pre_run_id_raw, str):
+        return ("fail", f"GET /registry/aliases/{DEMO_ALIAS} returned no run_id", {})
+    ctx.original_demo_alias_run_id = pre_run_id_raw
+
+    # Register a fresh baseline run with a tweaked config so config_hash differs
+    # from the prior register step's run. Use seasonal_naive season_length=14
+    # (the default register uses 7).
+    create_body = await client.request(
+        "safer_promote[create]",
+        "POST",
+        "/registry/runs",
+        json_body={
+            "model_type": "seasonal_naive",
+            "model_config": {
+                "model_type": "seasonal_naive",
+                "season_length": 14,
+            },
+            "feature_config": None,
+            "data_window_start": ctx.date_start.isoformat(),
+            "data_window_end": ctx.date_end.isoformat(),
+            "store_id": ctx.store_id,
+            "product_id": ctx.product_id,
+            # V=1 deliberately to additionally fire the V-mismatch-ack gate
+            # in the dialog (V2 winner → V1 challenger).
+            "runtime_info_extras": {"feature_frame_version": 1},
+        },
+    )
+    worse_run_id_raw = create_body.get("run_id")
+    if not isinstance(worse_run_id_raw, str):
+        return ("fail", "POST /registry/runs returned no run_id", {})
+
+    # pending → running → success
+    await client.request(
+        "safer_promote[running]",
+        "PATCH",
+        f"/registry/runs/{worse_run_id_raw}",
+        json_body={"status": "running"},
+    )
+    await client.request(
+        "safer_promote[success]",
+        "PATCH",
+        f"/registry/runs/{worse_run_id_raw}",
+        json_body={
+            "status": "success",
+            "metrics": {"wape": 99.0},
+            "artifact_uri": "demo/safer-promote-placeholder.joblib",
+            "artifact_hash": "0" * 64,
+            "artifact_size_bytes": 1,
+        },
+    )
+
+    # Swap the alias.
+    await client.request(
+        "safer_promote[alias_swap]",
+        "POST",
+        "/registry/aliases",
+        json_body={
+            "alias_name": DEMO_ALIAS,
+            "run_id": worse_run_id_raw,
+            "description": ("PRP-39 safer-Promote walkthrough — deliberate worse-WAPE swap."),
+        },
+    )
+
+    return (
+        "pass",
+        (f"alias={DEMO_ALIAS} before={pre_run_id_raw[:8]}→after={worse_run_id_raw[:8]}"),
+        {
+            "alias_name": DEMO_ALIAS,
+            "before_run_id": pre_run_id_raw,
+            "after_run_id": worse_run_id_raw,
+            "swap_intent": "demo_safer_promote_walkthrough",
+        },
+    )
+
+
+async def step_batch_preset(ctx: DemoContext, client: _Client) -> StepResult:
+    """PRP-39 — run the quick_baseline_sweep portfolio preset (Option A).
+
+    Per probe report § D2, the preset is frontend-only — the backend
+    ``BatchSubmitRequest`` does not accept ``preset_id``. The demo slice
+    expands the preset client-side using
+    ``BATCH_PRESET_QUICK_BASELINE_SWEEP_MODELS``.
+    """
+    if ctx.date_start is None or ctx.date_end is None:
+        return ("skip", "no date range — run with scenario=showcase_rich", {})
+
+    # Discover 3 stores + 2 products via the dimensions endpoints (mirrors
+    # step_status pattern). Never hardcode ids — seeder doesn't reset IDs.
+    stores_body = await client.request(
+        "batch_preset[stores]",
+        "GET",
+        "/dimensions/stores?page=1&page_size=5",
+    )
+    products_body = await client.request(
+        "batch_preset[products]",
+        "GET",
+        "/dimensions/products?page=1&page_size=5",
+    )
+    stores_raw = stores_body.get("stores", [])
+    products_raw = products_body.get("products", [])
+    stores = stores_raw if isinstance(stores_raw, list) else []
+    products = products_raw if isinstance(products_raw, list) else []
+    store_ids: list[int] = []
+    for s in stores:
+        if isinstance(s, dict):
+            sid = s.get("id")
+            if isinstance(sid, int):
+                store_ids.append(sid)
+                if len(store_ids) >= 3:
+                    break
+    product_ids: list[int] = []
+    for p in products:
+        if isinstance(p, dict):
+            pid = p.get("id")
+            if isinstance(pid, int):
+                product_ids.append(pid)
+                if len(product_ids) >= 2:
+                    break
+    if len(store_ids) < 3 or len(product_ids) < 2:
+        return ("skip", "insufficient stores/products in the seeded grain", {})
+
+    # POST /batch/forecasting — Option A expansion.
+    submit_body = await client.request(
+        "batch_preset[submit]",
+        "POST",
+        "/batch/forecasting",
+        json_body={
+            "operation": "train",
+            "scope": {
+                "kind": "manual",
+                "store_ids": store_ids,
+                "product_ids": product_ids,
+            },
+            "model_configs": [{"model_type": m} for m in BATCH_PRESET_QUICK_BASELINE_SWEEP_MODELS],
+            "start_date": ctx.date_start.isoformat(),
+            "end_date": ctx.date_end.isoformat(),
+        },
+    )
+    batch_id_raw = submit_body.get("batch_id")
+    if not isinstance(batch_id_raw, str):
+        return ("fail", "POST /batch/forecasting returned no batch_id", {})
+    ctx.batch_id = batch_id_raw
+
+    terminal_statuses = {"completed", "failed", "partial", "cancelled"}
+    status_raw = submit_body.get("status")
+    status: str = status_raw if isinstance(status_raw, str) else "unknown"
+    body: dict[str, Any] = submit_body
+    if status not in terminal_statuses:
+        t0 = time.monotonic()
+        timed_out = True
+        while time.monotonic() - t0 < _BATCH_POLL_TIMEOUT_SECONDS:
+            await asyncio.sleep(_BATCH_POLL_INTERVAL_SECONDS)
+            body = await client.request(
+                "batch_preset[poll]",
+                "GET",
+                f"/batch/{batch_id_raw}",
+            )
+            status_raw = body.get("status")
+            status = status_raw if isinstance(status_raw, str) else "unknown"
+            if status in terminal_statuses:
+                timed_out = False
+                break
+        if timed_out:
+            ctx.batch_status = status
+            return (
+                "warn",
+                (
+                    f"batch poll timed out at {_BATCH_POLL_TIMEOUT_SECONDS:.0f}s; "
+                    f"visit /visualize/batch/{batch_id_raw} to follow up"
+                ),
+                {
+                    "batch_id": batch_id_raw,
+                    "kind": "manual",
+                    "preset_source": "quick_baseline_sweep",
+                    "model_types": list(BATCH_PRESET_QUICK_BASELINE_SWEEP_MODELS),
+                    "status": status,
+                    "total_items": body.get("total_items"),
+                    "completed_items": body.get("completed_items"),
+                    "failed_items": body.get("failed_items"),
+                },
+            )
+
+    ctx.batch_status = status
+    step_status: StepStatus
+    if status == "completed":
+        step_status = "pass"
+    elif status == "partial":
+        step_status = "warn"
+    else:  # failed or cancelled
+        step_status = "fail"
+
+    completed = body.get("completed_items")
+    total = body.get("total_items")
+    return (
+        step_status,
+        (f"preset=quick_baseline_sweep {completed}/{total} done status={status}"),
+        {
+            "batch_id": batch_id_raw,
+            "kind": "manual",
+            "preset_source": "quick_baseline_sweep",
+            "model_types": list(BATCH_PRESET_QUICK_BASELINE_SWEEP_MODELS),
+            "status": status,
+            "total_items": total,
+            "completed_items": completed,
+            "failed_items": body.get("failed_items"),
+        },
+    )
+
+
 async def step_cleanup(ctx: DemoContext, client: _Client) -> StepResult:
-    """Close the agent session (no-op if no session was opened)."""
-    if ctx.session_id is None:
-        return ("skip", "no agent session to close", {})
-    try:
-        await client.request("cleanup", "DELETE", f"/agents/sessions/{ctx.session_id}")
-    except _StepError as exc:
-        # Cleanup failure is non-fatal -- warn so the run still goes green.
-        return ("warn", f"DELETE failed but ignored: {exc}", {})
-    return ("pass", "agent session closed", {})
+    """Close the agent session + restore the demo-production alias (PRP-39 R15).
+
+    PRP-39 extends the original PRP-15 cleanup to ALSO restore the
+    ``demo-production`` alias when ``safer_promote_flow`` swapped it to a
+    worse-WAPE run. Failure to restore is a ``warn``, never a fail.
+    """
+    alias_restored = False
+    restored_run_id: str | None = None
+
+    # PRP-39 — R15 restore. Failure is `warn`, not `fail`.
+    if ctx.original_demo_alias_run_id is not None:
+        try:
+            await client.request(
+                "cleanup[restore_alias]",
+                "POST",
+                "/registry/aliases",
+                json_body={
+                    "alias_name": DEMO_ALIAS,
+                    "run_id": ctx.original_demo_alias_run_id,
+                    "description": "Restored by demo cleanup (PRP-39).",
+                },
+            )
+            alias_restored = True
+            restored_run_id = ctx.original_demo_alias_run_id
+        except _StepError as exc:
+            logger.warning(
+                "demo.cleanup.alias_restore_failed",
+                run_id=ctx.original_demo_alias_run_id,
+                status_code=exc.status_code,
+            )
+
+    # PRESERVED — existing agent-session-close.
+    agent_closed = False
+    if ctx.session_id is not None:
+        try:
+            await client.request("cleanup", "DELETE", f"/agents/sessions/{ctx.session_id}")
+            agent_closed = True
+        except _StepError as exc:
+            return (
+                "warn",
+                f"DELETE agent failed but ignored: {exc}",
+                {
+                    "agent_session_closed": False,
+                    "alias_restored": alias_restored,
+                    "restored_run_id": restored_run_id,
+                },
+            )
+
+    detail_parts: list[str] = []
+    if agent_closed:
+        detail_parts.append("agent closed")
+    if alias_restored and restored_run_id is not None:
+        detail_parts.append(f"alias restored to {restored_run_id[:8]}...")
+
+    # Preserve PRP-15 skip-semantics: when neither an agent session was
+    # closed NOR an alias was restored, the step is a no-op.
+    if not detail_parts:
+        return (
+            "skip",
+            "no agent session to close",
+            {
+                "agent_session_closed": False,
+                "alias_restored": False,
+                "restored_run_id": None,
+            },
+        )
+    return (
+        "pass",
+        " · ".join(detail_parts),
+        {
+            "agent_session_closed": agent_closed,
+            "alias_restored": alias_restored,
+            "restored_run_id": restored_run_id,
+        },
+    )
 
 
 # =============================================================================
@@ -1110,6 +1617,8 @@ PhaseStep = tuple[str, str, StepFn]  # (phase_name, step_name, step_fn)
 PHASE_DATA = "data"
 PHASE_MODELING = "modeling"
 PHASE_DECISION = "decision"
+# PRP-39 — new portfolio phase, inserted between decision and verify.
+PHASE_PORTFOLIO = "portfolio"
 PHASE_VERIFY = "verify"
 PHASE_AGENT = "agent"
 PHASE_CLEANUP = "cleanup"
@@ -1139,6 +1648,8 @@ def _phase_table(scenario: ScenarioPreset) -> list[PhaseStep]:
         ("backtest", step_backtest),
         ("register", step_register),
     ]
+    # PRP-39 — new portfolio phase, empty under demo_minimal/sparse.
+    portfolio_steps: list[tuple[str, StepFn]] = []
     verify_steps: list[tuple[str, StepFn]] = [("verify", step_verify)]
     agent_steps: list[tuple[str, StepFn]] = [("agent", step_agent)]
     cleanup_steps: list[tuple[str, StepFn]] = [("cleanup", step_cleanup)]
@@ -1148,10 +1659,20 @@ def _phase_table(scenario: ScenarioPreset) -> list[PhaseStep]:
             ("historical_backfill", step_historical_backfill),
         ]
         modeling_steps += [("v2_train", step_v2_train)]
+        # PRP-39 — extend decision phase (AFTER register) with 3 new steps.
+        decision_steps += [
+            ("champion_compat_compare", step_champion_compat_compare),
+            ("stale_alias_trigger", step_stale_alias_trigger),
+            ("safer_promote_flow", step_safer_promote_flow),
+        ]
+        # PRP-39 — new portfolio phase has its one step under showcase_rich.
+        portfolio_steps = [("batch_preset", step_batch_preset)]
     rows: list[PhaseStep] = []
     rows += [(PHASE_DATA, name, fn) for name, fn in data_steps]
     rows += [(PHASE_MODELING, name, fn) for name, fn in modeling_steps]
     rows += [(PHASE_DECISION, name, fn) for name, fn in decision_steps]
+    # PRP-39 — INSERT portfolio BEFORE verify (relative anchor).
+    rows += [(PHASE_PORTFOLIO, name, fn) for name, fn in portfolio_steps]
     rows += [(PHASE_VERIFY, name, fn) for name, fn in verify_steps]
     rows += [(PHASE_AGENT, name, fn) for name, fn in agent_steps]
     rows += [(PHASE_CLEANUP, name, fn) for name, fn in cleanup_steps]

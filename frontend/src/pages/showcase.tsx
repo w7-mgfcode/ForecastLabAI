@@ -14,14 +14,18 @@ import { cn } from '@/lib/utils'
 const TERMINAL_STATUSES = new Set(['pass', 'fail', 'skip', 'warn'])
 
 /**
- * PRP-38 — resolve the per-step Inspect deep link.
+ * PRP-38/39 — resolve the per-step Inspect deep link.
  *
  * Returns null when the step has no payload to inspect; the step card
  * suppresses the button. Targets:
- * - `train`     -> /visualize/forecast (store_id + product_id from step.data)
- * - `v2_train`  -> /explorer/runs/{v2_run_id} (Feature Frame panel)
- * - `register`  -> /explorer/runs/{run_id} (the winner)
- * - `backtest`  -> /visualize/backtest (store_id + product_id from ctx)
+ * - `train`                    -> /visualize/forecast (store_id + product_id from step.data)
+ * - `v2_train`                 -> /explorer/runs/{v2_run_id} (Feature Frame panel)
+ * - `register`                 -> /explorer/runs/{run_id} (the winner)
+ * - `backtest`                 -> /visualize/backtest (store_id + product_id from ctx)
+ * - `champion_compat_compare`  -> /explorer/runs/compare?a={v1}&b={v2}   (PRP-39)
+ * - `stale_alias_trigger`      -> /ops                                    (PRP-39)
+ * - `safer_promote_flow`       -> /ops                                    (PRP-39)
+ * - `batch_preset`             -> /visualize/batch/{batch_id}             (PRP-39)
  */
 function resolveInspectHref(step: DemoStep): string | null {
   const data = step.data
@@ -44,6 +48,18 @@ function resolveInspectHref(step: DemoStep): string | null {
         return `${ROUTES.VISUALIZE.BACKTEST}?store_id=${storeId}&product_id=${productId}`
       }
       return null
+    case 'champion_compat_compare': {
+      const v1 = typeof data.v1_run_id === 'string' ? data.v1_run_id : null
+      const v2 = typeof data.v2_run_id === 'string' ? data.v2_run_id : null
+      return v1 && v2 ? `${ROUTES.EXPLORER.RUN_COMPARE}?a=${v1}&b=${v2}` : null
+    }
+    case 'stale_alias_trigger':
+    case 'safer_promote_flow':
+      return ROUTES.OPS
+    case 'batch_preset': {
+      const batchId = typeof data.batch_id === 'string' ? data.batch_id : null
+      return batchId ? `${ROUTES.VISUALIZE.BATCH}/${batchId}` : null
+    }
     default:
       return null
   }

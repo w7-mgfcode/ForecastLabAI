@@ -20,7 +20,7 @@ export interface PhaseDef {
 
 /**
  * The complete set of step definitions used by either DEMO_MINIMAL (legacy
- * 11 steps) or SHOWCASE_RICH (11 + 3 = 14 steps).
+ * 11 steps) or SHOWCASE_RICH (PRP-38 added 3; PRP-39 adds 4 more = 18 steps).
  *
  * Order matters: each row's (phase, step) tuple list is what the lockstep
  * test asserts equals the backend's `_phase_table(scenario)` output for
@@ -38,6 +38,12 @@ const ALL_STEPS: ReadonlyArray<PhaseDef> = [
   { phase: 'modeling', step: 'v2_train', label: 'Train feature-aware (V2)' },
   { phase: 'decision', step: 'backtest', label: 'Backtest models' },
   { phase: 'decision', step: 'register', label: 'Register winner' },
+  // PRP-39 — decision-phase extensions.
+  { phase: 'decision', step: 'champion_compat_compare', label: 'Compare V1 vs V2' },
+  { phase: 'decision', step: 'stale_alias_trigger', label: 'Trigger stale-alias V mismatch' },
+  { phase: 'decision', step: 'safer_promote_flow', label: 'Safer Promote walkthrough' },
+  // PRP-39 — new portfolio phase, between decision and verify.
+  { phase: 'portfolio', step: 'batch_preset', label: 'Portfolio batch (quick baseline sweep)' },
   { phase: 'verify', step: 'verify', label: 'Verify artifact' },
   { phase: 'agent', step: 'agent', label: 'Agent chat' },
   { phase: 'cleanup', step: 'cleanup', label: 'Cleanup' },
@@ -47,6 +53,11 @@ const SHOWCASE_RICH_STEP_NAMES = new Set([
   'phase2_enrichment',
   'historical_backfill',
   'v2_train',
+  // PRP-39 — only render these step rows under scenario=showcase_rich.
+  'champion_compat_compare',
+  'stale_alias_trigger',
+  'safer_promote_flow',
+  'batch_preset',
 ])
 
 /** Return the PhaseDef list for one scenario (lockstep with backend). */
@@ -63,6 +74,8 @@ export const PHASE_LABEL: Record<string, string> = {
   data: 'Data',
   modeling: 'Modeling',
   decision: 'Decision',
+  // PRP-39 — new portfolio phase between decision and verify.
+  portfolio: 'Portfolio',
   verify: 'Verify',
   agent: 'Agent',
   cleanup: 'Cleanup',
@@ -73,6 +86,8 @@ export const PHASE_ORDER: readonly string[] = [
   'data',
   'modeling',
   'decision',
+  // PRP-39 — new portfolio phase between decision and verify.
+  'portfolio',
   'verify',
   'agent',
   'cleanup',
