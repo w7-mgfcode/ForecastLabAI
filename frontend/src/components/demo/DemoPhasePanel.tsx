@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import {
   Accordion,
   AccordionContent,
@@ -36,14 +37,25 @@ export function DemoPhasePanel({
   runningPhase,
   getInspectHref,
 }: DemoPhasePanelProps) {
-  // Controlled value — defaults to the running phase, falls back to the
-  // first phase that has at least one running step (resilient when the
-  // parent doesn't pass runningPhase).
+  // PRP-41 / issue #311 — controlled accordion needs an onValueChange handler.
+  // Without it, the parent's recomputed `value` overrides every user click,
+  // pinning the open panel to the running/fallback phase. Lift to local
+  // state and let `useEffect` re-sync only when the parent's hint moves.
   const fallback = phases.find((p) => p.steps.some((s) => s.status === 'running'))?.id
-  const value = runningPhase ?? fallback ?? phases[0]?.id ?? ''
+  const computedValue = runningPhase ?? fallback ?? phases[0]?.id ?? ''
+  const [expandedPhase, setExpandedPhase] = useState<string>(computedValue)
+  useEffect(() => {
+    setExpandedPhase(computedValue)
+  }, [computedValue])
 
   return (
-    <Accordion type="single" collapsible value={value} className="space-y-2">
+    <Accordion
+      type="single"
+      collapsible
+      value={expandedPhase}
+      onValueChange={setExpandedPhase}
+      className="space-y-2"
+    >
       {phases.map((phase, phaseIndex) => {
         const completed = phase.steps.filter((s) => TERMINAL_STATUSES.has(s.status)).length
         return (

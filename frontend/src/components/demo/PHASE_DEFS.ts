@@ -20,7 +20,8 @@ export interface PhaseDef {
 
 /**
  * The complete set of step definitions used by either DEMO_MINIMAL (legacy
- * 11 steps) or SHOWCASE_RICH (11 + 3 PRP-38 + 4 PRP-39 + 5 PRP-40 = 23 steps).
+ * 11 steps) or SHOWCASE_RICH (11 base + 3 PRP-38 + 4 PRP-39 + 5 PRP-40
+ * + 1 PRP-41 = 24 steps).
  *
  * PRP-39 adds four steps (champion_compat_compare, stale_alias_trigger,
  * safer_promote_flow under the existing decision phase, plus batch_preset
@@ -29,6 +30,13 @@ export interface PhaseDef {
  * PRP-40 adds five steps grouped under two new phases ("planning" and
  * "knowledge"), inserted after portfolio and BEFORE verify via relative
  * anchors.
+ *
+ * PRP-41 — design Z: BOTH the legacy `agent` step and the new
+ * `agent_hitl_flow` step live under the unified `agents` phase id. The two
+ * exclusion sets below (`SHOWCASE_RICH_STEP_NAMES` excludes from
+ * demo_minimal; `DEMO_MINIMAL_ONLY_STEP_NAMES` excludes from showcase_rich)
+ * select one or the other per scenario. PRP-41 also adds the new
+ * `ops_snapshot` step under the new `ops` phase id (showcase_rich only).
  *
  * Order matters: each row's (phase, step) tuple list is what the lockstep
  * test asserts equals the backend's `_phase_table(scenario)` output for
@@ -59,10 +67,18 @@ const ALL_STEPS: ReadonlyArray<PhaseDef> = [
   { phase: 'knowledge', step: 'rag_index_subset', label: 'Index user-guide corpus' },
   { phase: 'knowledge', step: 'rag_retrieve_probe', label: 'Semantic-retrieve probe' },
   { phase: 'verify', step: 'verify', label: 'Verify artifact' },
-  { phase: 'agent', step: 'agent', label: 'Agent chat' },
+  // PRP-41 — design Z: both agent rows under unified `agents` phase id.
+  { phase: 'agents', step: 'agent', label: 'Agent chat (legacy)' },
+  { phase: 'agents', step: 'agent_hitl_flow', label: 'Agent HITL approval' },
+  // PRP-41 — new ops phase (showcase_rich only via SHOWCASE_RICH_STEP_NAMES).
+  { phase: 'ops', step: 'ops_snapshot', label: 'Ops snapshot' },
   { phase: 'cleanup', step: 'cleanup', label: 'Cleanup' },
 ] as const
 
+/**
+ * Steps that should NOT appear on the `demo_minimal` / `sparse` scenarios.
+ * Excludes the PRP-38/39/40/41 showcase-rich extensions when filtering.
+ */
 const SHOWCASE_RICH_STEP_NAMES = new Set([
   // PRP-38
   'phase2_enrichment',
@@ -79,14 +95,26 @@ const SHOWCASE_RICH_STEP_NAMES = new Set([
   'embedding_provider_probe',
   'rag_index_subset',
   'rag_retrieve_probe',
+  // PRP-41
+  'agent_hitl_flow',
+  'ops_snapshot',
 ])
+
+/**
+ * PRP-41 — steps that should NOT appear on `showcase_rich`. Today this set
+ * carries only the legacy `agent` step (replaced by `agent_hitl_flow` on
+ * showcase_rich). Resolved by Task 1 contract probe § 7 — design Z requires
+ * a second exclusion set because SHOWCASE_RICH_STEP_NAMES already serves
+ * the opposite filter direction.
+ */
+const DEMO_MINIMAL_ONLY_STEP_NAMES = new Set(['agent'])
 
 /** Return the PhaseDef list for one scenario (lockstep with backend). */
 export function phaseDefsForScenario(scenario: ScenarioPreset): readonly PhaseDef[] {
   if (scenario === 'showcase_rich') {
-    return ALL_STEPS
+    return ALL_STEPS.filter((d) => !DEMO_MINIMAL_ONLY_STEP_NAMES.has(d.step))
   }
-  // demo_minimal / sparse / others — legacy 11-step flow (no V2 enrichment).
+  // demo_minimal / sparse / others — legacy 11-step flow.
   return ALL_STEPS.filter((d) => !SHOWCASE_RICH_STEP_NAMES.has(d.step))
 }
 
@@ -101,7 +129,9 @@ export const PHASE_LABEL: Record<string, string> = {
   planning: 'Planning',
   knowledge: 'Knowledge',
   verify: 'Verify',
-  agent: 'Agent',
+  // PRP-41 — unified `agents` phase id replaces `agent`; new `ops` phase.
+  agents: 'Agents (HITL)',
+  ops: 'Ops snapshot',
   cleanup: 'Cleanup',
 }
 
@@ -116,6 +146,8 @@ export const PHASE_ORDER: readonly string[] = [
   'planning',
   'knowledge',
   'verify',
-  'agent',
+  // PRP-41 — `agent` renamed to `agents`; `ops` inserted between agents and cleanup.
+  'agents',
+  'ops',
   'cleanup',
 ]

@@ -28,6 +28,8 @@ export interface DemoSummary {
   winningRunId: string | null
   alias: string | null
   wallClockS: number
+  /** PRP-41 — populated when the SHOWCASE_RICH v2_train step registered a run. */
+  v2RunId: string | null
 }
 
 export interface DemoPipelineState {
@@ -120,6 +122,7 @@ export function applyEvent(state: DemoPipelineState, event: StepEvent): DemoPipe
         winningRunId: toStringOrNull(event.data.winning_run_id),
         alias: toStringOrNull(event.data.alias),
         wallClockS: toNumber(event.data.wall_clock_s) ?? 0,
+        v2RunId: toStringOrNull(event.data.v2_run_id),
       }
       return { ...state, phase: 'done', summary }
     }
@@ -176,6 +179,8 @@ export interface UseDemoPipelineResult {
   isRunning: boolean
   connectionStatus: ReturnType<typeof useWebSocket>['status']
   start: (req: DemoRunRequest) => void
+  /** PRP-41 — cancel an in-flight pipeline by disconnecting the WebSocket. */
+  stop: () => void
   /** PRP-38 — caller-supplied scenario; controls the idle layout. */
   setScenario: (scenario: ScenarioPreset) => void
   scenario: ScenarioPreset
@@ -240,6 +245,20 @@ export function useDemoPipeline(): UseDemoPipelineResult {
     [reconnect, scenario]
   )
 
+  // PRP-41 — Stop button cancels an in-flight run. WebSocket disconnect
+  // propagates as `WebSocketDisconnect` on the backend, which releases the
+  // `_pipeline_lock` (confirmed in Task 1 contract probe § 3). State returns
+  // to `idle` so the operator can hit Run again.
+  const stop = useCallback(() => {
+    pendingReq.current = null
+    disconnectRef.current?.()
+    setState((prev) => ({
+      ...prev,
+      phase: 'idle',
+      errorMessage: 'Pipeline cancelled by user.',
+    }))
+  }, [])
+
   const phases = useMemo(() => derivePhases(state.steps), [state.steps])
   const runningStep = state.steps.find((s) => s.status === 'running')
   const runningPhase = runningStep?.phaseName ?? null
@@ -254,6 +273,7 @@ export function useDemoPipeline(): UseDemoPipelineResult {
     isRunning: state.phase === 'running',
     connectionStatus: status,
     start,
+    stop,
     setScenario,
     scenario,
   }

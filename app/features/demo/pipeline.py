@@ -130,7 +130,12 @@ class _Client:
     :class:`_StepError` with the parsed RFC 7807 body.
     """
 
-    def __init__(self, app: FastAPI) -> None:
+    def __init__(
+        self,
+        app: FastAPI,
+        *,
+        event_sink: list[StepEvent] | None = None,
+    ) -> None:
         self._client = httpx.AsyncClient(
             # raise_app_exceptions=False makes the in-process transport behave
             # like a real network client: an unhandled error inside a driven
@@ -140,12 +145,31 @@ class _Client:
             base_url="http://demo.internal",
             timeout=_HTTP_TIMEOUT,
         )
+        # PRP-41 — opt-in intermediate event sink. Only the HITL step uses it;
+        # `run_pipeline` drains the buffer just before each terminal step_complete
+        # and stamps step_index / total_steps / phase_index / phase_total /
+        # phase_name onto every drained event. None in unit tests where the
+        # sink isn't wired up.
+        self._event_sink = event_sink
 
     async def __aenter__(self) -> _Client:
         return self
 
     async def __aexit__(self, *_exc: object) -> None:
         await self._client.aclose()
+
+    def yield_event(self, event: StepEvent) -> None:
+        """PRP-41 — buffer an intermediate StepEvent for the orchestrator.
+
+        The orchestrator (``run_pipeline``) drains the sink between the step
+        function's return and the terminal ``step_complete`` it yields. Step
+        functions that do not need to surface intermediate state never call
+        this. If no sink is wired (e.g. in unit tests), the event is silently
+        dropped — callers must not rely on it for terminal payload.
+        """
+        if self._event_sink is None:
+            return
+        self._event_sink.append(event)
 
     async def request(
         self,
@@ -225,6 +249,10 @@ class DemoContext:
     price_cut_scenario_id: str | None = None
     holiday_scenario_id: str | None = None
     embedding_unreachable: bool = False
+    # PRP-41 — additive HITL approval state, populated only by
+    # step_agent_hitl_flow on SHOWCASE_RICH. Remain None on every other path.
+    approval_action_id: str | None = None
+    agent_approval_decision: str | None = None  # "executed"|"rejected"|"expired"|"timed_out"
 
 
 # =============================================================================
@@ -267,6 +295,17 @@ def _llm_key_present() -> bool:
     if provider in ("google-gla", "google-vertex"):
         return bool(settings.google_api_key)
     return False
+
+
+# PRP-41 — HITL approval flow constants. Display delay gives the visitor a
+# window to click Approve on the FE before the backend auto-fires; the hard
+# timeout is the load-bearing fallback so a hung agent never stops the demo.
+_APPROVAL_DISPLAY_DELAY_S = 3.0
+_APPROVAL_HARD_TIMEOUT_S = 90.0
+_HITL_PROMPT = (
+    "Save a 10% price-cut scenario plan for the demo-production model "
+    "as 'showcase-agent-savedplan'."
+)
 
 
 # PRP-40 — artifact-key parser for /scenarios/* run_id resolution. Two ID
@@ -1973,6 +2012,318 @@ async def step_cleanup(ctx: DemoContext, client: _Client) -> StepResult:
 
 
 # =============================================================================
+# PRP-41 — Agents (HITL) + Ops snapshot phases (showcase_rich only)
+# =============================================================================
+
+
+async def step_agent_hitl_flow(ctx: DemoContext, client: _Client) -> StepResult:
+    """PRP-41 — HITL approval round-trip on the experiment agent.
+
+    Flow:
+      1. ``_llm_key_present()`` -> skip when no key.
+      2. ``POST /agents/sessions`` (agent_type=experiment) -> session_id.
+      3. ``POST /agents/sessions/{id}/chat`` with the HITL prompt; the
+         experiment agent calls ``tool_save_scenario`` which short-circuits
+         on the ``save_scenario`` entry in ``agent_require_approval``. The
+         chat response carries ``pending_approval=true`` +
+         ``pending_action: PendingAction``.
+      4. ``client.yield_event(...)`` an intermediate step_complete with
+         ``status='running'`` + ``awaiting_approval=true`` so the FE can
+         render the Approve button.
+      5. Sleep ``_APPROVAL_DISPLAY_DELAY_S`` -- a one-click FE Approve may
+         pre-empt the auto-approve in this window.
+      6. ``POST /agents/sessions/{id}/approve`` with ``{action_id,
+         approved: true}``. Absorb 4xx (the FE pre-empted; the action was
+         already consumed).
+      7. Terminal: ``pass`` with the approval decision in step.data.
+
+    Skip-gracefully on every error path (session-create / chat / approve
+    failure, or the agent never triggers ``save_scenario``). Never raises.
+
+    Hard timeout: if the elapsed time exceeds ``_APPROVAL_HARD_TIMEOUT_S``
+    before step (6) completes, returns ``skip`` with
+    ``approval_decision='timed_out'``.
+    """
+    key_present = _llm_key_present()
+    logger.info("demo.agent_hitl_flow.key_present", present=key_present)
+    if not key_present:
+        return (
+            "skip",
+            "no API key matching agent_default_model provider",
+            {},
+        )
+
+    started_at = time.monotonic()
+
+    # (1+2) -- session.
+    try:
+        create_body = await client.request(
+            "agent_hitl_flow[session]",
+            "POST",
+            "/agents/sessions",
+            json_body={"agent_type": "experiment", "initial_context": None},
+        )
+    except _StepError as exc:
+        return ("skip", f"session-create failed: {exc}", {})
+    session_id_raw = create_body.get("session_id")
+    if not isinstance(session_id_raw, str):
+        return ("skip", "no session_id returned", {})
+    session_id: str = session_id_raw
+    ctx.session_id = session_id
+
+    # (3) -- chat that triggers the gated tool.
+    try:
+        chat_body = await client.request(
+            "agent_hitl_flow[chat]",
+            "POST",
+            f"/agents/sessions/{session_id}/chat",
+            json_body={"message": _HITL_PROMPT, "stream": False},
+        )
+    except _StepError as exc:
+        return (
+            "skip",
+            f"chat round-trip failed: {exc}",
+            {"session_id": session_id},
+        )
+
+    pending_approval = bool(chat_body.get("pending_approval", False))
+    raw_action = chat_body.get("pending_action") or {}
+    pending_action: dict[str, Any] = raw_action if isinstance(raw_action, dict) else {}
+    tokens_used = int(chat_body.get("tokens_used", 0))
+    raw_tool_calls = chat_body.get("tool_calls", [])
+    tool_count = len(raw_tool_calls) if isinstance(raw_tool_calls, list) else 0
+
+    if not pending_approval or not pending_action:
+        # The agent didn't trigger save_scenario (e.g. answered directly or
+        # picked a different tool). Skip-by-design: not a failure.
+        return (
+            "skip",
+            (
+                f"agent did not trigger save_scenario "
+                f"(tokens={tokens_used}, tool_calls={tool_count})"
+            ),
+            {
+                "session_id": session_id,
+                "tokens_used": tokens_used,
+                "tool_calls_count": tool_count,
+            },
+        )
+
+    action_id_raw = pending_action.get("action_id")
+    if not isinstance(action_id_raw, str):
+        return (
+            "skip",
+            "pending_action.action_id missing",
+            {"session_id": session_id},
+        )
+    action_id: str = action_id_raw
+    ctx.approval_action_id = action_id
+
+    # (4) -- intermediate event so the FE renders Approve. step_index /
+    # total_steps / phase_index / phase_total are stamped by the orchestrator
+    # when it drains the sink (see run_pipeline).
+    elapsed_ms = (time.monotonic() - started_at) * 1000.0
+    client.yield_event(
+        StepEvent(
+            event_type="step_complete",
+            step_name="agent_hitl_flow",
+            step_index=0,
+            total_steps=0,
+            status="running",
+            detail="awaiting approval (auto-approve in 3 s)",
+            duration_ms=elapsed_ms,
+            data={
+                "awaiting_approval": True,
+                "approval_url": f"/agents/sessions/{session_id}/approve",
+                "action_id": action_id,
+                "session_id": session_id,
+                "tokens_used": tokens_used,
+                "tool_calls_count": tool_count,
+            },
+            phase_name=PHASE_AGENTS,
+        )
+    )
+
+    # (5) -- display delay.
+    elapsed_after_intermediate = time.monotonic() - started_at
+    delay = max(0.0, _APPROVAL_DISPLAY_DELAY_S - elapsed_after_intermediate)
+    if delay > 0:
+        await asyncio.sleep(delay)
+
+    # (5b) -- hard-timeout check BEFORE the approve POST.
+    elapsed_before_approve = time.monotonic() - started_at
+    if elapsed_before_approve > _APPROVAL_HARD_TIMEOUT_S:
+        ctx.agent_approval_decision = "timed_out"
+        return (
+            "skip",
+            "approval timed out -- pipeline continued",
+            {
+                "session_id": session_id,
+                "action_id": action_id,
+                "approval_decision": "timed_out",
+                "tokens_used": tokens_used,
+                "tool_calls_count": tool_count,
+                "timed_out": True,
+            },
+        )
+
+    # (6) -- POST /approve. Absorb 4xx (FE pre-empted) per Task 1 §5 #2:
+    # AgentService.approve_action returns 400 ("No pending action") when the
+    # action was already consumed by the FE's optimistic Approve click.
+    approval_decision = "executed"
+    try:
+        approve_body = await client.request(
+            "agent_hitl_flow[approve]",
+            "POST",
+            f"/agents/sessions/{session_id}/approve",
+            json_body={"action_id": action_id, "approved": True},
+        )
+        raw_status = approve_body.get("status", "executed")
+        if isinstance(raw_status, str):
+            approval_decision = raw_status
+    except _StepError as exc:
+        if 400 <= exc.status_code < 500:
+            # FE pre-empted -- the approval already landed. Optimistic default.
+            logger.info(
+                "demo.agent_hitl_flow.approve_pre_empted",
+                session_id=session_id,
+                action_id=action_id,
+                status_code=exc.status_code,
+            )
+            approval_decision = "executed"
+        else:
+            return (
+                "skip",
+                f"approve failed: {exc}",
+                {
+                    "session_id": session_id,
+                    "action_id": action_id,
+                    "tokens_used": tokens_used,
+                    "tool_calls_count": tool_count,
+                },
+            )
+
+    ctx.agent_approval_decision = approval_decision
+
+    return (
+        "pass",
+        (
+            f"session={session_id[:8]}... tokens={tokens_used} "
+            f"tool_calls={tool_count} approved={approval_decision}"
+        ),
+        {
+            "session_id": session_id,
+            "action_id": action_id,
+            "approval_decision": approval_decision,
+            "tokens_used": tokens_used,
+            "tool_calls_count": tool_count,
+        },
+    )
+
+
+async def step_ops_snapshot(_ctx: DemoContext, client: _Client) -> StepResult:
+    """PRP-41 — fetch /ops/* endpoints and embed a 5-key KPI payload.
+
+    Three GETs:
+      - GET /ops/summary
+      - GET /ops/retraining-candidates?limit=5
+      - GET /ops/model-health?limit=5
+
+    All endpoints are 200-safe on an empty DB (verified by
+    ``test_summary_resilient_structural`` + ``test_model_health_resilient_structural``).
+
+    Returns ``("pass", ...)`` when at least one of the three returned a body.
+    Returns ``("warn", ...)`` only when all three failed -- never ``fail``
+    (ops is observability, not a hard pipeline dependency).
+    """
+    summary: dict[str, Any] = {}
+    candidates_body: dict[str, Any] = {}
+    health_body: dict[str, Any] = {}
+
+    try:
+        summary = await client.request(
+            "ops_snapshot[summary]",
+            "GET",
+            "/ops/summary",
+        )
+    except _StepError as exc:
+        logger.warning("demo.ops_snapshot.summary_failed", status_code=exc.status_code)
+
+    try:
+        candidates_body = await client.request(
+            "ops_snapshot[retraining]",
+            "GET",
+            "/ops/retraining-candidates?limit=5",
+        )
+    except _StepError as exc:
+        logger.warning("demo.ops_snapshot.retraining_failed", status_code=exc.status_code)
+
+    try:
+        health_body = await client.request(
+            "ops_snapshot[health]",
+            "GET",
+            "/ops/model-health?limit=5",
+        )
+    except _StepError as exc:
+        logger.warning("demo.ops_snapshot.health_failed", status_code=exc.status_code)
+
+    raw_aliases = summary.get("aliases") or []
+    aliases: list[dict[str, Any]] = (
+        [a for a in raw_aliases if isinstance(a, dict)] if isinstance(raw_aliases, list) else []
+    )
+    stale_count = sum(1 for a in aliases if a.get("is_stale"))
+    total_aliases = len(aliases)
+
+    raw_runs = summary.get("runs") or {}
+    runs: dict[str, Any] = raw_runs if isinstance(raw_runs, dict) else {}
+    raw_counts = runs.get("counts") or []
+    # Task 1 confirmed: RunHealth.counts is list[StatusCount] where
+    # StatusCount = {status: str, count: int}.
+    total_runs = (
+        sum(int(c.get("count", 0)) for c in raw_counts if isinstance(c, dict))
+        if isinstance(raw_counts, list)
+        else 0
+    )
+
+    raw_candidates = candidates_body.get("candidates") or []
+    retraining_count = len(raw_candidates) if isinstance(raw_candidates, list) else 0
+
+    raw_entries = health_body.get("entries") or []
+    degrading_count = (
+        sum(
+            1
+            for e in raw_entries
+            if isinstance(e, dict) and e.get("drift_direction") == "degrading"
+        )
+        if isinstance(raw_entries, list)
+        else 0
+    )
+
+    data: dict[str, Any] = {
+        "stale_aliases_count": stale_count,
+        "retraining_candidates_count": retraining_count,
+        "total_runs": total_runs,
+        "total_aliases": total_aliases,
+        "degrading_health_count": degrading_count,
+    }
+
+    if summary or candidates_body or health_body:
+        detail = (
+            f"stale_aliases={stale_count} retraining={retraining_count} "
+            f"runs={total_runs} aliases={total_aliases} "
+            f"degrading={degrading_count}"
+        )
+        return ("pass", detail, data)
+
+    # All three endpoints failed -- warn (pipeline still goes green).
+    return (
+        "warn",
+        "/ops/* all 4xx/5xx -- ops snapshot unavailable",
+        data,
+    )
+
+
+# =============================================================================
 # Orchestration
 # =============================================================================
 
@@ -1992,7 +2343,12 @@ PHASE_PORTFOLIO = "portfolio"
 PHASE_PLANNING = "planning"
 PHASE_KNOWLEDGE = "knowledge"
 PHASE_VERIFY = "verify"
-PHASE_AGENT = "agent"
+# PRP-41 — design Z: unified "agents" phase id used by BOTH demo_minimal/sparse
+# (legacy step_agent) AND showcase_rich (step_agent_hitl_flow). The PRP-38
+# PHASE_AGENT constant is replaced; no other code referenced it by name.
+PHASE_AGENTS = "agents"
+# PRP-41 — new ops phase, populated only on SHOWCASE_RICH.
+PHASE_OPS = "ops"
 PHASE_CLEANUP = "cleanup"
 
 
@@ -2026,7 +2382,17 @@ def _phase_table(scenario: ScenarioPreset) -> list[PhaseStep]:
     planning_steps: list[tuple[str, StepFn]] = []
     knowledge_steps: list[tuple[str, StepFn]] = []
     verify_steps: list[tuple[str, StepFn]] = [("verify", step_verify)]
-    agent_steps: list[tuple[str, StepFn]] = [("agent", step_agent)]
+    # PRP-41 — design Z: same phase id "agents" for both branches; SHOWCASE_RICH
+    # swaps the legacy single-turn `step_agent` for the HITL flow.
+    agent_steps: list[tuple[str, StepFn]] = (
+        [("agent_hitl_flow", step_agent_hitl_flow)]
+        if scenario is ScenarioPreset.SHOWCASE_RICH
+        else [("agent", step_agent)]
+    )
+    # PRP-41 — new ops phase. Empty on demo_minimal / sparse (no row emitted).
+    ops_steps: list[tuple[str, StepFn]] = (
+        [("ops_snapshot", step_ops_snapshot)] if scenario is ScenarioPreset.SHOWCASE_RICH else []
+    )
     cleanup_steps: list[tuple[str, StepFn]] = [("cleanup", step_cleanup)]
     if scenario is ScenarioPreset.SHOWCASE_RICH:
         data_steps += [
@@ -2063,7 +2429,10 @@ def _phase_table(scenario: ScenarioPreset) -> list[PhaseStep]:
     rows += [(PHASE_PLANNING, name, fn) for name, fn in planning_steps]
     rows += [(PHASE_KNOWLEDGE, name, fn) for name, fn in knowledge_steps]
     rows += [(PHASE_VERIFY, name, fn) for name, fn in verify_steps]
-    rows += [(PHASE_AGENT, name, fn) for name, fn in agent_steps]
+    # PRP-41 — both branches use PHASE_AGENTS; SHOWCASE_RICH ALSO appends an
+    # ops_snapshot row under the new PHASE_OPS, BEFORE cleanup.
+    rows += [(PHASE_AGENTS, name, fn) for name, fn in agent_steps]
+    rows += [(PHASE_OPS, name, fn) for name, fn in ops_steps]
     rows += [(PHASE_CLEANUP, name, fn) for name, fn in cleanup_steps]
     return rows
 
@@ -2109,8 +2478,12 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
     )
     wall_start = time.monotonic()
     any_fail = False
+    # PRP-41 — buffer for intermediate events the HITL step emits via
+    # ``client.yield_event(...)``. Drained + stamped with the row's
+    # index/phase fields immediately BEFORE each terminal step_complete.
+    intermediate_events: list[StepEvent] = []
 
-    async with _Client(app) as client:
+    async with _Client(app, event_sink=intermediate_events) as client:
         for index, (phase_name, name, fn) in enumerate(rows, start=1):
             phase_index = phase_index_by_phase[phase_name]
             yield StepEvent(
@@ -2146,6 +2519,21 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
                     {},
                 )
             duration_ms = (time.monotonic() - t0) * 1000
+            # PRP-41 — drain any intermediate events the step buffered BEFORE
+            # the terminal step_complete. Stamp the row's index/phase fields
+            # so the FE state machine processes them as if they were emitted
+            # by the orchestrator. Order matters: intermediate events must
+            # land before the terminal so "awaiting_approval" precedes
+            # "approved" in the WS stream.
+            for ev in intermediate_events:
+                ev.step_index = index
+                ev.total_steps = total
+                ev.phase_index = phase_index
+                ev.phase_total = phase_total
+                # phase_name is set by the step fn already, but mirror in case.
+                ev.phase_name = phase_name
+                yield ev
+            intermediate_events.clear()
             yield StepEvent(
                 event_type="step_complete",
                 step_name=name,

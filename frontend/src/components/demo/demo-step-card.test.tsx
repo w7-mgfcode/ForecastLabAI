@@ -123,4 +123,83 @@ describe('DemoStepCard PRP-39 mini-summaries', () => {
     const links = screen.queryAllByRole('link', { name: /Inspect/i })
     expect(links.length).toBe(0)
   })
+
+  // ============================================================
+  // PRP-41 — HitlFlowSummary, ApproveButton, OpsSnapshotMiniGrid
+  // ============================================================
+
+  it('agent_hitl_flow — terminal pass renders HitlFlowSummary with the approval decision', () => {
+    const step = makeStep('agent_hitl_flow', 'pass', {
+      session_id: 'sess-abcdef0123456',
+      tokens_used: 240,
+      tool_calls_count: 1,
+      action_id: 'act-x',
+      approval_decision: 'executed',
+    })
+    const { container } = renderCard(step, null)
+    const text = container.textContent ?? ''
+    expect(text).toContain('session=sess-abc')
+    expect(text).toContain('tokens=240')
+    expect(text).toContain('tool_calls=1')
+    expect(text).toContain('approval=executed')
+  })
+
+  it('agent_hitl_flow — running + awaiting_approval=true surfaces the Approve button', () => {
+    const step = makeStep('agent_hitl_flow', 'running', {
+      session_id: 'sess-x',
+      awaiting_approval: true,
+      action_id: 'act-y',
+      approval_url: '/agents/sessions/sess-x/approve',
+    })
+    const { container } = renderCard(step, null)
+    const buttons = Array.from(container.querySelectorAll('button')).map((b) => b.textContent)
+    expect(buttons).toContain('Approve')
+  })
+
+  it('agent_hitl_flow — terminal status hides the Approve button', () => {
+    const step = makeStep('agent_hitl_flow', 'pass', {
+      session_id: 'sess-x',
+      awaiting_approval: true, // stale flag from intermediate event
+      action_id: 'act-y',
+      approval_url: '/agents/sessions/sess-x/approve',
+    })
+    const { container } = renderCard(step, null)
+    const buttons = Array.from(container.querySelectorAll('button')).map((b) => b.textContent)
+    expect(buttons).not.toContain('Approve')
+  })
+
+  it('ops_snapshot — renders the 5-tile mini grid with values', () => {
+    const step = makeStep('ops_snapshot', 'pass', {
+      stale_aliases_count: 1,
+      retraining_candidates_count: 2,
+      total_runs: 5,
+      total_aliases: 2,
+      degrading_health_count: 1,
+    })
+    const { container } = renderCard(step, null)
+    // 5 tiles in a grid-cols-5; each tile has a label + value.
+    const tileLabels = Array.from(
+      container.querySelectorAll('.grid-cols-5 .text-muted-foreground'),
+    ).map((d) => d.textContent)
+    expect(tileLabels).toEqual([
+      'stale_aliases',
+      'retraining',
+      'runs',
+      'aliases',
+      'degrading',
+    ])
+  })
+
+  it('ops_snapshot — renders em-dash for missing keys', () => {
+    const step = makeStep('ops_snapshot', 'pass', {
+      stale_aliases_count: 3,
+      // others missing
+    })
+    const { container } = renderCard(step, null)
+    const values = Array.from(
+      container.querySelectorAll('.grid-cols-5 .font-mono.font-semibold'),
+    ).map((d) => d.textContent)
+    expect(values[0]).toBe('3')
+    expect(values.slice(1)).toEqual(['—', '—', '—', '—'])
+  })
 })

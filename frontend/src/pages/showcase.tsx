@@ -1,10 +1,13 @@
 import { Link } from 'react-router-dom'
-import { Play, Loader2, Trophy, AlertTriangle, ArrowRight } from 'lucide-react'
+import { Play, Loader2, Trophy, AlertTriangle, ArrowRight, Square } from 'lucide-react'
 import { useState } from 'react'
 import { useDemoPipeline } from '@/hooks/use-demo-pipeline'
 import type { DemoStep } from '@/hooks/use-demo-pipeline'
 import { DemoPhasePanel } from '@/components/demo/DemoPhasePanel'
 import { ScenarioPicker } from '@/components/demo/ScenarioPicker'
+import { ShowcaseKpiStrip } from '@/components/demo/ShowcaseKpiStrip'
+import { InspectArtifactsPanel } from '@/components/demo/InspectArtifactsPanel'
+import { RunHistoryStrip } from '@/components/demo/RunHistoryStrip'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -78,6 +81,11 @@ function resolveInspectHref(step: DemoStep): string | null {
     case 'rag_index_subset':
     case 'rag_retrieve_probe':
       return ROUTES.KNOWLEDGE
+    // PRP-41 — HITL flow + ops snapshot.
+    case 'agent_hitl_flow':
+      return ROUTES.CHAT
+    case 'ops_snapshot':
+      return ROUTES.OPS
     default:
       return null
   }
@@ -94,6 +102,7 @@ export default function ShowcasePage() {
     isRunning,
     connectionStatus,
     start,
+    stop,
     scenario,
     setScenario,
   } = useDemoPipeline()
@@ -151,6 +160,16 @@ export default function ShowcasePage() {
         </p>
       </div>
 
+      {/* PRP-41 — KPI strip at the top, hidden until at least one step completes. */}
+      <ShowcaseKpiStrip steps={steps} />
+
+      {/* PRP-41 — Replayable run history (localStorage FIFO 5). */}
+      <RunHistoryStrip
+        onReplay={(req) => start(req)}
+        summary={phase === 'done' ? summary : null}
+        scenario={scenario}
+      />
+
       {/* Controls */}
       <Card>
         <CardHeader>
@@ -174,6 +193,14 @@ export default function ShowcasePage() {
               )}
               {isRunning ? 'Running…' : 'Run pipeline'}
             </Button>
+
+            {/* PRP-41 — Stop button: cancel an in-flight pipeline. */}
+            {isRunning && (
+              <Button onClick={stop} variant="outline" size="lg">
+                <Square className="mr-2 h-4 w-4" />
+                Stop
+              </Button>
+            )}
 
             <label className="flex items-center gap-2 text-sm">
               <Checkbox
@@ -275,6 +302,11 @@ export default function ShowcasePage() {
         runningPhase={runningPhase}
         getInspectHref={getInspectHref}
       />
+
+      {/* PRP-41 — post-run deep-link grid (10 cards). */}
+      {phase === 'done' && summary && (
+        <InspectArtifactsPanel steps={steps} summary={summary} />
+      )}
     </div>
   )
 }
