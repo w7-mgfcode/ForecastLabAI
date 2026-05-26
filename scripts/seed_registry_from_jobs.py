@@ -72,18 +72,27 @@ def _model_config_payload(model_type: str) -> dict[str, object]:
 
 async def fetch_completed_train_jobs(client: httpx.AsyncClient) -> list[dict[str, object]]:
     """Fetch every completed train job through the public API."""
+    page_size = 100
     out: list[dict[str, object]] = []
     page = 1
     while True:
         r = await client.get(
             "/jobs",
-            params={"page": page, "page_size": 100, "job_type": "train", "status": "completed"},
+            params={
+                "page": page,
+                "page_size": page_size,
+                "job_type": "train",
+                "status": "completed",
+            },
         )
         r.raise_for_status()
         body = r.json()
         jobs = body.get("jobs") or []
         out.extend(jobs)
-        if page * len(jobs) >= int(body.get("total", 0)) or not jobs:
+        total = int(body.get("total", 0))
+        # Exit on empty page, short page (last page partially filled), or
+        # once accumulated count covers reported total.
+        if not jobs or len(jobs) < page_size or len(out) >= total:
             break
         page += 1
     return out
@@ -99,11 +108,15 @@ async def register_one(
     model_type = str(params.get("model_type", ""))
     if model_type not in {"naive", "seasonal_naive", "moving_average"}:
         return None  # only baselines for this backfill
-    source_path = Path(str(result.get("model_path", "")))
-    if not source_path.exists():
-        # try relative-to-cwd
+    model_path_raw = str(result.get("model_path") or "").strip()
+    if not model_path_raw:
+        # job result didn't carry a path — nothing to backfill
+        return None
+    source_path = Path(model_path_raw)
+    if not source_path.is_file():
+        # try relative-to-cwd; reject if the candidate is missing or a directory
         rel = Path.cwd() / source_path
-        if rel.exists():
+        if rel.is_file():
             source_path = rel
         else:
             return None
@@ -131,9 +144,17 @@ async def register_one(
             "git_sha": None,
         },
     )
-    if r.status_code >= 400:
-        # duplicate config_hash → idempotent skip
+    if r.status_code == 409:
+        # duplicate config_hash with registry_duplicate_policy="deny" → idempotent skip
         return None
+    if r.status_code >= 400:
+        # surface unexpected 4xx / 5xx so registry downtime or validation errors
+        # aren't silently swallowed as duplicates
+        try:
+            detail: object = r.json()
+        except ValueError:
+            detail = r.text
+        raise RuntimeError(f"POST /registry/runs failed (status {r.status_code}): {detail!r}")
     run_id = str(r.json().get("run_id"))
 
     # (b) running
