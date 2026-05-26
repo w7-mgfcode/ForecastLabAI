@@ -276,7 +276,22 @@ class RAGService:
         found: list[tuple[Path, str]] = []
 
         if request.include_docs:
-            found += [(p, "docs") for p in (self._base_dir / "docs").rglob("*.md")]
+            # PRP-40 — optional sub-path filter under docs/. None preserves
+            # back-compat (wholesale rglob).
+            if request.path_prefix:
+                base = self._base_dir.resolve()
+                candidate = (self._base_dir / request.path_prefix).resolve()
+                # Guard against path traversal — candidate MUST be inside the
+                # project root (security-patterns.md path-traversal section).
+                try:
+                    candidate.relative_to(base)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"path_prefix escapes the project root: {request.path_prefix!r}"
+                    ) from exc
+                found += [(p, "docs") for p in candidate.rglob("*.md")]
+            else:
+                found += [(p, "docs") for p in (self._base_dir / "docs").rglob("*.md")]
 
         if request.include_prps:
             found += [(p, "prp") for p in (self._base_dir / "PRPs").rglob("*.md")]
@@ -317,6 +332,7 @@ class RAGService:
             include_docs=request.include_docs,
             include_prps=request.include_prps,
             include_root=request.include_root,
+            path_prefix=request.path_prefix,
         )
 
         results: list[ProjectDocResult] = []

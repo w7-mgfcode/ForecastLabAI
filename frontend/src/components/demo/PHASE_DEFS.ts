@@ -20,7 +20,15 @@ export interface PhaseDef {
 
 /**
  * The complete set of step definitions used by either DEMO_MINIMAL (legacy
- * 11 steps) or SHOWCASE_RICH (PRP-38 added 3; PRP-39 adds 4 more = 18 steps).
+ * 11 steps) or SHOWCASE_RICH (11 + 3 PRP-38 + 4 PRP-39 + 5 PRP-40 = 23 steps).
+ *
+ * PRP-39 adds four steps (champion_compat_compare, stale_alias_trigger,
+ * safer_promote_flow under the existing decision phase, plus batch_preset
+ * under a new portfolio phase between decision and verify).
+ *
+ * PRP-40 adds five steps grouped under two new phases ("planning" and
+ * "knowledge"), inserted after portfolio and BEFORE verify via relative
+ * anchors.
  *
  * Order matters: each row's (phase, step) tuple list is what the lockstep
  * test asserts equals the backend's `_phase_table(scenario)` output for
@@ -44,12 +52,19 @@ const ALL_STEPS: ReadonlyArray<PhaseDef> = [
   { phase: 'decision', step: 'safer_promote_flow', label: 'Safer Promote walkthrough' },
   // PRP-39 — new portfolio phase, between decision and verify.
   { phase: 'portfolio', step: 'batch_preset', label: 'Portfolio batch (quick baseline sweep)' },
+  // PRP-40 — planning + knowledge phases, after portfolio, before verify.
+  { phase: 'planning', step: 'scenario_simulate_and_save', label: 'Simulate & save plan' },
+  { phase: 'planning', step: 'multi_plan_compare', label: 'Compare plans' },
+  { phase: 'knowledge', step: 'embedding_provider_probe', label: 'Probe embedding provider' },
+  { phase: 'knowledge', step: 'rag_index_subset', label: 'Index user-guide corpus' },
+  { phase: 'knowledge', step: 'rag_retrieve_probe', label: 'Semantic-retrieve probe' },
   { phase: 'verify', step: 'verify', label: 'Verify artifact' },
   { phase: 'agent', step: 'agent', label: 'Agent chat' },
   { phase: 'cleanup', step: 'cleanup', label: 'Cleanup' },
 ] as const
 
 const SHOWCASE_RICH_STEP_NAMES = new Set([
+  // PRP-38
   'phase2_enrichment',
   'historical_backfill',
   'v2_train',
@@ -58,6 +73,12 @@ const SHOWCASE_RICH_STEP_NAMES = new Set([
   'stale_alias_trigger',
   'safer_promote_flow',
   'batch_preset',
+  // PRP-40
+  'scenario_simulate_and_save',
+  'multi_plan_compare',
+  'embedding_provider_probe',
+  'rag_index_subset',
+  'rag_retrieve_probe',
 ])
 
 /** Return the PhaseDef list for one scenario (lockstep with backend). */
@@ -76,6 +97,9 @@ export const PHASE_LABEL: Record<string, string> = {
   decision: 'Decision',
   // PRP-39 — new portfolio phase between decision and verify.
   portfolio: 'Portfolio',
+  // PRP-40 — planning + knowledge phases (showcase_rich only).
+  planning: 'Planning',
+  knowledge: 'Knowledge',
   verify: 'Verify',
   agent: 'Agent',
   cleanup: 'Cleanup',
@@ -86,8 +110,11 @@ export const PHASE_ORDER: readonly string[] = [
   'data',
   'modeling',
   'decision',
-  // PRP-39 — new portfolio phase between decision and verify.
+  // PRP-39 — portfolio phase between decision and verify.
   'portfolio',
+  // PRP-40 — planning + knowledge inserted after portfolio, before verify.
+  'planning',
+  'knowledge',
   'verify',
   'agent',
   'cleanup',
