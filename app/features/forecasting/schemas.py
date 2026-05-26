@@ -13,7 +13,9 @@ from datetime import date as date_type
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.shared.feature_frames import FeatureGroup
 
 # =============================================================================
 # Model Configuration Schemas
@@ -312,6 +314,30 @@ class TrainRequest(BaseModel):
         description="End date of training period (inclusive)",
     )
     config: ModelConfig
+    # PRP-35: opt-in to the V2 feature contract (richer, leakage-safe). V1
+    # remains the default and the back-compat path; V2 callers also set
+    # ``feature_groups`` to pick the enabled :class:`FeatureGroup` subset.
+    # NOTE: these fields live on ``TrainRequest``, NOT on ``ModelConfigBase`` —
+    # adding them to the config would mutate every existing ``config_hash()``
+    # value, orphaning every registry row and alias. The resolved version is
+    # persisted into bundle metadata instead.
+    feature_frame_version: int = Field(
+        default=1,
+        ge=1,
+        le=2,
+        description=(
+            "Feature contract version. 1 = V1 (default, 14 columns, back-compat); "
+            "2 = V2 (richer manifest, opt-in)."
+        ),
+    )
+    feature_groups: list[str] | None = Field(
+        default=None,
+        description=(
+            "V2 only: optional list of FeatureGroup names to enable "
+            "(None → DEFAULT_V2_GROUPS). MUST be None / omitted when "
+            "feature_frame_version=1 (422 otherwise)."
+        ),
+    )
 
     @field_validator("train_end_date")
     @classmethod
@@ -322,6 +348,24 @@ class TrainRequest(BaseModel):
         if "train_start_date" in data and v <= data["train_start_date"]:
             raise ValueError("train_end_date must be after train_start_date")
         return v
+
+    @model_validator(mode="after")
+    def validate_feature_frame_version_and_groups(self) -> TrainRequest:
+        """Reject ``feature_groups`` when V1 and unknown group names when V2."""
+        if self.feature_frame_version == 1 and self.feature_groups is not None:
+            raise ValueError(
+                "feature_groups is only valid when feature_frame_version=2; "
+                "omit it for V1 training."
+            )
+        if self.feature_frame_version == 2 and self.feature_groups is not None:
+            valid_names = {g.value for g in FeatureGroup}
+            unknown = [name for name in self.feature_groups if name not in valid_names]
+            if unknown:
+                raise ValueError(
+                    f"Unknown FeatureGroup name(s): {unknown!r}. "
+                    f"Valid names: {sorted(valid_names)}."
+                )
+        return self
 
 
 class TrainResponse(BaseModel):
@@ -501,5 +545,29 @@ class FeatureMetadataResponse(BaseModel):
             "For HistGBR-based RegressionForecaster: 'permutation'. "
             "For prophet_like: 'ridge_coef'. Always populated so consumers "
             "know what the numbers mean."
+        ),
+    )
+    # PRP-35 — purely additive V2 metadata. ``feature_frame_version`` defaults
+    # to 1 for legacy bundles (``bundle.metadata.get("feature_frame_version", 1)``).
+    # ``feature_groups`` / ``feature_safety_classes`` are populated for V2
+    # bundles only and absent (None) for V1.
+    feature_frame_version: int = Field(
+        default=1,
+        ge=1,
+        le=2,
+        description="Feature contract version recorded in the bundle metadata.",
+    )
+    feature_groups: dict[str, list[str]] | None = Field(
+        default=None,
+        description=(
+            "V2 only: ``{group_name: [columns]}`` mapping from "
+            "``v2_feature_groups_dict``. None for V1 bundles."
+        ),
+    )
+    feature_safety_classes: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "V2 only: ``{column: safety.value}`` mapping from "
+            "``v2_feature_safety_classes``. None for V1 bundles."
         ),
     )

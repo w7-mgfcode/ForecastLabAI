@@ -114,3 +114,43 @@ The change should document that:
 - Joblib persistence documentation: https://joblib.readthedocs.io/en/stable/persistence.html
 - Pydantic documentation: https://docs.pydantic.dev/latest/
 
+## V2 Feature Contract (PRP-35 — opt-in)
+
+Starting with PRP-35 the feature-frame contract is versioned. V1 (the 14-column manifest documented above) remains the default and the back-compat path; V2 is an opt-in richer manifest reachable via `TrainRequest.feature_frame_version=2`.
+
+**Pinned V2 constants** (`app/shared/feature_frames/contract_v2.py`):
+- `EXOGENOUS_LAGS_V2 = (1, 7, 14, 28, 56, 364)` — `lag_364` (not `lag_365`) preserves day-of-week.
+- `ROLLING_WINDOWS_V2 = (7, 28, 90)` — leakage-safe via `shift(1).rolling(window)` semantics (`s[i-window..i-1]` for row `i`).
+- `TREND_WINDOWS_V2 = (30, 90)` — `numpy.polyfit(deg=1)` slope over the trailing window.
+- `HISTORY_TAIL_DAYS_V2 = 400` — comfortably exceeds `lag_364`.
+
+**Feature groups** (`FeatureGroup` enum) — every V2 column belongs to exactly one group; group enablement decides emission. The default `feature_groups=None` resolves to the MVP-green default:
+
+| Group | Default | Columns (example) |
+|-------|---------|-------------------|
+| `target_history` | ✅ | `lag_1`, `lag_7`, …, `lag_364`, `same_dow_mean_4`, `same_dow_mean_8` |
+| `calendar` | ✅ | V1 calendar + `week_of_year_sin/cos`, `day_of_month_sin/cos`, `is_holiday` |
+| `rolling` | ✅ | `rolling_mean_7/28/90`, `rolling_median_28`, `rolling_std_28` |
+| `trend` | ✅ | `trend_30`, `trend_90`, `rolling_mean_7_vs_28`, `rolling_mean_28_vs_prev_28` |
+| `price_promo` | ✅ | V1 price + `promo_discount_pct`, `promo_kind_markdown_active`, `promo_kind_bundle_active` |
+| `lifecycle` | ✅ | V1 `days_since_launch` + `is_new_product`, `is_mature_product`, `is_discontinued`, `days_until_discontinue` |
+| `inventory` | opt-in | `is_stockout_lag1`, `stockout_days_7/28`, `inventory_available_ratio_28` |
+| `replenishment` | opt-in | `days_since_last_replenishment`, `replenishment_count_14`, `replenishment_qty_28` |
+| `returns` | opt-in | `returns_qty_7/28`, `returns_rate_28` |
+| `exogenous_weather` | opt-in | `exo_weather_temp_c`, `exo_weather_precip_mm` |
+| `exogenous_macro` | opt-in | `exo_macro_index` |
+
+**Safety classification** — every V2 column carries a `FeatureSafety` class (`SAFE` / `CONDITIONALLY_SAFE` / `UNSAFE_UNLESS_SUPPLIED`). Persisted into bundle metadata via `v2_feature_safety_classes` so the dashboard can surface the leakage class per column.
+
+**Leakage spec** — the V2 builders obey the same rule as V1: a horizon day reads only information knowable at the forecast origin `T`. The load-bearing specs are `app/shared/feature_frames/tests/test_leakage_v2.py` (cross-cutting) and `app/features/forecasting/tests/test_regression_features_v2_leakage.py` (slice-layer). Both must stay green; neither may be weakened.
+
+**Bundle metadata (additive)** — a V2 bundle's `metadata` dict adds:
+- `feature_frame_version: 2`
+- `feature_groups: {group_name: [columns]}`
+- `feature_safety_classes: {column: safety.value}`
+- `feature_pinned_constants: {...}` — reproducibility audit snapshot
+
+V1 bundles default to `metadata.get("feature_frame_version", 1)` at load; the V1 byte-stable path remains the default code path.
+
+**Preview script**: `uv run python examples/forecasting/feature_frame_v2_preview.py --store-id 15 --product-id 52 --cutoff-date 2025-12-31` dumps V1 + V2 columns + per-group NaN counts side by side.
+

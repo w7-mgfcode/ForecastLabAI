@@ -59,10 +59,27 @@ from app.features.forecasting.schemas import (
 # field on ``RunResponse``). The explainability slice avoids the same trap by
 # importing only ``registry.models`` (a read-only ORM contract); we keep the
 # import-graph one-way by deferring our service-level imports.
+from app.features.forecasting.v2_loaders import (
+    assemble_v2_historical_sidecar,
+    load_exogenous_history,
+    load_inventory_history,
+    load_lifecycle_attrs,
+    load_promotion_history,
+    load_replenishment_history,
+    load_returns_history,
+)
 from app.shared.feature_frames import (
+    DEFAULT_V2_GROUPS,
     HISTORY_TAIL_DAYS,
+    HISTORY_TAIL_DAYS_V2,
+    FeatureGroup,
     build_historical_feature_rows,
+    build_historical_feature_rows_v2,
     canonical_feature_columns,
+    canonical_feature_columns_v2,
+    v2_feature_groups_dict,
+    v2_feature_safety_classes,
+    v2_pinned_constants,
 )
 
 if TYPE_CHECKING:
@@ -97,6 +114,35 @@ class TrainingData:
 # Minimum observed rows required to train a regression model — enough to
 # resolve the lag features and still leave training signal (PRP-27 GOTCHA #14).
 _MIN_REGRESSION_TRAIN_ROWS = 30
+
+
+def _resolve_feature_frame_version(request_version: int) -> int:
+    """Clamp + validate the requested feature_frame_version against {1, 2}."""
+    if request_version not in (1, 2):
+        raise ValueError(f"feature_frame_version must be 1 or 2, got {request_version!r}")
+    return request_version
+
+
+def _resolve_feature_groups(
+    requested: list[str] | None,
+) -> tuple[FeatureGroup, ...]:
+    """Map a list of group-name strings to the canonical FeatureGroup tuple.
+
+    ``None`` → DEFAULT_V2_GROUPS. Unknown names raise ValueError (and surface
+    at the route layer as 422; the request schema also pre-validates names
+    via ``model_validator``).
+    """
+    if requested is None:
+        return DEFAULT_V2_GROUPS
+    valid: dict[str, FeatureGroup] = {g.value: g for g in FeatureGroup}
+    out: list[FeatureGroup] = []
+    for name in requested:
+        if name not in valid:
+            raise ValueError(f"Unknown FeatureGroup name {name!r}; valid: {sorted(valid)}")
+        out.append(valid[name])
+    return tuple(out)
+
+
 # The regression feature-frame contract — the lag offsets (``EXOGENOUS_LAGS``),
 # the observed-target tail length (``HISTORY_TAIL_DAYS``), and the canonical
 # column set and order (``canonical_feature_columns()``) — is the single source
@@ -206,6 +252,9 @@ class ForecastingService:
         train_start_date: date_type,
         train_end_date: date_type,
         config: ModelConfig,
+        *,
+        feature_frame_version: int = 1,
+        feature_groups: list[str] | None = None,
     ) -> TrainResponse:
         """Train a forecasting model and save to disk.
 
@@ -216,6 +265,11 @@ class ForecastingService:
             train_start_date: Start date of training period.
             train_end_date: End date of training period (inclusive).
             config: Model configuration.
+            feature_frame_version: PRP-35 — 1 (default, V1) or 2 (opt-in, V2
+                richer manifest). Recorded into bundle metadata so dispatch
+                downstream (scenarios / backtesting) is self-describing.
+            feature_groups: V2 only — optional list of FeatureGroup names;
+                ``None`` resolves to DEFAULT_V2_GROUPS.
 
         Returns:
             TrainResponse with training results.
@@ -242,21 +296,49 @@ class ForecastingService:
         model = model_factory(config, random_state=self.settings.forecast_random_seed)
         extra_metadata: dict[str, object] = {}
         if model.requires_features:
-            features = await self._build_regression_features(
-                db=db,
-                store_id=store_id,
-                product_id=product_id,
-                start_date=train_start_date,
-                end_date=train_end_date,
-            )
-            model.fit(features.y, features.X)
-            n_observations = features.n_observations
-            extra_metadata = {
-                "feature_columns": features.feature_columns,
-                "history_tail": features.history_tail,
-                "history_tail_dates": features.history_tail_dates,
-                "launch_date": features.launch_date_iso,
-            }
+            version = _resolve_feature_frame_version(feature_frame_version)
+            if version == 2:
+                resolved_groups = _resolve_feature_groups(feature_groups)
+                features = await self._build_regression_features_v2(
+                    db=db,
+                    store_id=store_id,
+                    product_id=product_id,
+                    start_date=train_start_date,
+                    end_date=train_end_date,
+                    groups=resolved_groups,
+                )
+                model.fit(features.y, features.X)
+                n_observations = features.n_observations
+                extra_metadata = {
+                    "feature_columns": features.feature_columns,
+                    "history_tail": features.history_tail,
+                    "history_tail_dates": features.history_tail_dates,
+                    "launch_date": features.launch_date_iso,
+                    "feature_frame_version": 2,
+                    "feature_groups": v2_feature_groups_dict(features.feature_columns),
+                    "feature_safety_classes": v2_feature_safety_classes(features.feature_columns),
+                    "feature_pinned_constants": v2_pinned_constants(),
+                }
+            else:
+                features = await self._build_regression_features(
+                    db=db,
+                    store_id=store_id,
+                    product_id=product_id,
+                    start_date=train_start_date,
+                    end_date=train_end_date,
+                )
+                model.fit(features.y, features.X)
+                n_observations = features.n_observations
+                # ``feature_frame_version`` is additive and harmless for V1
+                # bundles — load-side back-compat (``.get(..., 1)``) makes the
+                # absence equivalent to a value of 1.
+                extra_metadata = {
+                    "feature_columns": features.feature_columns,
+                    "history_tail": features.history_tail,
+                    "history_tail_dates": features.history_tail_dates,
+                    "launch_date": features.launch_date_iso,
+                    "feature_frame_version": 1,
+                }
         else:
             training_data = await self._load_training_data(
                 db=db,
@@ -646,6 +728,191 @@ class ForecastingService:
             n_observations=len(dates),
         )
 
+    async def _build_regression_features_v2(
+        self,
+        db: AsyncSession,
+        store_id: int,
+        product_id: int,
+        start_date: date_type,
+        end_date: date_type,
+        groups: tuple[FeatureGroup, ...],
+    ) -> RegressionFeatureMatrix:
+        """Build the V2 historical feature matrix (PRP-35).
+
+        Sibling of :meth:`_build_regression_features`. Loads the same V1 inputs
+        (sales, holidays, promotions, launch_date) plus the enabled V2 sidecar
+        groups' data (inventory / replenishment / returns / exogenous /
+        promotion-kinds) and delegates to
+        :func:`build_historical_feature_rows_v2`.
+
+        Time-safe by construction: every SQL filter uses ``<= end_date``.
+
+        Args:
+            db: Database session.
+            store_id: Store ID.
+            product_id: Product ID.
+            start_date: Start of the training window (inclusive).
+            end_date: End of the training window (inclusive) — origin ``T``.
+            groups: The resolved :class:`FeatureGroup` subset to emit.
+
+        Returns:
+            The V2 feature matrix + bundle metadata the future frame needs.
+
+        Raises:
+            ValueError: When fewer than ``_MIN_REGRESSION_TRAIN_ROWS`` observed
+                days are available.
+        """
+        sales_rows = (
+            await db.execute(
+                select(SalesDaily.date, SalesDaily.quantity, SalesDaily.unit_price)
+                .where(
+                    (SalesDaily.store_id == store_id)
+                    & (SalesDaily.product_id == product_id)
+                    & (SalesDaily.date >= start_date)
+                    & (SalesDaily.date <= end_date)
+                )
+                .order_by(SalesDaily.date)
+            )
+        ).all()
+        if len(sales_rows) < _MIN_REGRESSION_TRAIN_ROWS:
+            raise ValueError(
+                f"A regression model needs at least {_MIN_REGRESSION_TRAIN_ROWS} "
+                f"observed days; store={store_id} product={product_id} has "
+                f"{len(sales_rows)} between {start_date} and {end_date}."
+            )
+
+        dates = [row.date for row in sales_rows]
+        quantities = [float(row.quantity) for row in sales_rows]
+        prices = [float(row.unit_price) for row in sales_rows]
+        positive_prices = sorted(price for price in prices if price > 0.0)
+        baseline_price = positive_prices[len(positive_prices) // 2] if positive_prices else 1.0
+
+        # V1-equivalent inputs (always loaded — both V1 and V2 PRICE_PROMO
+        # need promo_dates / holiday_dates; LIFECYCLE needs launch_date).
+        holiday_dates: set[date_type] = set(
+            (
+                await db.execute(
+                    select(Calendar.date).where(
+                        Calendar.date >= start_date,
+                        Calendar.date <= end_date,
+                        Calendar.is_holiday.is_(True),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        promo_rows = (
+            await db.execute(
+                select(Promotion.start_date, Promotion.end_date).where(
+                    Promotion.product_id == product_id,
+                    (Promotion.store_id == store_id) | (Promotion.store_id.is_(None)),
+                    Promotion.start_date <= end_date,
+                    Promotion.end_date >= start_date,
+                )
+            )
+        ).all()
+        promo_dates: set[date_type] = set()
+        for promo in promo_rows:
+            day = max(promo.start_date, start_date)
+            last = min(promo.end_date, end_date)
+            while day <= last:
+                promo_dates.add(day)
+                day += timedelta(days=1)
+        launch_date, discontinue_date, _stage = await load_lifecycle_attrs(db, product_id)
+
+        # V2 sidecar inputs — only loaded when the enabled groups need them.
+        # Keeps the SQL footprint minimal on V2 calls that omit the Phase-2
+        # groups.
+        inventory_per_day: dict[date_type, tuple[int, bool]] = {}
+        replenishment_event_dates: list[date_type] = []
+        replenishment_event_qty: list[int] = []
+        returns_per_day: dict[date_type, int] = {}
+        promo_per_day: dict[date_type, tuple[frozenset[str], float]] = {}
+        weather_per_day: dict[date_type, dict[str, float]] = {}
+        macro_per_day: dict[date_type, dict[str, float]] = {}
+        if FeatureGroup.INVENTORY in groups:
+            inventory_per_day = await load_inventory_history(
+                db, store_id, product_id, start_date, end_date
+            )
+        if FeatureGroup.REPLENISHMENT in groups:
+            (
+                replenishment_event_dates,
+                replenishment_event_qty,
+            ) = await load_replenishment_history(db, store_id, product_id, start_date, end_date)
+        if FeatureGroup.RETURNS in groups:
+            returns_per_day = await load_returns_history(
+                db, store_id, product_id, start_date, end_date
+            )
+        if FeatureGroup.PRICE_PROMO in groups:
+            promo_per_day = await load_promotion_history(
+                db, store_id, product_id, start_date, end_date
+            )
+        if FeatureGroup.EXOGENOUS_WEATHER in groups or FeatureGroup.EXOGENOUS_MACRO in groups:
+            all_exogenous = await load_exogenous_history(db, store_id, start_date, end_date)
+            # Split into weather (per-store) and macro (chain-wide) buckets by
+            # signal name prefix; the V2 builder reads the canonical names
+            # pinned in ``contract_v2.WEATHER_SIGNAL_NAMES_V2`` /
+            # ``MACRO_SIGNAL_NAMES_V2``.
+            for day, signals in all_exogenous.items():
+                weather_subset = {
+                    name: value for name, value in signals.items() if name.startswith("weather_")
+                }
+                macro_subset = {
+                    name: value for name, value in signals.items() if name.startswith("macro_")
+                }
+                if weather_subset:
+                    weather_per_day[day] = weather_subset
+                if macro_subset:
+                    macro_per_day[day] = macro_subset
+
+        sidecar = assemble_v2_historical_sidecar(
+            dates=dates,
+            promo_dates=promo_dates,
+            holiday_dates=holiday_dates,
+            launch_date=launch_date,
+            discontinue_date=discontinue_date,
+            inventory_per_day=inventory_per_day,
+            replenishment_event_dates=replenishment_event_dates,
+            replenishment_event_qty=replenishment_event_qty,
+            returns_per_day=returns_per_day,
+            promo_per_day=promo_per_day,
+            weather_per_day=weather_per_day,
+            macro_per_day=macro_per_day,
+        )
+
+        feature_columns = canonical_feature_columns_v2(groups=groups)
+        feature_rows = build_historical_feature_rows_v2(
+            dates=dates,
+            quantities=quantities,
+            prices=prices,
+            baseline_price=baseline_price,
+            sidecar=sidecar,
+            groups=groups,
+        )
+
+        tail = quantities[-HISTORY_TAIL_DAYS_V2:]
+        tail_dates = [day.isoformat() for day in dates[-HISTORY_TAIL_DAYS_V2:]]
+
+        logger.info(
+            "forecasting.regression_features_v2_built",
+            store_id=store_id,
+            product_id=product_id,
+            n_observations=len(dates),
+            n_features=len(feature_columns),
+            groups=[g.value for g in groups],
+        )
+
+        return RegressionFeatureMatrix(
+            X=np.array(feature_rows, dtype=np.float64),
+            y=np.array(quantities, dtype=np.float64),
+            feature_columns=feature_columns,
+            history_tail=[float(value) for value in tail],
+            history_tail_dates=tail_dates,
+            launch_date_iso=launch_date.isoformat() if launch_date is not None else None,
+            n_observations=len(dates),
+        )
+
     # ------------------------------------------------------------------ #
     # MLZOO-D / PRP-31 — feature-metadata extraction
     #
@@ -900,6 +1167,24 @@ class ForecastingService:
 
         importance_type = importance_type_for(bundle.model)
 
+        # PRP-35: surface V2 metadata when the bundle is V2; absent → V1.
+        version_raw = bundle.metadata.get("feature_frame_version", 1)
+        version = int(version_raw) if isinstance(version_raw, int | str) else 1
+        feature_groups_raw = bundle.metadata.get("feature_groups")
+        feature_safety_raw = bundle.metadata.get("feature_safety_classes")
+        feature_groups: dict[str, list[str]] | None = None
+        feature_safety_classes: dict[str, str] | None = None
+        if version == 2 and isinstance(feature_groups_raw, dict):
+            feature_groups = {
+                str(k): [str(c) for c in cast(list[object], v)]
+                for k, v in cast(dict[object, object], feature_groups_raw).items()
+                if isinstance(v, list)
+            }
+        if version == 2 and isinstance(feature_safety_raw, dict):
+            feature_safety_classes = {
+                str(k): str(v) for k, v in cast(dict[object, object], feature_safety_raw).items()
+            }
+
         return FeatureMetadataResponse(
             run_id=source_id,
             model_type=model_type,
@@ -907,4 +1192,7 @@ class ForecastingService:
             feature_columns=feature_columns,
             features=features,
             importance_type=importance_type,
+            feature_frame_version=version,
+            feature_groups=feature_groups,
+            feature_safety_classes=feature_safety_classes,
         )

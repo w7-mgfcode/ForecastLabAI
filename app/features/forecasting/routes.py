@@ -103,6 +103,8 @@ async def train_model(
             train_start_date=request.train_start_date,
             train_end_date=request.train_end_date,
             config=request.config,
+            feature_frame_version=request.feature_frame_version,
+            feature_groups=request.feature_groups,
         )
 
         logger.info(
