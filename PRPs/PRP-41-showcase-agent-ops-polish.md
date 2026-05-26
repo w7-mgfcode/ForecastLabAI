@@ -1532,22 +1532,34 @@ async def step_ops_snapshot(ctx: DemoContext, client: _Client) -> StepResult:
 # MODIFY ALL_STEPS:
 #   FIND:
 #     { phase: 'agent', step: 'agent', label: 'Agent chat' },
-#   REPLACE with (in this order):
+#   REPLACE with (in this order — DESIGN Z, unified phase id "agents"):
+#     { phase: 'agents', step: 'agent', label: 'Agent chat (legacy)' },
 #     { phase: 'agents', step: 'agent_hitl_flow', label: 'Agent HITL approval' },
 #     { phase: 'ops', step: 'ops_snapshot', label: 'Ops snapshot' },
 #   PRESERVE everything before / after.
-#   NOTE: demo_minimal still emits the legacy step name "agent" — the
-#   FE's `phaseDefsForScenario('demo_minimal')` filter must keep both
-#   step ids in `ALL_STEPS` and select by name (Task 1 confirms the
-#   filter shape).
-#   If the lockstep test's demo_minimal assertion explicitly asserts
-#   `'agent'` step under `'agent'` phase, ADD a sibling row preserving
-#   it:
-#     { phase: 'agent', step: 'agent', label: 'Agent chat (legacy)' },
-#   ... and exclude it from showcase_rich via SHOWCASE_RICH_STEP_NAMES.
+#   NOTE: BOTH 'agent' and 'agent_hitl_flow' live under the same phase id
+#   'agents'. demo_minimal renders the legacy `'agent'` row; showcase_rich
+#   renders `'agent_hitl_flow'` + `'ops_snapshot'`. The legacy 'agent'
+#   step function stays in pipeline.py and is wired by `_phase_table()`
+#   on the non-showcase-rich branch (Task 6).
+#
+# MODIFY the filter — design Z requires a SECOND exclusion set, because
+# `SHOWCASE_RICH_STEP_NAMES` is the "exclude from demo_minimal" set, not
+# the "exclude from showcase_rich" set. Task 1 contract probe § 7
+# confirmed this filter restructure is required:
+#
+#   const DEMO_MINIMAL_ONLY_STEP_NAMES = new Set(['agent'])  // legacy
+#
+#   export function phaseDefsForScenario(scenario: ScenarioPreset): readonly PhaseDef[] {
+#     if (scenario === 'showcase_rich') {
+#       return ALL_STEPS.filter((d) => !DEMO_MINIMAL_ONLY_STEP_NAMES.has(d.step))
+#     }
+#     return ALL_STEPS.filter((d) => !SHOWCASE_RICH_STEP_NAMES.has(d.step))
+#   }
 #
 # MODIFY SHOWCASE_RICH_STEP_NAMES (lines 66–82):
 #   ADD: 'agent_hitl_flow', 'ops_snapshot'.
+#   (So they're excluded from demo_minimal / sparse.)
 #
 # MODIFY PHASE_LABEL (lines 94–106):
 #   REPLACE: agent: 'Agent' → agents: 'Agents (HITL)'.

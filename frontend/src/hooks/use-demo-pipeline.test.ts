@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 import {
   applyEvent,
   createInitialSteps,
@@ -106,6 +106,7 @@ describe('applyEvent', () => {
       winningRunId: 'run-abc',
       alias: 'demo-production',
       wallClockS: 42,
+      v2RunId: null,
     })
   })
 
@@ -174,14 +175,30 @@ describe('useDemoPipeline', () => {
     // PRP-38 — every idle step carries a phase tag (no real wire events yet).
     expect(result.current.steps.every((s) => !!s.phaseName)).toBe(true)
     expect(result.current.phases.length).toBe(6)
+    // PRP-41 — design Z renamed the legacy `agent` phase to the unified `agents`.
     expect(result.current.phases.map((p) => p.id)).toEqual([
       'data',
       'modeling',
       'decision',
       'verify',
-      'agent',
+      'agents',
       'cleanup',
     ])
+  })
+
+  it('PRP-41 — stop() resets phase to idle and surfaces a cancellation banner', () => {
+    const { result, rerender } = renderHook(() => useDemoPipeline())
+    // Drive into running state via start().
+    act(() => {
+      result.current.start({ seed: 42, skip_seed: true, reset: false, scenario: 'demo_minimal' })
+    })
+    expect(result.current.phase).toBe('running')
+    act(() => {
+      result.current.stop()
+    })
+    rerender()
+    expect(result.current.phase).toBe('idle')
+    expect(result.current.errorMessage).toBe('Pipeline cancelled by user.')
   })
 })
 
@@ -271,10 +288,10 @@ describe('PRP-38 applyEvent phase propagation', () => {
 })
 
 
-describe('PRP-38/39/40 createInitialSteps(showcase_rich)', () => {
-  it('returns 23 idle steps in the showcase_rich layout (PRP-38 + PRP-39 + PRP-40)', () => {
+describe('PRP-38/39/40/41 createInitialSteps(showcase_rich)', () => {
+  it('returns 24 idle steps in the showcase_rich layout (PRP-41 adds agent_hitl_flow + ops_snapshot)', () => {
     const steps = createInitialSteps('showcase_rich')
-    expect(steps.length).toBe(23)
+    expect(steps.length).toBe(24)
     expect(steps.map((s) => s.name)).toEqual([
       'precheck',
       'reset',
@@ -300,7 +317,9 @@ describe('PRP-38/39/40 createInitialSteps(showcase_rich)', () => {
       'rag_index_subset',
       'rag_retrieve_probe',
       'verify',
-      'agent',
+      // PRP-41 — HITL approval + ops snapshot (replaces legacy `agent`).
+      'agent_hitl_flow',
+      'ops_snapshot',
       'cleanup',
     ])
   })

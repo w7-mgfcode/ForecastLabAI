@@ -266,15 +266,46 @@ def _canned_response(
         }
     if path == "/ops/summary":
         # PRP-39 — stale_alias_trigger GETs after registering a V=3 run.
+        # PRP-41 — step_ops_snapshot also consumes this; the additive runs.counts
+        # block + extra is_stale flag on the alias drive the KPI tiles.
         return {
             "aliases": [
                 {
                     "alias_name": "demo-production",
+                    "is_stale": True,
                     "stale_reason": "feature_frame_version_mismatch",
                     "alias_feature_frame_version": 2,
                     "comparable_run_feature_frame_version": 3,
                 }
-            ]
+            ],
+            "runs": {
+                "counts": [
+                    {"status": "success", "count": 5},
+                    {"status": "failed", "count": 1},
+                ],
+            },
+        }
+    if path.startswith("/ops/retraining-candidates"):
+        # PRP-41 — canned 2 retraining candidates so step_ops_snapshot's
+        # retraining KPI tile renders > 0.
+        return {
+            "candidates": [
+                {"store_id": 7, "product_id": 3, "priority_score": 0.8},
+                {"store_id": 7, "product_id": 4, "priority_score": 0.6},
+            ],
+            "total_evaluated": 2,
+            "generated_at": "2026-05-26T10:00:00Z",
+        }
+    if path.startswith("/ops/model-health"):
+        # PRP-41 — 3 health entries; 1 degrading so degrading_count == 1.
+        return {
+            "entries": [
+                {"store_id": 7, "product_id": 3, "drift_direction": "stable"},
+                {"store_id": 7, "product_id": 4, "drift_direction": "degrading"},
+                {"store_id": 8, "product_id": 3, "drift_direction": "improving"},
+            ],
+            "total_evaluated": 3,
+            "generated_at": "2026-05-26T10:00:00Z",
         }
     if path == "/batch/forecasting":
         # PRP-39 — batch_preset POSTs the preset expansion. Return terminal
@@ -302,14 +333,28 @@ def _build_fake_client(artifact_path: str, wapes: dict[str, float]) -> type:
     """Build a canned-response stand-in class for ``pipeline._Client``."""
 
     class _FakeClient:
-        def __init__(self, _app: Any) -> None:
+        def __init__(
+            self,
+            _app: Any,
+            *,
+            event_sink: list[Any] | None = None,
+        ) -> None:
+            # PRP-41 — accept the optional event_sink the orchestrator passes
+            # in; remember it so ``yield_event`` can feed intermediate frames.
             self.calls: list[tuple[str, str]] = []
+            self._event_sink = event_sink
 
         async def __aenter__(self) -> _FakeClient:
             return self
 
         async def __aexit__(self, *_exc: object) -> None:
             return None
+
+        def yield_event(self, event: Any) -> None:
+            # PRP-41 — mirror pipeline._Client.yield_event semantics.
+            if self._event_sink is None:
+                return
+            self._event_sink.append(event)
 
         async def request(
             self,
@@ -474,14 +519,19 @@ async def test_run_pipeline_with_reset_and_seed(monkeypatch, tmp_path):
 
 async def test_run_pipeline_stops_on_failed_step(monkeypatch):
     class _FailingClient:
-        def __init__(self, _app: Any) -> None:
-            pass
+        def __init__(self, _app: Any, *, event_sink: list[Any] | None = None) -> None:
+            self._event_sink = event_sink
 
         async def __aenter__(self) -> _FailingClient:
             return self
 
         async def __aexit__(self, *_exc: object) -> None:
             return None
+
+        def yield_event(self, event: Any) -> None:
+            if self._event_sink is None:
+                return
+            self._event_sink.append(event)
 
         async def request(
             self,
@@ -518,14 +568,19 @@ async def test_run_pipeline_transport_error_becomes_fail(monkeypatch):
     import httpx
 
     class _BrokenClient:
-        def __init__(self, _app: Any) -> None:
-            pass
+        def __init__(self, _app: Any, *, event_sink: list[Any] | None = None) -> None:
+            self._event_sink = event_sink
 
         async def __aenter__(self) -> _BrokenClient:
             return self
 
         async def __aexit__(self, *_exc: object) -> None:
             return None
+
+        def yield_event(self, event: Any) -> None:
+            if self._event_sink is None:
+                return
+            self._event_sink.append(event)
 
         async def request(self, *_a: object, **_k: object) -> dict[str, Any]:
             raise httpx.ConnectError("connection refused")
@@ -544,12 +599,13 @@ async def test_run_pipeline_transport_error_becomes_fail(monkeypatch):
 # =============================================================================
 
 
-def test_phase_table_demo_minimal_matches_legacy_11_steps():
-    """PRP-38 — phase_table for DEMO_MINIMAL drops to the legacy 11-step flow.
+def test_phase_table_demo_minimal_matches_legacy_11_steps_under_agents_phase():
+    """PRP-38 / PRP-41 — DEMO_MINIMAL keeps the legacy 11-step flow.
 
-    Test gates the (phase_name, step_name) lockstep contract with the frontend
-    PHASE_DEFS.ts. If a phase or step is added in either tier without the
-    matching change here, this test fails.
+    PRP-41 — design Z: the legacy ``step_agent`` row now lives under the
+    unified ``agents`` phase id (was ``agent``). The step name stays
+    ``agent`` so the wire payload + the frontend's legacy step rendering
+    keep working. Step count unchanged.
     """
     rows = pipeline._phase_table(ScenarioPreset.DEMO_MINIMAL)
     by_phase_step = [(p, s) for p, s, _fn in rows]
@@ -563,22 +619,27 @@ def test_phase_table_demo_minimal_matches_legacy_11_steps():
         ("decision", "backtest"),
         ("decision", "register"),
         ("verify", "verify"),
-        ("agent", "agent"),
+        ("agents", "agent"),
         ("cleanup", "cleanup"),
     ]
 
 
-def test_phase_table_showcase_rich_adds_v2_decision_portfolio_planning_knowledge_steps():
-    """PRP-38 + PRP-39 + PRP-40 — phase_table for SHOWCASE_RICH is the canonical 23 rows.
+def test_phase_table_showcase_rich_emits_24_steps_with_agents_hitl_and_ops_snapshot():
+    """PRP-38 + PRP-39 + PRP-40 + PRP-41 — SHOWCASE_RICH is the canonical 24 rows.
 
     PRP-38 shipped 3 (phase2_enrichment, historical_backfill, v2_train).
     PRP-39 added 4 (champion_compat_compare, stale_alias_trigger,
     safer_promote_flow, batch_preset) plus a new ``portfolio`` phase between
     ``decision`` and ``verify``.
-    PRP-40 adds 5 (scenario_simulate_and_save, multi_plan_compare,
+    PRP-40 added 5 (scenario_simulate_and_save, multi_plan_compare,
     embedding_provider_probe, rag_index_subset, rag_retrieve_probe) under two
     new ``planning`` + ``knowledge`` phases, AFTER portfolio and BEFORE verify
-    via a relative anchor. Total: 23 rows across 9 phases.
+    via a relative anchor.
+    PRP-41 — design Z: SHOWCASE_RICH swaps the legacy ``agent`` step for
+    ``agent_hitl_flow`` (HITL approval round-trip) under the unified
+    ``agents`` phase id, AND appends a new ``ops`` phase carrying
+    ``ops_snapshot`` IMMEDIATELY AFTER ``agents``, BEFORE ``cleanup``.
+    Total: 24 rows across 10 phases.
     """
     rows = pipeline._phase_table(ScenarioPreset.SHOWCASE_RICH)
     by_phase_step = [(p, s) for p, s, _fn in rows]
@@ -607,7 +668,9 @@ def test_phase_table_showcase_rich_adds_v2_decision_portfolio_planning_knowledge
         ("knowledge", "rag_index_subset"),
         ("knowledge", "rag_retrieve_probe"),
         ("verify", "verify"),
-        ("agent", "agent"),
+        # PRP-41 — agents (HITL) + ops snapshot, both under new phase ids.
+        ("agents", "agent_hitl_flow"),
+        ("ops", "ops_snapshot"),
         ("cleanup", "cleanup"),
     ]
 
@@ -650,8 +713,11 @@ async def test_run_pipeline_emits_phase_fields(monkeypatch, tmp_path):
     events = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=DemoRunRequest())]
     step_events = [e for e in events if e.event_type in {"step_start", "step_complete"}]
     assert step_events
+    # PRP-41 — design Z renames the legacy "agent" phase to "agents" for ALL
+    # scenarios. Demo_minimal still emits 6 phases (data/modeling/decision/
+    # verify/agents/cleanup); ops is showcase_rich-only.
     for ev in step_events:
-        assert ev.phase_name in {"data", "modeling", "decision", "verify", "agent", "cleanup"}
+        assert ev.phase_name in {"data", "modeling", "decision", "verify", "agents", "cleanup"}
         assert ev.phase_index is not None and ev.phase_index >= 1
         assert ev.phase_total == 6
     # Verify phases appear in canonical order.
@@ -659,7 +725,7 @@ async def test_run_pipeline_emits_phase_fields(monkeypatch, tmp_path):
     for ev in step_events:
         if ev.phase_name and ev.phase_name not in phases_seen:
             phases_seen.append(ev.phase_name)
-    assert phases_seen == ["data", "modeling", "decision", "verify", "agent", "cleanup"]
+    assert phases_seen == ["data", "modeling", "decision", "verify", "agents", "cleanup"]
 
 
 async def test_run_pipeline_showcase_rich_runs_v2_and_buckets(monkeypatch, tmp_path):
@@ -714,14 +780,12 @@ async def test_run_pipeline_showcase_rich_runs_v2_and_buckets(monkeypatch, tmp_p
     assert final.data["v2_run_id"] == "demo-run-abc123def456"
 
 
-async def test_run_pipeline_showcase_rich_emits_23_steps(monkeypatch, tmp_path):
-    """PRP-38 + PRP-39 + PRP-40 — SHOWCASE_RICH = 11 base + 3 PRP-38 + 4 PRP-39 + 5 PRP-40 = 23 total steps.
+async def test_run_pipeline_showcase_rich_emits_24_steps(monkeypatch, tmp_path):
+    """PRP-38 + PRP-39 + PRP-40 + PRP-41 — SHOWCASE_RICH = 24 total steps.
 
-    PRP-38 shipped 3 (phase2_enrichment + historical_backfill + v2_train).
-    PRP-39 added 4 (champion_compat_compare + stale_alias_trigger +
-    safer_promote_flow + batch_preset).
-    PRP-40 adds 5 (scenario_simulate_and_save + multi_plan_compare +
-    embedding_provider_probe + rag_index_subset + rag_retrieve_probe).
+    11 base + 3 PRP-38 + 4 PRP-39 + 5 PRP-40 + 1 PRP-41 (ops_snapshot — the
+    legacy `agent` step is swapped for `agent_hitl_flow` not added, hence
+    +1 net for PRP-41).
     """
     artifact = tmp_path / "artifacts" / "models" / "model_x.joblib"
     artifact.parent.mkdir(parents=True, exist_ok=True)
@@ -733,10 +797,10 @@ async def test_run_pipeline_showcase_rich_emits_23_steps(monkeypatch, tmp_path):
     req = DemoRunRequest(scenario=ScenarioPreset.SHOWCASE_RICH)
     events = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=req)]
     completes = [e for e in events if e.event_type == "step_complete"]
-    assert len(completes) == 23
-    # Every event reports total_steps=23
+    assert len(completes) == 24
+    # Every event reports total_steps=24
     for ev in completes:
-        assert ev.total_steps == 23
+        assert ev.total_steps == 24
 
 
 # =============================================================================
@@ -1431,3 +1495,370 @@ async def test_run_pipeline_showcase_rich_skips_knowledge_when_provider_unreacha
     final = events[-1]
     assert final.event_type == "pipeline_complete"
     assert final.status == "pass"
+
+
+# =============================================================================
+# PRP-41 — agents (HITL) + ops snapshot per-step unit tests
+# =============================================================================
+
+
+def _make_hitl_client(
+    *,
+    chat_pending: bool = True,
+    chat_action_id: str = "action-abc-123",
+    approve_status: int = 200,
+    approve_body: dict[str, Any] | None = None,
+    session_id: str = "sess-test-0001",
+    capture_intermediate: bool = True,
+) -> tuple[Any, list[Any]]:
+    """Build a fake client that replays the HITL chat+approve round-trip.
+
+    Returns ``(client, intermediate_events)`` so a test can assert what the
+    HITL step buffered into the event sink.
+    """
+    intermediate: list[Any] = []
+
+    class _HitlClient:
+        def __init__(
+            self,
+            _app: Any = None,
+            *,
+            event_sink: list[Any] | None = None,
+        ) -> None:
+            self.calls: list[tuple[str, str]] = []
+            self._event_sink = event_sink if event_sink is not None else intermediate
+
+        async def __aenter__(self) -> _HitlClient:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+        def yield_event(self, event: Any) -> None:
+            if not capture_intermediate or self._event_sink is None:
+                return
+            self._event_sink.append(event)
+
+        async def request(
+            self,
+            step: str,
+            method: str,
+            path: str,
+            *,
+            json_body: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            self.calls.append((method, path))
+            if path == "/agents/sessions":
+                return {"session_id": session_id, "agent_type": "experiment"}
+            if path.endswith("/chat"):
+                if chat_pending:
+                    return {
+                        "session_id": session_id,
+                        "message": "I'll save that scenario.",
+                        "tool_calls": [{"tool_name": "tool_save_scenario", "tool_call_id": "tc-1"}],
+                        "pending_approval": True,
+                        "pending_action": {
+                            "action_id": chat_action_id,
+                            "action_type": "save_scenario",
+                        },
+                        "tokens_used": 240,
+                    }
+                return {
+                    "session_id": session_id,
+                    "message": "Done.",
+                    "tool_calls": [],
+                    "pending_approval": False,
+                    "pending_action": None,
+                    "tokens_used": 80,
+                }
+            if path.endswith("/approve"):
+                if approve_status >= 400:
+                    raise pipeline._StepError(
+                        step,
+                        approve_status,
+                        {"title": "Bad Request", "detail": "No pending action"},
+                    )
+                return approve_body or {
+                    "action_id": chat_action_id,
+                    "approved": True,
+                    "status": "executed",
+                }
+            raise AssertionError(f"unexpected request: {method} {path}")
+
+    return _HitlClient(event_sink=intermediate), intermediate
+
+
+async def test_agent_hitl_flow_happy_path(monkeypatch, tmp_path):
+    """PRP-41 — full HITL round-trip: chat -> intermediate -> approve -> pass."""
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: _fake_settings(str(tmp_path / "reg"), openai_api_key="sk-test"),
+    )
+    # Pick a provider whose key the fake settings sets.
+    monkeypatch.setattr(
+        pipeline,
+        "_llm_key_present",
+        lambda: True,
+    )
+    # Short-circuit the 3s display delay so the test stays fast.
+    monkeypatch.setattr(pipeline, "_APPROVAL_DISPLAY_DELAY_S", 0.0)
+
+    client, intermediate = _make_hitl_client()
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    status, detail, data = await pipeline.step_agent_hitl_flow(ctx, client)
+
+    assert status == "pass"
+    assert "approved=executed" in detail
+    assert data["approval_decision"] == "executed"
+    assert data["action_id"] == "action-abc-123"
+    assert data["session_id"] == "sess-test-0001"
+    assert data["tokens_used"] == 240
+    # The HITL step buffered exactly one intermediate event for the FE.
+    assert len(intermediate) == 1
+    inter = intermediate[0]
+    assert inter.status == "running"
+    assert inter.data["awaiting_approval"] is True
+    assert inter.data["action_id"] == "action-abc-123"
+    assert inter.phase_name == pipeline.PHASE_AGENTS
+    # Ctx threaded for downstream cleanup + KPI consumers.
+    assert ctx.approval_action_id == "action-abc-123"
+    assert ctx.agent_approval_decision == "executed"
+    assert ctx.session_id == "sess-test-0001"
+
+
+async def test_agent_hitl_flow_skips_without_key(monkeypatch, tmp_path):
+    """PRP-41 — no LLM key -> skip-gracefully; no session created."""
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
+    monkeypatch.setattr(pipeline, "_llm_key_present", lambda: False)
+
+    client, intermediate = _make_hitl_client()
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    status, detail, data = await pipeline.step_agent_hitl_flow(ctx, client)
+
+    assert status == "skip"
+    assert "no API key" in detail
+    assert data == {}
+    assert intermediate == []
+    assert ctx.session_id is None
+
+
+async def test_agent_hitl_flow_skips_on_session_failure(monkeypatch, tmp_path):
+    """PRP-41 — session-create error -> skip, never raise."""
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
+    monkeypatch.setattr(pipeline, "_llm_key_present", lambda: True)
+
+    class _NoSessionClient:
+        def __init__(self, _app: Any = None, *, event_sink: list[Any] | None = None) -> None:
+            self._event_sink = event_sink
+
+        async def __aenter__(self) -> _NoSessionClient:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+        def yield_event(self, event: Any) -> None:
+            pass
+
+        async def request(self, step: str, method: str, path: str, **_kw: Any) -> dict[str, Any]:
+            raise pipeline._StepError(step, 500, {"title": "boom", "detail": "agents down"})
+
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    status, detail, _ = await pipeline.step_agent_hitl_flow(
+        ctx, cast(pipeline._Client, _NoSessionClient())
+    )
+    assert status == "skip"
+    assert "session-create failed" in detail
+
+
+async def test_agent_hitl_flow_skips_when_agent_did_not_trigger_tool(monkeypatch, tmp_path):
+    """PRP-41 — agent answered directly (no pending_action) -> skip with detail."""
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
+    monkeypatch.setattr(pipeline, "_llm_key_present", lambda: True)
+    monkeypatch.setattr(pipeline, "_APPROVAL_DISPLAY_DELAY_S", 0.0)
+
+    client, intermediate = _make_hitl_client(chat_pending=False)
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    status, detail, data = await pipeline.step_agent_hitl_flow(ctx, client)
+    assert status == "skip"
+    assert "did not trigger save_scenario" in detail
+    assert data["session_id"] == "sess-test-0001"
+    # No intermediate event because no pending action surfaced.
+    assert intermediate == []
+
+
+async def test_agent_hitl_flow_absorbs_double_approve_400(monkeypatch, tmp_path):
+    """PRP-41 — FE pre-empted Approve -> backend approve returns 400; absorb."""
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
+    monkeypatch.setattr(pipeline, "_llm_key_present", lambda: True)
+    monkeypatch.setattr(pipeline, "_APPROVAL_DISPLAY_DELAY_S", 0.0)
+
+    client, intermediate = _make_hitl_client(approve_status=400)
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    status, detail, data = await pipeline.step_agent_hitl_flow(ctx, client)
+
+    # 4xx absorbed: step still passes with optimistic "executed" decision.
+    assert status == "pass"
+    assert data["approval_decision"] == "executed"
+    assert "approved=executed" in detail
+    # The intermediate event was still buffered before the absorb branch.
+    assert len(intermediate) == 1
+
+
+async def test_agent_hitl_flow_skips_on_hard_timeout(monkeypatch, tmp_path):
+    """PRP-41 — elapsed > _APPROVAL_HARD_TIMEOUT_S -> skip with timed_out."""
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
+    monkeypatch.setattr(pipeline, "_llm_key_present", lambda: True)
+    monkeypatch.setattr(pipeline, "_APPROVAL_DISPLAY_DELAY_S", 0.0)
+    # Force the elapsed-time check to fire: set the hard cap below the
+    # display delay so any positive elapsed exceeds it.
+    monkeypatch.setattr(pipeline, "_APPROVAL_HARD_TIMEOUT_S", -1.0)
+
+    client, intermediate = _make_hitl_client()
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    status, detail, data = await pipeline.step_agent_hitl_flow(ctx, client)
+
+    assert status == "skip"
+    assert "approval timed out" in detail
+    assert data["timed_out"] is True
+    assert data["approval_decision"] == "timed_out"
+    assert ctx.agent_approval_decision == "timed_out"
+    # Intermediate event was emitted; approve POST never fired.
+    assert len(intermediate) == 1
+    assert all(call[1] != f"/agents/sessions/{data['session_id']}/approve" for call in client.calls)
+
+
+async def test_ops_snapshot_happy_path(tmp_path):
+    """PRP-41 — three /ops/* GETs feed the 5-key KPI payload."""
+
+    class _OpsClient:
+        def __init__(self, _app: Any = None, *, event_sink: list[Any] | None = None) -> None:
+            self._event_sink = event_sink
+            self.calls: list[str] = []
+
+        async def __aenter__(self) -> _OpsClient:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+        def yield_event(self, event: Any) -> None:
+            pass
+
+        async def request(self, step: str, method: str, path: str, **_kw: Any) -> dict[str, Any]:
+            self.calls.append(path)
+            if path == "/ops/summary":
+                return {
+                    "aliases": [
+                        {"alias_name": "demo-production", "is_stale": True},
+                        {"alias_name": "challenger", "is_stale": False},
+                    ],
+                    "runs": {
+                        "counts": [
+                            {"status": "success", "count": 4},
+                            {"status": "failed", "count": 1},
+                        ]
+                    },
+                }
+            if path.startswith("/ops/retraining-candidates"):
+                return {"candidates": [{"store_id": 1}, {"store_id": 2}], "total_evaluated": 2}
+            if path.startswith("/ops/model-health"):
+                return {
+                    "entries": [
+                        {"drift_direction": "degrading"},
+                        {"drift_direction": "stable"},
+                    ],
+                    "total_evaluated": 2,
+                }
+            raise AssertionError(f"unexpected: {path}")
+
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    status, detail, data = await pipeline.step_ops_snapshot(
+        ctx, cast(pipeline._Client, _OpsClient())
+    )
+
+    assert status == "pass"
+    assert data == {
+        "stale_aliases_count": 1,
+        "retraining_candidates_count": 2,
+        "total_runs": 5,
+        "total_aliases": 2,
+        "degrading_health_count": 1,
+    }
+    assert "stale_aliases=1" in detail
+    assert "degrading=1" in detail
+
+
+async def test_ops_snapshot_warns_when_all_three_endpoints_fail(tmp_path):
+    """PRP-41 — every /ops/* returns 5xx -> warn (not fail), zero-filled payload."""
+
+    class _OpsBrokenClient:
+        def __init__(self, _app: Any = None, *, event_sink: list[Any] | None = None) -> None:
+            pass
+
+        async def __aenter__(self) -> _OpsBrokenClient:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+        def yield_event(self, event: Any) -> None:
+            pass
+
+        async def request(self, step: str, method: str, path: str, **_kw: Any) -> dict[str, Any]:
+            raise pipeline._StepError(step, 500, {"title": "DB down", "detail": "unreachable"})
+
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    status, detail, data = await pipeline.step_ops_snapshot(
+        ctx, cast(pipeline._Client, _OpsBrokenClient())
+    )
+
+    assert status == "warn"
+    assert "/ops/*" in detail and "unavailable" in detail
+    assert data == {
+        "stale_aliases_count": 0,
+        "retraining_candidates_count": 0,
+        "total_runs": 0,
+        "total_aliases": 0,
+        "degrading_health_count": 0,
+    }
+
+
+async def test_ops_snapshot_passes_on_empty_db(tmp_path):
+    """PRP-41 — 200 + empty bodies -> pass with zero-filled payload."""
+
+    class _OpsEmptyClient:
+        def __init__(self, _app: Any = None, *, event_sink: list[Any] | None = None) -> None:
+            pass
+
+        async def __aenter__(self) -> _OpsEmptyClient:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+        def yield_event(self, event: Any) -> None:
+            pass
+
+        async def request(self, step: str, method: str, path: str, **_kw: Any) -> dict[str, Any]:
+            if path == "/ops/summary":
+                return {"aliases": [], "runs": {"counts": []}}
+            if path.startswith("/ops/retraining-candidates"):
+                return {"candidates": [], "total_evaluated": 0}
+            if path.startswith("/ops/model-health"):
+                return {"entries": [], "total_evaluated": 0}
+            raise AssertionError(path)
+
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    status, _, data = await pipeline.step_ops_snapshot(
+        ctx, cast(pipeline._Client, _OpsEmptyClient())
+    )
+    assert status == "pass"
+    assert data == {
+        "stale_aliases_count": 0,
+        "retraining_candidates_count": 0,
+        "total_runs": 0,
+        "total_aliases": 0,
+        "degrading_health_count": 0,
+    }

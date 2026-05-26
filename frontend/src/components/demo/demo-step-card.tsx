@@ -1,4 +1,5 @@
 import { ArrowUpRight } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { DemoStep, DemoStepUiStatus } from '@/hooks/use-demo-pipeline'
 import { Button } from '@/components/ui/button'
@@ -305,6 +306,120 @@ function RetrieveSummary({ data }: { data: Record<string, unknown> }) {
   )
 }
 
+/** PRP-41 — HITL flow mini-summary (session/tokens/tool_calls/approval chips). */
+function HitlFlowSummary({ data }: { data: Record<string, unknown> }) {
+  const sessionId = typeof data.session_id === 'string' ? data.session_id : ''
+  const tokens =
+    typeof data.tokens_used === 'number' ? data.tokens_used : Number(data.tokens_used ?? 0)
+  const toolCalls =
+    typeof data.tool_calls_count === 'number'
+      ? data.tool_calls_count
+      : Number(data.tool_calls_count ?? 0)
+  const decision =
+    typeof data.approval_decision === 'string' ? data.approval_decision : ''
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+      {sessionId && (
+        <span className="rounded-md bg-muted px-2 py-1 font-mono">
+          session={sessionId.slice(0, 8)}...
+        </span>
+      )}
+      <span className="rounded-md bg-muted px-2 py-1 font-mono">tokens={tokens}</span>
+      <span className="rounded-md bg-muted px-2 py-1 font-mono">
+        tool_calls={toolCalls}
+      </span>
+      {decision && (
+        <span className="rounded-md bg-primary/10 px-2 py-1 font-mono">
+          approval={decision}
+        </span>
+      )}
+    </div>
+  )
+}
+
+/** PRP-41 — ops snapshot 5-tile KPI grid. */
+function OpsSnapshotMiniGrid({ data }: { data: Record<string, unknown> }) {
+  const tiles: ReadonlyArray<readonly [string, unknown]> = [
+    ['stale_aliases', data.stale_aliases_count],
+    ['retraining', data.retraining_candidates_count],
+    ['runs', data.total_runs],
+    ['aliases', data.total_aliases],
+    ['degrading', data.degrading_health_count],
+  ]
+  return (
+    <div className="mt-3 grid grid-cols-5 gap-2 text-xs">
+      {tiles.map(([label, value]) => (
+        <div key={label} className="rounded-md border p-2 text-center">
+          <div className="text-muted-foreground">{label}</div>
+          <div className="font-mono font-semibold">
+            {value !== undefined && value !== null ? String(value) : '—'}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * PRP-41 — one-click Approve button rendered on the HITL step card when
+ * the backend has emitted `awaiting_approval=true` + `status='running'`.
+ *
+ * Clicking POSTs `{action_id, approved: true}` to the captured approval_url.
+ * Optimistic disable on click; the backend's auto-approve absorbs a 400
+ * "No pending action" if the auto-approve fires first (Task 1 contract probe).
+ */
+function ApproveButton({
+  approvalUrl,
+  actionId,
+}: {
+  approvalUrl: string
+  actionId: string
+}) {
+  const [clicked, setClicked] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [waitingMs, setWaitingMs] = useState(0)
+
+  useEffect(() => {
+    if (clicked) return
+    const startedAt = Date.now()
+    const id = setInterval(() => setWaitingMs(Date.now() - startedAt), 1000)
+    return () => clearInterval(id)
+  }, [clicked])
+
+  const onClick = async () => {
+    if (clicked || !approvalUrl || !actionId) return
+    setClicked(true)
+    try {
+      const res = await fetch(approvalUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action_id: actionId, approved: true }),
+      })
+      // Absorb 4xx absorptions silently — the auto-approve already landed
+      // and the next StepEvent will surface the terminal status.
+      if (!res.ok && res.status >= 500) {
+        setError(`approve failed (${res.status})`)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'approve failed')
+    }
+  }
+
+  return (
+    <div className="mt-3 flex items-center gap-3">
+      <Button onClick={onClick} disabled={clicked} size="sm" variant="default">
+        {clicked ? 'Approving…' : 'Approve'}
+      </Button>
+      {!clicked && waitingMs > 30_000 && (
+        <span className="text-xs text-muted-foreground">
+          Still waiting — auto-approve in {Math.max(0, Math.ceil((90_000 - waitingMs) / 1000))}s
+        </span>
+      )}
+      {error && <span className="text-xs text-destructive">{error}</span>}
+    </div>
+  )
+}
+
 interface DemoStepCardProps {
   step: DemoStep
   index: number
@@ -375,6 +490,19 @@ export function DemoStepCard({ step, index, inspectHref }: DemoStepCardProps) {
           )}
           {step.name === 'rag_index_subset' && <IndexSummary data={step.data} />}
           {step.name === 'rag_retrieve_probe' && <RetrieveSummary data={step.data} />}
+          {/* PRP-41 — agents (HITL) + ops snapshot mini-summaries. */}
+          {step.name === 'agent_hitl_flow' && <HitlFlowSummary data={step.data} />}
+          {step.name === 'ops_snapshot' && <OpsSnapshotMiniGrid data={step.data} />}
+          {/* PRP-41 — one-click Approve only while awaiting (status==running). */}
+          {step.data.awaiting_approval === true &&
+            step.status === 'running' &&
+            typeof step.data.approval_url === 'string' &&
+            typeof step.data.action_id === 'string' && (
+              <ApproveButton
+                approvalUrl={step.data.approval_url}
+                actionId={step.data.action_id}
+              />
+            )}
           {showInspect && (
             <div className="mt-3">
               <Button asChild variant="outline" size="sm">
