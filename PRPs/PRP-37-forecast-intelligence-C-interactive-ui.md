@@ -86,12 +86,11 @@ operator UI that exposes every backend capability PRP-35 + PRP-36 add:
   verification badge; "comparable with current champion?" indicator.
 - **What-if planner** — quick-vary sliders (price delta, promotion,
   holiday, inventory, lifecycle), side-by-side baseline-vs-scenario
-  chart, "model_exogenous vs heuristic" method label,
-  known-future-input vs hypothetical labelling.
+  chart, "model_exogenous vs heuristic" method label.
 - **Ops control center** — degrading-status explainability (latest
-  WAPE, previous comparable WAPE, delta, n_comparable_runs, data-window
-  freshness); safer Promote (AlertDialog with worse-WAPE confirm + artifact
-  verify + champion/challenger comparison + stale-reason).
+  WAPE, previous comparable WAPE, delta, `run_count` (grain runs evaluated),
+  data-window freshness); safer Promote (AlertDialog with worse-WAPE
+  confirm + artifact verify + champion/challenger comparison + stale-reason).
 - **Batch sweeps** — multi-model + multi-feature-pack submission;
   presets (quick baseline sweep / feature-aware comparison / champion-
   challenger refresh / stockout-sensitive products / high-WAPE recovery);
@@ -126,16 +125,17 @@ Slice C is the operator surface that makes the A/B work usable.
   Default selections are conservative: family=Baseline,
   model_type=seasonal_naive, feature_frame=V1.
 - `/visualize/backtest`: New per-horizon-bucket metric table beneath
-  the existing fold-metric chart, when `bucketed_aggregate_metrics`
+  the existing fold-metric chart, when `bucketed_aggregated_metrics`
   is present in the response. New RMSE column when
-  `aggregate_metrics.rmse` is present. New baseline-vs-feature-aware
+  `aggregated_metrics["rmse"]` is present. New baseline-vs-feature-aware
   comparison view when `baseline_results` is non-empty AND
   `comparison_summary` is populated.
 - `/visualize/planner`: New "method" badge (`model_exogenous` |
-  `heuristic`) next to the run-id picker; "known future input" vs
-  "hypothetical" pill on each assumption row; baseline-vs-scenario
+  `heuristic`) next to the run-id picker; baseline-vs-scenario
   multi-series chart already exists — extended to label units delta +
-  revenue delta inline.
+  revenue delta inline. (No "known future input vs hypothetical" pill —
+  no backend `is_known_future` flag exists on any assumption schema;
+  every planner assumption is hypothetical by definition.)
 - `/explorer/run-detail`: New "Feature frame" panel showing
   feature_frame_version + feature_groups when present; the panel
   collapses gracefully (empty state) for pre-PRP-35 runs.
@@ -145,9 +145,10 @@ Slice C is the operator surface that makes the A/B work usable.
   same V).
 - `/ops`: Stale-alias panel adds a `feature_frame_version_mismatch`
   reason chip; degrading-status row exposes
-  `latest_wape / previous_wape / wape_delta / n_comparable_runs /
+  `latest_wape / previous_wape / wape_delta / run_count /
   last_trained_at / staleness_days` (already in `ModelHealthEntry` —
-  this PRP surfaces them).
+  this PRP surfaces them). The pill renders "N runs evaluated" — no
+  `n_comparable_runs` backend field exists.
 - `/visualize/batch`: Adds preset Select (5 presets) and a multi-model
   multi-feature-pack matrix picker for batch sweeps.
 - Every chat page: a "Use this context" copy button on the relevant
@@ -179,13 +180,10 @@ Slice C is the operator surface that makes the A/B work usable.
   feature-frame select + conditional feature-pack toggles render and
   submit a TrainRequest the backend accepts.
 - [ ] `/visualize/backtest` renders the horizon-bucket metric table when
-  the response contains `bucketed_aggregate_metrics`; falls back to a
+  the response contains `bucketed_aggregated_metrics`; falls back to a
   no-buckets state when absent.
-- [ ] `/visualize/backtest` shows RMSE column when `aggregate_metrics.rmse`
+- [ ] `/visualize/backtest` shows RMSE column when `aggregated_metrics["rmse"]`
   exists; column is omitted (not zero-padded) when absent.
-- [ ] `/visualize/planner` labels each assumption row as
-  "known future input" or "hypothetical" per the existing
-  `is_known_future` flag (verify in Task 1; this PRP does NOT invent it).
 - [ ] `/explorer/run-detail` "Feature frame" panel renders V1/V2 + groups
   when present; renders empty-state when absent.
 - [ ] `/explorer/run-compare` "Champion compatibility" badge follows the
@@ -280,10 +278,10 @@ Slice C is the operator surface that makes the A/B work usable.
   why: Current HORIZON_OPTIONS, train job picker, showInterval, CSV export. ADD: family Tabs, model_type Select filtered by family, feature_frame Select (V1/V2), feature_groups toggle group. Default = (Baseline, seasonal_naive, V1).
 
 - file: frontend/src/pages/visualize/backtest.tsx
-  why: Current 7-model selector, date range, n_splits, BacktestFoldsChart. ADD: RMSE column when present; horizon-bucket metric table when `bucketed_aggregate_metrics` present; baseline-vs-feature-aware comparison view when both present.
+  why: Current 7-model selector, date range, n_splits, BacktestFoldsChart. ADD: RMSE column when present; horizon-bucket metric table when `bucketed_aggregated_metrics` present; baseline-vs-feature-aware comparison view when both present.
 
 - file: frontend/src/pages/visualize/planner.tsx
-  why: Baseline job picker, ScenarioAssumptions form. ADD: method badge (`model_exogenous` | `heuristic`); known-future-input vs hypothetical pills.
+  why: Baseline job picker, ScenarioAssumptions form. ADD: method badge (`model_exogenous` | `heuristic`).
 
 - file: frontend/src/pages/explorer/run-detail.tsx
   why: Run metadata + ExplanationPanel + FeatureImportancePanel. ADD: Feature frame panel showing V1/V2 + groups + safety_classes.
@@ -391,7 +389,7 @@ Slice C is the operator surface that makes the A/B work usable.
 
 - url: https://tanstack.com/table/latest/docs/api/core/column-def
   section: "ColumnDef"
-  critical: New horizon-bucket columns are dynamic — the bucket id set depends on `bucketed_aggregate_metrics` keys at response time. Build ColumnDef[] at render time, NOT module-load time.
+  critical: New horizon-bucket columns are dynamic — the bucket id set depends on `bucketed_aggregated_metrics` keys at response time. Build ColumnDef[] at render time, NOT module-load time.
 
 - url: https://recharts.org/en-US/api/ComposedChart
   section: "Props"
@@ -483,7 +481,7 @@ frontend/
 │   │   ├── visualize/
 │   │   │   ├── forecast.tsx                                      # MODIFIED — segmented family Tabs + model_type Select + feature_frame Select + conditional feature_groups toggle group
 │   │   │   ├── backtest.tsx                                      # MODIFIED — RMSE column + horizon-bucket metric table + baseline-vs-feature-aware comparison view
-│   │   │   ├── planner.tsx                                       # MODIFIED — method badge + known-future-input vs hypothetical pills
+│   │   │   ├── planner.tsx                                       # MODIFIED — method badge (no known-future pill; no backend support)
 │   │   │   ├── batch.tsx                                         # MODIFIED — 5 preset Select + multi-model multi-feature-pack matrix picker
 │   │   │   └── demand.tsx                                        # UNCHANGED in this PRP (separate scope)
 │   │   ├── explorer/
@@ -496,7 +494,7 @@ frontend/
 │   │   │   ├── model-type-select.tsx                             # NEW — Select filtered by family; (family, value, onChange, availableModels: list from Task 1)
 │   │   │   ├── feature-frame-select.tsx                          # NEW — Select V1 | V2; (value, onChange, isV2Available: bool, disabledReason?)
 │   │   │   ├── feature-groups-toggle.tsx                         # NEW — multi-select Checkbox group of FeatureGroup; (value, onChange, availableGroups: list from Task 1)
-│   │   │   ├── horizon-bucket-table.tsx                          # NEW — Table rendering bucketed_aggregate_metrics
+│   │   │   ├── horizon-bucket-table.tsx                          # NEW — Table rendering bucketed_aggregated_metrics
 │   │   │   ├── champion-compatibility-badge.tsx                  # NEW — Badge with tooltip explaining same grain / window / V rule
 │   │   │   ├── feature-frame-panel.tsx                           # NEW — read-only summary of feature_frame_version + feature_groups + safety_classes (used in run-detail)
 │   │   │   ├── promote-confirmation-dialog.tsx                   # NEW — AlertDialog with artifact-verify + WAPE-delta warning when worse-newer
@@ -522,7 +520,7 @@ frontend/
 //   - feature_frame_version: PRESENT | ABSENT
 //   - feature_groups: PRESENT | ABSENT
 //   - rmse: PRESENT | ABSENT
-//   - bucketed_aggregate_metrics: PRESENT | ABSENT
+//   - bucketed_aggregated_metrics: PRESENT | ABSENT
 //   - StaleReason.FEATURE_FRAME_VERSION_MISMATCH: PRESENT | ABSENT
 //   - random_forest model_type: PRESENT | ABSENT
 //   - weighted_moving_average / seasonal_average / trend_regression_baseline: PRESENT | ABSENT
@@ -681,17 +679,17 @@ export interface FeatureMetadataResponse {
 }
 
 // BacktestResponse additions — additive sub-fields.
+// NOTE: backend ships `aggregated_metrics: dict[str, float]` (a flat dict,
+// NOT a Pydantic class). PRP-36 adds "rmse" as a key inside that dict —
+// surface it as `aggregated_metrics["rmse"]`, no new class on the wire.
 export interface FoldResult {
   // existing fields …
   horizon_bucket_metrics?: Record<string, Record<string, number>>;   // PRP-36
 }
-export interface AggregateMetrics {
-  // existing mae/smape/wape/bias/stability …
-  rmse?: number;                                                     // PRP-36
-}
 export interface ModelBacktestResult {
-  // existing aggregate_metrics, fold_results, …
-  bucketed_aggregate_metrics?: Record<string, Record<string, number>>; // PRP-36
+  // existing aggregated_metrics: Record<string, number>, fold_results, …
+  // PRP-36 — "rmse" is now a key inside `aggregated_metrics`.
+  bucketed_aggregated_metrics?: Record<string, Record<string, number>>; // PRP-36
 }
 
 // Ops additions
@@ -714,11 +712,11 @@ export interface StaleAliasResponse {
 Task 1 — CONTRACT PROBE (gates every other task):
   - VERIFY which PRP-35 / PRP-36 fields are present in the live backend by:
       a) Reading `app/features/forecasting/schemas.py` and confirming `TrainRequest.feature_frame_version` + `feature_groups` exist.
-      b) Reading `app/features/backtesting/schemas.py` and confirming `FoldResult.horizon_bucket_metrics`, `AggregateMetrics.rmse`, `ModelBacktestResult.bucketed_aggregate_metrics`.
+      b) Reading `app/features/backtesting/schemas.py` and confirming `FoldResult.horizon_bucket_metrics`, `ModelBacktestResult.bucketed_aggregated_metrics`, and that `MetricsCalculator.calculate_all` emits `"rmse"` as a key inside the `aggregated_metrics: dict[str, float]` dict (no top-level `AggregateMetrics` class exists — RMSE is `aggregated_metrics["rmse"]`).
       c) Reading `app/features/registry/schemas.py` and confirming `RunResponse.feature_frame_version` + `feature_groups`.
       d) Reading `app/features/ops/schemas.py` and confirming `StaleReason.FEATURE_FRAME_VERSION_MISMATCH`.
       e) Reading `app/features/forecasting/models.py` factory branch list and capturing the SUPERSET of `model_type` values the backend dispatches.
-  - PRODUCE a Task 1 report (commit as `docs/contract-probe-report.md` under PRPs/ai_docs/) listing every probed field with PRESENT / ABSENT + the source file:line.
+  - PRODUCE a Task 1 report (commit as `PRPs/ai_docs/prp-37-contract-probe-report.md`) listing every probed field with PRESENT / ABSENT + the source file:line.
   - FOR each ABSENT field, FLAG the dependent Task as DEFERRED in the PR description AND in the comment block at the top of the affected file. Implementer MUST NOT scaffold a placeholder for an ABSENT field.
   - VERIFY also that:
       - The `BacktestRequest.config` (model_config field) accepts the new model_type values from PRP-36 (read the discriminated union in forecasting/schemas.py).
@@ -833,15 +831,15 @@ Task 16 — MODIFY frontend/src/pages/visualize/forecast.tsx:
   - PRESERVE URL-shareable state.
 
 Task 17 — MODIFY frontend/src/pages/visualize/backtest.tsx:
-  - INSERT <HorizonBucketTable> + <BacktestHorizonBucketsChart> beneath the existing <BacktestFoldsChart> when `main_model_results.bucketed_aggregate_metrics` is present.
-  - INSERT RMSE column in the existing metric-card row when `aggregate_metrics.rmse` is present.
+  - INSERT <HorizonBucketTable> + <BacktestHorizonBucketsChart> beneath the existing <BacktestFoldsChart> when `main_model_results.bucketed_aggregated_metrics` is present.
+  - INSERT RMSE column in the existing metric-card row when `aggregated_metrics["rmse"]` is present.
   - PRESERVE the existing baseline-vs-feature-aware comparison logic (or extend it: when `baseline_results` is non-empty, render the comparison view above the single-model view).
   - PRESERVE URL-shareable state + the existing model_type Select (replaced by <ModelTypeSelect> tied to <ModelFamilyTabs>).
 
 Task 18 — MODIFY frontend/src/pages/visualize/planner.tsx:
   - INSERT a method Badge near the run-id picker: 'model_exogenous' (variant=info) or 'heuristic' (variant=warning) per `ScenarioComparison.method`.
-  - INSERT a known-future-input vs hypothetical Pill next to each assumption row.
   - PRESERVE the multi-scenario chart + save/clone/delete flow.
+  - DROPPED FROM SCOPE (no backend support): a known-future-input vs hypothetical per-row pill. No `is_known_future` (or equivalent) field exists on any `*Assumption` schema; every planner assumption is hypothetical by definition. The `method` badge alone differentiates baseline-vs-scenario semantics.
 
 Task 19 — MODIFY frontend/src/pages/explorer/run-detail.tsx:
   - INSERT <FeatureFramePanel> beneath the existing run metadata card.
@@ -855,7 +853,7 @@ Task 20 — MODIFY frontend/src/pages/explorer/run-compare.tsx:
 
 Task 21 — MODIFY frontend/src/pages/ops.tsx:
   - INSERT the new `feature_frame_version_mismatch` chip handling in the stale-alias table — map the reason via the existing StaleReason switch.
-  - INSERT degrading-status explanation row beneath each ModelHealthEntry: latest_wape, previous_wape, wape_delta (color-coded), n_comparable_runs, last_trained_at, staleness_days. All these fields ALREADY exist on `ModelHealthEntry` (frontend/src/types/api.ts:830-843); this PRP just surfaces them.
+  - INSERT degrading-status explanation row beneath each ModelHealthEntry: latest_wape, previous_wape, wape_delta (color-coded), run_count (rendered "N runs evaluated"), last_trained_at, staleness_days. All these fields ALREADY exist on `ModelHealthEntry` (frontend/src/types/api.ts:830-843); this PRP just surfaces them. (PRP-37 originally cited `n_comparable_runs`; that field does NOT exist on `ModelHealthEntry` — `run_count: int` is the actual contract; do NOT label the UI "comparable runs" unless a future PRP adds the filtered count.)
   - REPLACE the existing Promote affordance with <PromoteConfirmationDialog>.
   - PRESERVE the OpsSummary + RetrainingCandidates table.
 
@@ -1087,7 +1085,7 @@ curl -s http://localhost:8123/health   # should print {"status":"ok"}
 > against the live backend OR explicitly deferred with a note pointing
 > at the absent field.
 
-- [ ] Task 1 (Contract Probe) report committed under `PRPs/ai_docs/contract-probe-report.md`.
+- [ ] Task 1 (Contract Probe) report committed under `PRPs/ai_docs/prp-37-contract-probe-report.md`.
 - [ ] Every Optional field added to `frontend/src/types/api.ts` corresponds to a present backend field per Task 1.
 - [ ] `pnpm tsc --noEmit` clean.
 - [ ] `pnpm lint` clean.
@@ -1098,7 +1096,7 @@ curl -s http://localhost:8123/health   # should print {"status":"ok"}
 - [ ] URL-shareable state preserved on every page that has it today.
 - [ ] `/visualize/forecast`: family Tabs + model-type Select + feature-frame Select + conditional feature-groups Toggles render; submit produces a valid TrainRequest.
 - [ ] `/visualize/backtest`: RMSE column appears when present; horizon-bucket table + chart render when present; baseline-vs-feature-aware comparison renders when both present; empty states cover every absent field.
-- [ ] `/visualize/planner`: method badge + known-future-input pills present.
+- [ ] `/visualize/planner`: method badge present. (No known-future-input pill — dropped from scope; no backend `is_known_future` field exists.)
 - [ ] `/visualize/batch`: 5 presets prefill the matrix; matrix-picker emits a valid BatchSubmitRequest.
 - [ ] `/explorer/run-detail`: Feature frame panel renders V1/V2 + groups + safety; empty-state for pre-PRP-35 runs.
 - [ ] `/explorer/run-compare`: Feature frame version row + ChampionCompatibilityBadge per the comparable-run rule.
@@ -1128,9 +1126,10 @@ proceeds with the rest.
    `lib/feature-frame-utils.ts`. Task 1 verifies value-by-value.
 3. PRP-35 ships `FeatureMetadataResponse.feature_frame_version`,
    `feature_groups`, `feature_safety_classes`. Tasks 10 + 19 depend.
-4. PRP-36 ships `BacktestResponse.main_model_results.aggregate_metrics.rmse`,
-   `bucketed_aggregate_metrics`, and `FoldResult.horizon_bucket_metrics`.
-   Tasks 9 + 15 + 17 depend.
+4. PRP-36 ships `BacktestResponse.main_model_results.aggregated_metrics["rmse"]`
+   (a key inside the existing `aggregated_metrics: dict[str, float]`,
+   not a new class), `ModelBacktestResult.bucketed_aggregated_metrics`,
+   and `FoldResult.horizon_bucket_metrics`. Tasks 9 + 15 + 17 depend.
 5. PRP-36 ships `StaleReason.FEATURE_FRAME_VERSION_MISMATCH` AND
    `StaleAliasResponse.alias_feature_frame_version` +
    `comparable_run_feature_frame_version`. Tasks 11 + 21 depend.
