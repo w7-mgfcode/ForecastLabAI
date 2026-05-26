@@ -27,7 +27,7 @@ describe('PHASE_DEFS lockstep with backend _phase_table', () => {
     ])
   })
 
-  it('showcase_rich -> the 18-step sequence with PRP-38 V2 + PRP-39 decision/portfolio rows', () => {
+  it('showcase_rich -> the 23-step sequence with PRP-38 V2 + PRP-39 decision/portfolio + PRP-40 planning/knowledge rows', () => {
     const tuples = phaseDefsForScenario('showcase_rich').map((d) => [d.phase, d.step])
     expect(tuples).toEqual([
       ['data', 'precheck'],
@@ -45,8 +45,14 @@ describe('PHASE_DEFS lockstep with backend _phase_table', () => {
       ['decision', 'champion_compat_compare'],
       ['decision', 'stale_alias_trigger'],
       ['decision', 'safer_promote_flow'],
-      // PRP-39 — new portfolio phase between decision and verify.
+      // PRP-39 — portfolio phase between decision and verify.
       ['portfolio', 'batch_preset'],
+      // PRP-40 — planning + knowledge phases after portfolio, before verify.
+      ['planning', 'scenario_simulate_and_save'],
+      ['planning', 'multi_plan_compare'],
+      ['knowledge', 'embedding_provider_probe'],
+      ['knowledge', 'rag_index_subset'],
+      ['knowledge', 'rag_retrieve_probe'],
       ['verify', 'verify'],
       ['agent', 'agent'],
       ['cleanup', 'cleanup'],
@@ -59,12 +65,14 @@ describe('PHASE_DEFS lockstep with backend _phase_table', () => {
     expect(sparse).toEqual(minimal)
   })
 
-  it('PHASE_ORDER contains exactly the seven canonical phases (PRP-39 adds portfolio)', () => {
+  it('PHASE_ORDER contains exactly the nine canonical phases (PRP-39 adds portfolio, PRP-40 adds planning + knowledge)', () => {
     expect(PHASE_ORDER).toEqual([
       'data',
       'modeling',
       'decision',
       'portfolio',
+      'planning',
+      'knowledge',
       'verify',
       'agent',
       'cleanup',

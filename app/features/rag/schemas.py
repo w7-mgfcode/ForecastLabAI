@@ -190,6 +190,11 @@ class IndexProjectDocsRequest(BaseModel):
         include_docs: Index markdown discovered under docs/**.
         include_prps: Index markdown discovered under PRPs/**.
         include_root: Index the root allow-list (README/AGENTS/CHANGELOG).
+        path_prefix: Optional repo-relative sub-path under docs/ to restrict
+            discovery to (PRP-40). When None (default), scanning is wholesale
+            (back-compat). Only applies when ``include_docs`` is True; the
+            ``include_prps`` / ``include_root`` branches are unaffected.
+            A path-traversal guard rejects values that escape the project root.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -198,6 +203,17 @@ class IndexProjectDocsRequest(BaseModel):
     include_prps: bool = Field(default=True, description="Index PRPs/**/*.md")
     include_root: bool = Field(
         default=True, description="Index README.md / AGENTS.md / CHANGELOG.md"
+    )
+    # PRP-40 — additive sub-path filter for the docs/ root. None preserves
+    # back-compat (wholesale rglob).
+    path_prefix: str | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Optional repo-relative path under docs/ to restrict discovery to "
+            "(e.g. 'docs/user-guide'). When None (default), discovery scans "
+            "every docs/**/*.md (back-compat)."
+        ),
     )
 
 

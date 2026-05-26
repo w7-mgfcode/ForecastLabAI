@@ -271,10 +271,10 @@ describe('PRP-38 applyEvent phase propagation', () => {
 })
 
 
-describe('PRP-38/39 createInitialSteps(showcase_rich)', () => {
-  it('returns 18 idle steps in the showcase_rich layout (PRP-38 + PRP-39 additions)', () => {
+describe('PRP-38/39/40 createInitialSteps(showcase_rich)', () => {
+  it('returns 23 idle steps in the showcase_rich layout (PRP-38 + PRP-39 + PRP-40)', () => {
     const steps = createInitialSteps('showcase_rich')
-    expect(steps.length).toBe(18)
+    expect(steps.length).toBe(23)
     expect(steps.map((s) => s.name)).toEqual([
       'precheck',
       'reset',
@@ -293,6 +293,12 @@ describe('PRP-38/39 createInitialSteps(showcase_rich)', () => {
       'safer_promote_flow',
       // PRP-39 — portfolio phase (between decision and verify).
       'batch_preset',
+      // PRP-40 — planning + knowledge phases (after portfolio, before verify).
+      'scenario_simulate_and_save',
+      'multi_plan_compare',
+      'embedding_provider_probe',
+      'rag_index_subset',
+      'rag_retrieve_probe',
       'verify',
       'agent',
       'cleanup',

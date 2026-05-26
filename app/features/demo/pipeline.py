@@ -25,6 +25,7 @@ import asyncio
 import hashlib
 import json
 import math
+import re
 import shutil
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -218,6 +219,12 @@ class DemoContext:
     original_demo_alias_run_id: str | None = None
     batch_id: str | None = None
     batch_status: str | None = None
+    # PRP-40 — additive fields for the planning + knowledge phases (set on
+    # SHOWCASE_RICH runs only; remain None on demo_minimal / sparse).
+    scenario_artifact_key: str | None = None
+    price_cut_scenario_id: str | None = None
+    holiday_scenario_id: str | None = None
+    embedding_unreachable: bool = False
 
 
 # =============================================================================
@@ -260,6 +267,71 @@ def _llm_key_present() -> bool:
     if provider in ("google-gla", "google-vertex"):
         return bool(settings.google_api_key)
     return False
+
+
+# PRP-40 — artifact-key parser for /scenarios/* run_id resolution. Two ID
+# spaces: model_run.run_id (32-char UUID-hex) vs scenarios.run_id (12-char
+# artifact key parsed from `model_{KEY}.joblib`). Memory anchor:
+# [[scenario-run-id-vs-registry-run-id]].
+_ARTIFACT_KEY_RE = re.compile(r"model_([0-9a-f]+)(?:\.joblib)?$")
+
+
+def _parse_artifact_key(artifact_uri: str) -> str:
+    """Extract the 12-char artifact-key from a registry artifact_uri.
+
+    V1 demo: 'demo/{model_type}-model_{KEY}.joblib'   -> KEY
+    V2:      'artifacts/models/model_{KEY}.joblib'    -> KEY
+    """
+    match = _ARTIFACT_KEY_RE.search(artifact_uri)
+    if match is None:
+        raise ValueError(f"Cannot parse artifact-key from artifact_uri: {artifact_uri!r}")
+    return match.group(1)
+
+
+# PRP-40 — curated 5-file user-guide corpus indexed by the knowledge phase.
+# The path_prefix RAG indexing additive contract scopes discovery to this
+# subset (memory anchor: [[rag-runtime-config-and-corpus-state]] — keep the
+# blast radius small).
+_USER_GUIDE_CURATED_FILES: frozenset[str] = frozenset(
+    {
+        "docs/user-guide/getting-started.md",
+        "docs/user-guide/dashboard-guide.md",
+        "docs/user-guide/feature-reference.md",
+        "docs/user-guide/agents-and-rag-guide.md",
+        "docs/user-guide/advanced-forecasting-guide.md",
+    }
+)
+
+
+async def _embedding_provider_reachable(client: _Client) -> tuple[bool, str]:
+    """Probe whether the configured RAG embedding provider is reachable.
+
+    Mirrors ``_llm_key_present()`` for the embedding provider. Returns
+    ``(reachable, provider_name)``. Logs key NAME only, never the value
+    (security-patterns.md).
+
+    - openai -> bool(settings.openai_api_key)
+    - ollama -> live-probe via GET /config/providers/health (reads the
+      ollama entry's ``reachable`` field)
+    """
+    settings = get_settings()
+    provider = settings.rag_embedding_provider
+    if provider == "openai":
+        return (bool(settings.openai_api_key), provider)
+    if provider == "ollama":
+        # GET /config/providers/health returns a list (per
+        # ConfigService.get_provider_health); _Client.request wraps top-level
+        # JSON arrays as ``{"_raw": [...]}`` (pipeline.py:158-159).
+        try:
+            body = await client.request("knowledge[probe]", "GET", "/config/providers/health")
+        except _StepError:
+            return (False, provider)
+        items = body.get("_raw", [])
+        if isinstance(items, list):
+            for entry in items:
+                if isinstance(entry, dict) and entry.get("provider") == "ollama":
+                    return (bool(entry.get("reachable")), provider)
+    return (False, provider)
 
 
 def _select_winner(
@@ -1032,6 +1104,302 @@ async def step_register(ctx: DemoContext, client: _Client) -> StepResult:
     )
 
 
+# =============================================================================
+# PRP-40 — Planning + Knowledge phase steps (SHOWCASE_RICH only)
+# =============================================================================
+
+
+async def step_scenario_simulate_and_save(ctx: DemoContext, client: _Client) -> StepResult:
+    """PRP-40 — save a 10% price-cut scenario against the champion run.
+
+    Resolves the demo-production champion -> artifact_uri -> 12-char artifact
+    key, then POSTs /scenarios to run the simulation AND persist it as
+    ``showcase-price-cut-10pct`` in one round-trip. R16 — scenarios.run_id is
+    the artifact key, not model_run.run_id.
+    """
+    if ctx.date_end is None:
+        return ("fail", "no date_end on ctx (status step did not populate it)", {})
+
+    # (1) Resolve alias -> registry run_id (32-char uuid).
+    alias_body = await client.request(
+        "scenario_simulate_and_save[alias]",
+        "GET",
+        f"/registry/aliases/{DEMO_ALIAS}",
+    )
+    winner_run_id = alias_body.get("run_id")
+    if not isinstance(winner_run_id, str):
+        return ("fail", f"{DEMO_ALIAS} alias has no run_id", {})
+
+    # (2) Resolve run -> artifact_uri.
+    run_body = await client.request(
+        "scenario_simulate_and_save[run]",
+        "GET",
+        f"/registry/runs/{winner_run_id}",
+    )
+    artifact_uri = run_body.get("artifact_uri")
+    if not isinstance(artifact_uri, str):
+        return ("fail", f"run {winner_run_id[:8]}... has no artifact_uri", {})
+
+    # (3) Parse the 12-char artifact key.
+    try:
+        artifact_key = _parse_artifact_key(artifact_uri)
+    except ValueError as exc:
+        return ("fail", str(exc), {})
+    ctx.scenario_artifact_key = artifact_key
+
+    # (4+5) Build a price-cut assumption inside the forecast horizon and persist.
+    # POST /scenarios runs the simulation internally and stores the resulting
+    # ScenarioComparison in the response, so we don't need a separate
+    # /scenarios/simulate round-trip.
+    horizon_start = ctx.date_end + timedelta(days=1)
+    horizon_end = ctx.date_end + timedelta(days=DEMO_HORIZON)
+    assumptions = {
+        "price": {
+            "change_pct": -0.10,
+            "start_date": horizon_start.isoformat(),
+            "end_date": horizon_end.isoformat(),
+        }
+    }
+    plan_body = await client.request(
+        "scenario_simulate_and_save[save]",
+        "POST",
+        "/scenarios",
+        json_body={
+            "name": "showcase-price-cut-10pct",
+            "run_id": artifact_key,
+            "horizon": DEMO_HORIZON,
+            "assumptions": assumptions,
+            "tags": ["showcase", "price"],
+        },
+    )
+    scenario_id_raw = plan_body.get("scenario_id")
+    if isinstance(scenario_id_raw, str):
+        ctx.price_cut_scenario_id = scenario_id_raw
+
+    comparison = plan_body.get("comparison") or {}
+    method = comparison.get("method", "unknown") if isinstance(comparison, dict) else "unknown"
+    units_delta_raw = comparison.get("units_delta", 0.0) if isinstance(comparison, dict) else 0.0
+    revenue_delta_raw = (
+        comparison.get("revenue_delta", 0.0) if isinstance(comparison, dict) else 0.0
+    )
+    try:
+        units_delta = float(units_delta_raw)
+    except (TypeError, ValueError):
+        units_delta = 0.0
+    try:
+        revenue_delta = float(revenue_delta_raw)
+    except (TypeError, ValueError):
+        revenue_delta = 0.0
+
+    return (
+        "pass",
+        (
+            f"plan=showcase-price-cut-10pct method={method} "
+            f"Δunits={units_delta:+.1f} Δrevenue={revenue_delta:+.2f}"
+        ),
+        {
+            "scenario_id": scenario_id_raw,
+            "method": method,
+            "units_delta": units_delta,
+            "revenue_delta": revenue_delta,
+            "winner_run_id": winner_run_id,
+            "artifact_key": artifact_key,
+        },
+    )
+
+
+async def step_multi_plan_compare(ctx: DemoContext, client: _Client) -> StepResult:
+    """PRP-40 — save the holiday plan and rank both plans by revenue_delta.
+
+    WARN (not FAIL) when the second-plan save fails so the visitor still sees
+    the first plan was saved (R19 partial-success surfacing).
+    """
+    if ctx.price_cut_scenario_id is None or ctx.scenario_artifact_key is None:
+        return ("fail", "price_cut plan not saved by previous step", {})
+    if ctx.date_end is None:
+        return ("fail", "no date_end on ctx", {})
+
+    # (1) Build a one-day holiday inside the horizon and persist plan #2.
+    holiday_day = (ctx.date_end + timedelta(days=DEMO_HORIZON // 2)).isoformat()
+    try:
+        plan_body = await client.request(
+            "multi_plan_compare[save]",
+            "POST",
+            "/scenarios",
+            json_body={
+                "name": "showcase-holiday-uplift",
+                "run_id": ctx.scenario_artifact_key,
+                "horizon": DEMO_HORIZON,
+                "assumptions": {"holiday": {"dates": [holiday_day]}},
+                "tags": ["showcase", "holiday"],
+            },
+        )
+    except _StepError as exc:
+        return (
+            "warn",
+            f"holiday-plan save failed: {exc}; price-cut plan still saved",
+            {"price_cut_scenario_id": ctx.price_cut_scenario_id},
+        )
+    holiday_id_raw = plan_body.get("scenario_id")
+    if not isinstance(holiday_id_raw, str):
+        return ("warn", "holiday-plan save returned no scenario_id", {})
+    ctx.holiday_scenario_id = holiday_id_raw
+
+    # (2+3) Rank both plans by revenue_delta.
+    compare_body = await client.request(
+        "multi_plan_compare[compare]",
+        "POST",
+        "/scenarios/compare",
+        json_body={
+            "scenario_ids": [ctx.price_cut_scenario_id, holiday_id_raw],
+            "rank_by": "revenue_delta",
+        },
+    )
+    scenarios_raw = compare_body.get("scenarios") or []
+    # Filter on the runtime type up-front so the local list is typed as a
+    # ``list[dict[str, Any]]`` and downstream calls don't need to re-check.
+    scenarios_list: list[dict[str, Any]] = (
+        [s for s in scenarios_raw if isinstance(s, dict)] if isinstance(scenarios_raw, list) else []
+    )
+    if not scenarios_list:
+        return ("fail", "/scenarios/compare returned empty ranked list", {})
+    winner = scenarios_list[0]
+    winner_id = winner.get("scenario_id", "unknown")
+    winner_name = winner.get("name", "unknown")
+    ranked = [
+        {
+            "scenario_id": s.get("scenario_id"),
+            "name": s.get("name"),
+            "units_delta": s.get("units_delta"),
+            "revenue_delta": s.get("revenue_delta"),
+            "rank": s.get("rank"),
+        }
+        for s in scenarios_list
+    ]
+    return (
+        "pass",
+        f"winner={winner_name} ranked_by=revenue_delta",
+        {
+            "winner_scenario_id": winner_id,
+            "winner_name": winner_name,
+            "ranked_by": "revenue_delta",
+            "ranked": ranked,
+        },
+    )
+
+
+async def step_embedding_provider_probe(ctx: DemoContext, client: _Client) -> StepResult:
+    """PRP-40 — probe the configured embedding provider. Always PASS.
+
+    When reachable, downstream knowledge steps run normally. When unreachable,
+    sets ``ctx.embedding_unreachable=True`` so the next two steps SKIP with a
+    clear detail; the pipeline still goes green.
+    """
+    reachable, provider = await _embedding_provider_reachable(client)
+    ctx.embedding_unreachable = not reachable
+    logger.info(
+        "demo.embedding_provider_probe",
+        provider=provider,
+        reachable=reachable,
+    )
+    detail = (
+        f"provider={provider} reachable={reachable}"
+        if reachable
+        else f"provider={provider} unreachable — knowledge phase will skip"
+    )
+    return ("pass", detail, {"provider": provider, "reachable": reachable})
+
+
+async def step_rag_index_subset(ctx: DemoContext, client: _Client) -> StepResult:
+    """PRP-40 — index the curated 5-file docs/user-guide corpus.
+
+    SKIPs when ``ctx.embedding_unreachable`` is set (by the prior probe step).
+    Uses the additive ``path_prefix`` field on IndexProjectDocsRequest so the
+    blast radius stays scoped to the user-guide subset.
+    """
+    if ctx.embedding_unreachable:
+        return ("skip", "embedding provider unreachable", {})
+
+    body = await client.request(
+        "rag_index_subset",
+        "POST",
+        "/rag/index/project-docs",
+        json_body={
+            "include_docs": True,
+            "include_prps": False,
+            "include_root": False,
+            "path_prefix": "docs/user-guide",
+        },
+    )
+    results = body.get("results") or []
+    total_chunks = int(body.get("total_chunks", 0))
+    failed = int(body.get("failed", 0))
+    indexed = int(body.get("indexed", 0))
+    updated = int(body.get("updated", 0))
+    unchanged = int(body.get("unchanged", 0))
+    curated_hits = sum(
+        1
+        for r in results
+        if isinstance(r, dict) and r.get("source_path") in _USER_GUIDE_CURATED_FILES
+    )
+    return (
+        "pass",
+        f"files_indexed={curated_hits}/5 chunks={total_chunks} failed={failed}",
+        {
+            "total_files": int(body.get("total_files", 0)),
+            "indexed": indexed,
+            "updated": updated,
+            "unchanged": unchanged,
+            "failed": failed,
+            "total_chunks": total_chunks,
+            "curated_hits": curated_hits,
+        },
+    )
+
+
+async def step_rag_retrieve_probe(ctx: DemoContext, client: _Client) -> StepResult:
+    """PRP-40 — semantic-retrieve probe against the curated corpus.
+
+    SKIPs when ``ctx.embedding_unreachable``. WARN (not FAIL) on zero hits so
+    a green-but-empty corpus still lets the pipeline go green.
+    """
+    if ctx.embedding_unreachable:
+        return ("skip", "embedding provider unreachable", {})
+
+    body = await client.request(
+        "rag_retrieve_probe",
+        "POST",
+        "/rag/retrieve",
+        json_body={"query": "How do I run the demo pipeline?", "top_k": 3},
+    )
+    results = body.get("results") or []
+    if not results:
+        return (
+            "warn",
+            "no hits — corpus indexed but query did not match",
+            {
+                "results_count": 0,
+                "total_chunks_searched": body.get("total_chunks_searched", 0),
+            },
+        )
+    top = results[0] if isinstance(results, list) else {}
+    title = top.get("source_path", "unknown") if isinstance(top, dict) else "unknown"
+    score_raw = top.get("relevance_score", 0.0) if isinstance(top, dict) else 0.0
+    try:
+        score = float(score_raw)
+    except (TypeError, ValueError):
+        score = 0.0
+    return (
+        "pass",
+        f"top hit: {title} (score={score:.3f})",
+        {
+            "results_count": len(results),
+            "top_source_path": title,
+            "top_relevance_score": score,
+        },
+    )
+
+
 async def step_verify(ctx: DemoContext, client: _Client) -> StepResult:
     """SHA-256 artifact-integrity check via the public verify endpoint.
 
@@ -1619,6 +1987,10 @@ PHASE_MODELING = "modeling"
 PHASE_DECISION = "decision"
 # PRP-39 — new portfolio phase, inserted between decision and verify.
 PHASE_PORTFOLIO = "portfolio"
+# PRP-40 — planning + knowledge phases inserted AFTER portfolio, BEFORE verify
+# on SHOWCASE_RICH.
+PHASE_PLANNING = "planning"
+PHASE_KNOWLEDGE = "knowledge"
 PHASE_VERIFY = "verify"
 PHASE_AGENT = "agent"
 PHASE_CLEANUP = "cleanup"
@@ -1650,6 +2022,9 @@ def _phase_table(scenario: ScenarioPreset) -> list[PhaseStep]:
     ]
     # PRP-39 — new portfolio phase, empty under demo_minimal/sparse.
     portfolio_steps: list[tuple[str, StepFn]] = []
+    # PRP-40 — planning + knowledge default to empty; populated on SHOWCASE_RICH.
+    planning_steps: list[tuple[str, StepFn]] = []
+    knowledge_steps: list[tuple[str, StepFn]] = []
     verify_steps: list[tuple[str, StepFn]] = [("verify", step_verify)]
     agent_steps: list[tuple[str, StepFn]] = [("agent", step_agent)]
     cleanup_steps: list[tuple[str, StepFn]] = [("cleanup", step_cleanup)]
@@ -1667,12 +2042,26 @@ def _phase_table(scenario: ScenarioPreset) -> list[PhaseStep]:
         ]
         # PRP-39 — new portfolio phase has its one step under showcase_rich.
         portfolio_steps = [("batch_preset", step_batch_preset)]
+        # PRP-40 — planning + knowledge phases live in the SHOWCASE_RICH branch.
+        planning_steps = [
+            ("scenario_simulate_and_save", step_scenario_simulate_and_save),
+            ("multi_plan_compare", step_multi_plan_compare),
+        ]
+        knowledge_steps = [
+            ("embedding_provider_probe", step_embedding_provider_probe),
+            ("rag_index_subset", step_rag_index_subset),
+            ("rag_retrieve_probe", step_rag_retrieve_probe),
+        ]
     rows: list[PhaseStep] = []
     rows += [(PHASE_DATA, name, fn) for name, fn in data_steps]
     rows += [(PHASE_MODELING, name, fn) for name, fn in modeling_steps]
     rows += [(PHASE_DECISION, name, fn) for name, fn in decision_steps]
     # PRP-39 — INSERT portfolio BEFORE verify (relative anchor).
     rows += [(PHASE_PORTFOLIO, name, fn) for name, fn in portfolio_steps]
+    # PRP-40 — planning + knowledge inserted AFTER portfolio, BEFORE verify
+    # (relative anchor; both are no-ops outside SHOWCASE_RICH).
+    rows += [(PHASE_PLANNING, name, fn) for name, fn in planning_steps]
+    rows += [(PHASE_KNOWLEDGE, name, fn) for name, fn in knowledge_steps]
     rows += [(PHASE_VERIFY, name, fn) for name, fn in verify_steps]
     rows += [(PHASE_AGENT, name, fn) for name, fn in agent_steps]
     rows += [(PHASE_CLEANUP, name, fn) for name, fn in cleanup_steps]

@@ -9,7 +9,7 @@ database, no network, and no real models.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 from fastapi import FastAPI
 
@@ -31,6 +31,8 @@ def _canned_response(
     json_body: dict[str, Any] | None,
     artifact_path: str,
     wapes: dict[str, float],
+    *,
+    method: str = "POST",
 ) -> dict[str, Any]:
     """Return a canned 2xx body for a given endpoint path."""
     if path == "/health":
@@ -95,6 +97,112 @@ def _canned_response(
         return response
     if path == "/registry/runs":
         return {"run_id": "demo-run-abc123def456"}
+    # PRP-40 — planning + knowledge endpoints (showcase_rich only).
+    if path == "/registry/aliases/demo-production":
+        return {"alias_name": "demo-production", "run_id": "demo-run-abc123def456"}
+    if (
+        method == "GET"
+        and path.startswith("/registry/runs/")
+        and not path.endswith("/verify")
+        and not path.endswith("/feature-metadata")
+    ):
+        # GET /registry/runs/{run_id} returns artifact_uri.
+        return {
+            "run_id": "demo-run-abc123def456",
+            "artifact_uri": "demo/seasonal_naive-model_abc123def456.joblib",
+            "status": "success",
+        }
+    if path == "/scenarios":
+        # POST /scenarios runs the simulation and stores the snapshot.
+        assert json_body is not None
+        name = json_body.get("name", "")
+        scenario_id = f"scn-{name}"
+        units_delta = -25.0 if "price" in name else 18.5
+        revenue_delta = -180.0 if "price" in name else 220.0
+        return {
+            "scenario_id": scenario_id,
+            "name": name,
+            "store_id": 7,
+            "product_id": 3,
+            "run_id": json_body.get("run_id", ""),
+            "horizon": json_body.get("horizon", 14),
+            "method": "heuristic",
+            "created_at": "2026-05-26T10:00:00Z",
+            "assumptions": json_body.get("assumptions", {}),
+            "comparison": {
+                "method": "heuristic",
+                "units_delta": units_delta,
+                "revenue_delta": revenue_delta,
+                "units_delta_pct": 0.0,
+            },
+            "tags": json_body.get("tags", []),
+        }
+    if path == "/scenarios/compare":
+        assert json_body is not None
+        ids = json_body.get("scenario_ids", [])
+        # Holiday plan ranks first (higher revenue_delta in the canned data).
+        ordered = [
+            {
+                "scenario_id": ids[1] if len(ids) > 1 else "scn-unknown",
+                "name": "showcase-holiday-uplift",
+                "units_delta": 18.5,
+                "revenue_delta": 220.0,
+                "coverage_verdict": "ok",
+                "rank": 1,
+            },
+            {
+                "scenario_id": ids[0] if ids else "scn-unknown",
+                "name": "showcase-price-cut-10pct",
+                "units_delta": -25.0,
+                "revenue_delta": -180.0,
+                "coverage_verdict": "ok",
+                "rank": 2,
+            },
+        ]
+        return {"scenarios": ordered, "chart_data": []}
+    if path == "/config/providers/health":
+        # _Client wraps top-level JSON arrays as {"_raw": [...]}.
+        return {
+            "_raw": [
+                {"provider": "ollama", "reachable": True, "detail": "ok", "models": []},
+                {
+                    "provider": "openai",
+                    "reachable": True,
+                    "detail": "key present",
+                    "models": [],
+                },
+            ]
+        }
+    if path == "/rag/index/project-docs":
+        # Canned 5-file curated index — every test target file present.
+        from app.features.demo.pipeline import _USER_GUIDE_CURATED_FILES
+
+        results = [
+            {"source_path": p, "status": "indexed", "chunks_created": 4, "error": None}
+            for p in sorted(_USER_GUIDE_CURATED_FILES)
+        ]
+        return {
+            "results": results,
+            "total_files": 5,
+            "indexed": 5,
+            "updated": 0,
+            "unchanged": 0,
+            "failed": 0,
+            "total_chunks": 20,
+            "duration_ms": 120.0,
+        }
+    if path == "/rag/retrieve":
+        return {
+            "results": [
+                {
+                    "source_path": "docs/user-guide/getting-started.md",
+                    "content": "demo content...",
+                    "relevance_score": 0.87,
+                    "chunk_index": 0,
+                }
+            ],
+            "total_chunks_searched": 20,
+        }
     if path == "/seeder/phase2-enrichment":
         return {
             "success": True,
@@ -142,7 +250,10 @@ def _canned_response(
             "config_diff": {},
             "metrics_diff": {},
         }
-    if path.startswith("/registry/runs/"):  # PATCH pending->running->success
+    if path.startswith("/registry/runs/"):
+        # PATCH pending->running->success returns an empty (200) body. The
+        # PRP-40 GET /registry/runs/{run_id} branch is handled earlier in
+        # this function (returns artifact_uri).
         return {}
     if path == "/registry/aliases":
         return {}
@@ -209,19 +320,31 @@ def _build_fake_client(artifact_path: str, wapes: dict[str, float]) -> type:
             json_body: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
             self.calls.append((method, path))
-            return _canned_response(path, json_body, artifact_path, wapes)
+            return _canned_response(path, json_body, artifact_path, wapes, method=method)
 
     return _FakeClient
 
 
-def _fake_settings(registry_root: str) -> SimpleNamespace:
-    """Fake settings: usable registry root, no LLM keys (agent step skips)."""
+def _fake_settings(
+    registry_root: str,
+    *,
+    rag_embedding_provider: str = "openai",
+    openai_api_key: str = "sk-test",
+) -> SimpleNamespace:
+    """Fake settings: usable registry root, no agent LLM key (agent skips).
+
+    ``rag_embedding_provider`` defaults to "openai" with a present key so the
+    PRP-40 knowledge phase runs to completion in test fixtures; the
+    knowledge-skip tests override via ``rag_embedding_provider="openai"`` +
+    ``openai_api_key=""`` (or "ollama" with an unreachable canned probe).
+    """
     return SimpleNamespace(
         registry_artifact_root=registry_root,
         agent_default_model="anthropic:claude-test",
         anthropic_api_key="",
-        openai_api_key="",
+        openai_api_key=openai_api_key,
         google_api_key="",
+        rag_embedding_provider=rag_embedding_provider,
     )
 
 
@@ -445,13 +568,17 @@ def test_phase_table_demo_minimal_matches_legacy_11_steps():
     ]
 
 
-def test_phase_table_showcase_rich_adds_v2_steps():
-    """PRP-38/39 — phase_table for SHOWCASE_RICH adds 3+4 steps; phase order stable.
+def test_phase_table_showcase_rich_adds_v2_decision_portfolio_planning_knowledge_steps():
+    """PRP-38 + PRP-39 + PRP-40 — phase_table for SHOWCASE_RICH is the canonical 23 rows.
 
     PRP-38 shipped 3 (phase2_enrichment, historical_backfill, v2_train).
-    PRP-39 adds 4 more (champion_compat_compare, stale_alias_trigger,
-    safer_promote_flow, batch_preset) AND a new ``portfolio`` phase between
-    ``decision`` and ``verify``. Total: 18 rows across 7 phases.
+    PRP-39 added 4 (champion_compat_compare, stale_alias_trigger,
+    safer_promote_flow, batch_preset) plus a new ``portfolio`` phase between
+    ``decision`` and ``verify``.
+    PRP-40 adds 5 (scenario_simulate_and_save, multi_plan_compare,
+    embedding_provider_probe, rag_index_subset, rag_retrieve_probe) under two
+    new ``planning`` + ``knowledge`` phases, AFTER portfolio and BEFORE verify
+    via a relative anchor. Total: 23 rows across 9 phases.
     """
     rows = pipeline._phase_table(ScenarioPreset.SHOWCASE_RICH)
     by_phase_step = [(p, s) for p, s, _fn in rows]
@@ -471,8 +598,14 @@ def test_phase_table_showcase_rich_adds_v2_steps():
         ("decision", "champion_compat_compare"),
         ("decision", "stale_alias_trigger"),
         ("decision", "safer_promote_flow"),
-        # PRP-39 — new portfolio phase between decision and verify.
+        # PRP-39 — portfolio phase between decision and verify.
         ("portfolio", "batch_preset"),
+        # PRP-40 — planning + knowledge phases after portfolio, before verify.
+        ("planning", "scenario_simulate_and_save"),
+        ("planning", "multi_plan_compare"),
+        ("knowledge", "embedding_provider_probe"),
+        ("knowledge", "rag_index_subset"),
+        ("knowledge", "rag_retrieve_probe"),
         ("verify", "verify"),
         ("agent", "agent"),
         ("cleanup", "cleanup"),
@@ -581,12 +714,14 @@ async def test_run_pipeline_showcase_rich_runs_v2_and_buckets(monkeypatch, tmp_p
     assert final.data["v2_run_id"] == "demo-run-abc123def456"
 
 
-async def test_run_pipeline_showcase_rich_emits_18_steps(monkeypatch, tmp_path):
-    """PRP-38/39 — SHOWCASE_RICH adds 3+4 new steps (11 -> 18 total).
+async def test_run_pipeline_showcase_rich_emits_23_steps(monkeypatch, tmp_path):
+    """PRP-38 + PRP-39 + PRP-40 — SHOWCASE_RICH = 11 base + 3 PRP-38 + 4 PRP-39 + 5 PRP-40 = 23 total steps.
 
-    PRP-38 shipped 14 (11 + phase2_enrichment + historical_backfill + v2_train).
-    PRP-39 adds 4 more (champion_compat_compare + stale_alias_trigger +
+    PRP-38 shipped 3 (phase2_enrichment + historical_backfill + v2_train).
+    PRP-39 added 4 (champion_compat_compare + stale_alias_trigger +
     safer_promote_flow + batch_preset).
+    PRP-40 adds 5 (scenario_simulate_and_save + multi_plan_compare +
+    embedding_provider_probe + rag_index_subset + rag_retrieve_probe).
     """
     artifact = tmp_path / "artifacts" / "models" / "model_x.joblib"
     artifact.parent.mkdir(parents=True, exist_ok=True)
@@ -598,10 +733,10 @@ async def test_run_pipeline_showcase_rich_emits_18_steps(monkeypatch, tmp_path):
     req = DemoRunRequest(scenario=ScenarioPreset.SHOWCASE_RICH)
     events = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=req)]
     completes = [e for e in events if e.event_type == "step_complete"]
-    assert len(completes) == 18
-    # Every event reports total_steps=18
+    assert len(completes) == 23
+    # Every event reports total_steps=23
     for ev in completes:
-        assert ev.total_steps == 18
+        assert ev.total_steps == 23
 
 
 # =============================================================================
@@ -781,3 +916,518 @@ async def test_cleanup_skips_when_nothing_to_restore_or_close(monkeypatch, tmp_p
     assert status == "skip"
     assert data["alias_restored"] is False
     assert data["agent_session_closed"] is False
+
+
+# =============================================================================
+# PRP-40 — Helpers + planning/knowledge step unit tests
+# =============================================================================
+
+
+def test_parse_artifact_key_v1_demo_path():
+    """PRP-40 — V1 demo path: 'demo/{model_type}-model_{KEY}.joblib'."""
+    key = pipeline._parse_artifact_key("demo/seasonal_naive-model_abc123def456.joblib")
+    assert key == "abc123def456"
+
+
+def test_parse_artifact_key_v2_artifacts_models_path():
+    """PRP-40 — V2 path: 'artifacts/models/model_{KEY}.joblib'."""
+    key = pipeline._parse_artifact_key("artifacts/models/model_deadbeef0042.joblib")
+    assert key == "deadbeef0042"
+
+
+def test_parse_artifact_key_rejects_unparseable():
+    """PRP-40 — a malformed artifact_uri raises ValueError (not a silent miss)."""
+    import pytest
+
+    with pytest.raises(ValueError, match="Cannot parse artifact-key"):
+        pipeline._parse_artifact_key("not-a-model-uri.bin")
+
+
+class _RecordingClient:
+    """A minimal stand-in for pipeline._Client recording every call.
+
+    Tests pass a dict of (method, path) -> response body; missing entries
+    raise AssertionError so unexpected requests show up loudly.
+    """
+
+    def __init__(
+        self,
+        _app: Any,
+        responses: dict[tuple[str, str], Any] | None = None,
+        errors: dict[tuple[str, str], pipeline._StepError] | None = None,
+    ) -> None:
+        self._responses = responses or {}
+        self._errors = errors or {}
+        self.calls: list[tuple[str, str, dict[str, Any] | None]] = []
+
+    async def __aenter__(self) -> _RecordingClient:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def request(
+        self,
+        step: str,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append((method, path, json_body))
+        key = (method, path)
+        if key in self._errors:
+            raise self._errors[key]
+        if key in self._responses:
+            response = self._responses[key]
+            if not isinstance(response, dict):
+                raise AssertionError(
+                    f"canned response for {key!r} must be a dict, got {type(response)}"
+                )
+            return cast("dict[str, Any]", response)
+        raise AssertionError(f"unexpected request: method={method!r} path={path!r}")
+
+
+def _as_client(rec: _RecordingClient) -> pipeline._Client:
+    """Cast a _RecordingClient stand-in to the real _Client type for typecheckers.
+
+    The stand-in is structurally compatible with pipeline._Client (same async
+    ``request`` signature) but mypy can't see that since the real _Client is
+    not declared as a Protocol. ``cast`` is the load-bearing escape hatch.
+    """
+    return cast("pipeline._Client", rec)
+
+
+def _make_showcase_ctx(scenario: ScenarioPreset = ScenarioPreset.SHOWCASE_RICH) -> Any:
+    """Build a DemoContext positioned at the start of the planning phase."""
+    from datetime import date as date_type
+
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False, scenario=scenario)
+    ctx.store_id = 7
+    ctx.product_id = 3
+    ctx.date_start = date_type(2024, 1, 1)
+    ctx.date_end = date_type(2024, 12, 31)
+    ctx.winner_model_type = "seasonal_naive"
+    ctx.winning_run_id = "demo-run-abc123def456"
+    return ctx
+
+
+async def test_scenario_simulate_and_save_happy_path():
+    """PRP-40 — happy path: resolves alias -> run -> artifact_key, saves plan."""
+    ctx = _make_showcase_ctx()
+    client = _RecordingClient(
+        None,
+        responses={
+            (
+                "GET",
+                "/registry/aliases/demo-production",
+            ): {"alias_name": "demo-production", "run_id": "uuid-32-char"},
+            ("GET", "/registry/runs/uuid-32-char"): {
+                "run_id": "uuid-32-char",
+                "artifact_uri": "demo/seasonal_naive-model_abc123def456.joblib",
+            },
+            ("POST", "/scenarios"): {
+                "scenario_id": "scn-001",
+                "comparison": {
+                    "method": "heuristic",
+                    "units_delta": -25.5,
+                    "revenue_delta": -180.0,
+                },
+            },
+        },
+    )
+    status, detail, data = await pipeline.step_scenario_simulate_and_save(ctx, _as_client(client))
+    assert status == "pass"
+    assert ctx.scenario_artifact_key == "abc123def456"
+    assert ctx.price_cut_scenario_id == "scn-001"
+    assert data["method"] == "heuristic"
+    assert data["units_delta"] == -25.5
+    assert data["revenue_delta"] == -180.0
+    assert data["artifact_key"] == "abc123def456"
+    assert "showcase-price-cut-10pct" in detail
+    assert "heuristic" in detail
+    # The POST /scenarios body carried the additive price assumption.
+    save_call = next(c for c in client.calls if c[0] == "POST" and c[1] == "/scenarios")
+    body = save_call[2]
+    assert body is not None
+    assert body["name"] == "showcase-price-cut-10pct"
+    assert body["run_id"] == "abc123def456"
+    assert body["assumptions"]["price"]["change_pct"] == -0.10
+    assert body["tags"] == ["showcase", "price"]
+
+
+async def test_scenario_simulate_and_save_missing_alias_fails():
+    """PRP-40 — alias missing run_id -> FAIL with clear detail."""
+    ctx = _make_showcase_ctx()
+    client = _RecordingClient(
+        None,
+        responses={
+            ("GET", "/registry/aliases/demo-production"): {"alias_name": "demo-production"},
+        },
+    )
+    status, detail, _ = await pipeline.step_scenario_simulate_and_save(ctx, _as_client(client))
+    assert status == "fail"
+    assert "no run_id" in detail
+
+
+async def test_scenario_simulate_and_save_unparseable_artifact_uri_fails():
+    """PRP-40 — artifact_uri the regex can't parse -> FAIL."""
+    ctx = _make_showcase_ctx()
+    client = _RecordingClient(
+        None,
+        responses={
+            ("GET", "/registry/aliases/demo-production"): {"run_id": "uuid"},
+            ("GET", "/registry/runs/uuid"): {"artifact_uri": "garbage-path.bin"},
+        },
+    )
+    status, detail, _ = await pipeline.step_scenario_simulate_and_save(ctx, _as_client(client))
+    assert status == "fail"
+    assert "artifact-key" in detail
+
+
+async def test_multi_plan_compare_happy_path():
+    """PRP-40 — happy path: second-plan save + compare returns ranked list."""
+    ctx = _make_showcase_ctx()
+    ctx.price_cut_scenario_id = "scn-price"
+    ctx.scenario_artifact_key = "abc123def456"
+    client = _RecordingClient(
+        None,
+        responses={
+            ("POST", "/scenarios"): {
+                "scenario_id": "scn-holiday",
+                "comparison": {"method": "heuristic"},
+            },
+            ("POST", "/scenarios/compare"): {
+                "scenarios": [
+                    {
+                        "scenario_id": "scn-holiday",
+                        "name": "showcase-holiday-uplift",
+                        "units_delta": 18.5,
+                        "revenue_delta": 220.0,
+                        "coverage_verdict": "ok",
+                        "rank": 1,
+                    },
+                    {
+                        "scenario_id": "scn-price",
+                        "name": "showcase-price-cut-10pct",
+                        "units_delta": -25.5,
+                        "revenue_delta": -180.0,
+                        "coverage_verdict": "ok",
+                        "rank": 2,
+                    },
+                ],
+            },
+        },
+    )
+    status, detail, data = await pipeline.step_multi_plan_compare(ctx, _as_client(client))
+    assert status == "pass"
+    assert ctx.holiday_scenario_id == "scn-holiday"
+    assert data["winner_scenario_id"] == "scn-holiday"
+    assert data["winner_name"] == "showcase-holiday-uplift"
+    assert data["ranked_by"] == "revenue_delta"
+    assert len(data["ranked"]) == 2
+    assert "winner=showcase-holiday-uplift" in detail
+
+
+async def test_multi_plan_compare_second_save_failure_emits_warn():
+    """PRP-40 R19 — second-plan POST 4xx -> WARN, NOT FAIL (partial success)."""
+    ctx = _make_showcase_ctx()
+    ctx.price_cut_scenario_id = "scn-price"
+    ctx.scenario_artifact_key = "abc123def456"
+    client = _RecordingClient(
+        None,
+        errors={
+            ("POST", "/scenarios"): pipeline._StepError(
+                "multi_plan_compare[save]",
+                422,
+                {"title": "Unprocessable Entity", "detail": "horizon out of range"},
+            ),
+        },
+    )
+    status, detail, data = await pipeline.step_multi_plan_compare(ctx, _as_client(client))
+    assert status == "warn"
+    assert "holiday-plan save failed" in detail
+    assert data["price_cut_scenario_id"] == "scn-price"
+
+
+async def test_multi_plan_compare_fails_without_price_cut_plan():
+    """PRP-40 — missing prior-step state -> FAIL with clear detail."""
+    ctx = _make_showcase_ctx()  # price_cut_scenario_id stays None
+    client = _RecordingClient(None)
+    status, detail, _ = await pipeline.step_multi_plan_compare(ctx, _as_client(client))
+    assert status == "fail"
+    assert "price_cut plan not saved" in detail
+
+
+async def test_embedding_provider_probe_reachable_openai(monkeypatch, tmp_path):
+    """PRP-40 — openai key present -> PASS + ctx.embedding_unreachable=False."""
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: _fake_settings(
+            str(tmp_path / "reg"),
+            rag_embedding_provider="openai",
+            openai_api_key="sk-test",
+        ),
+    )
+    ctx = _make_showcase_ctx()
+    client = _RecordingClient(None)
+    status, detail, data = await pipeline.step_embedding_provider_probe(ctx, _as_client(client))
+    assert status == "pass"
+    assert ctx.embedding_unreachable is False
+    assert data["provider"] == "openai"
+    assert data["reachable"] is True
+    assert "reachable=True" in detail
+
+
+async def test_embedding_provider_probe_unreachable_openai(monkeypatch, tmp_path):
+    """PRP-40 — openai with empty key -> PASS + ctx.embedding_unreachable=True."""
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: _fake_settings(
+            str(tmp_path / "reg"),
+            rag_embedding_provider="openai",
+            openai_api_key="",
+        ),
+    )
+    ctx = _make_showcase_ctx()
+    client = _RecordingClient(None)
+    status, detail, data = await pipeline.step_embedding_provider_probe(ctx, _as_client(client))
+    assert status == "pass"
+    assert ctx.embedding_unreachable is True
+    assert data["reachable"] is False
+    assert "knowledge phase will skip" in detail
+
+
+async def test_embedding_provider_probe_ollama_reachable(monkeypatch, tmp_path):
+    """PRP-40 — ollama provider live-probed via /config/providers/health."""
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: _fake_settings(
+            str(tmp_path / "reg"),
+            rag_embedding_provider="ollama",
+        ),
+    )
+    ctx = _make_showcase_ctx()
+    # _Client wraps a list response as {"_raw": [...]}.
+    client = _RecordingClient(
+        None,
+        responses={
+            ("GET", "/config/providers/health"): {
+                "_raw": [
+                    {"provider": "ollama", "reachable": True, "detail": "ok", "models": []},
+                ]
+            },
+        },
+    )
+    status, _detail, data = await pipeline.step_embedding_provider_probe(ctx, _as_client(client))
+    assert status == "pass"
+    assert ctx.embedding_unreachable is False
+    assert data["provider"] == "ollama"
+    assert data["reachable"] is True
+
+
+async def test_embedding_provider_probe_ollama_unreachable(monkeypatch, tmp_path):
+    """PRP-40 — ollama probe returns reachable=False -> ctx.embedding_unreachable."""
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: _fake_settings(
+            str(tmp_path / "reg"),
+            rag_embedding_provider="ollama",
+        ),
+    )
+    ctx = _make_showcase_ctx()
+    client = _RecordingClient(
+        None,
+        responses={
+            ("GET", "/config/providers/health"): {
+                "_raw": [
+                    {"provider": "ollama", "reachable": False, "detail": "down", "models": []},
+                ]
+            },
+        },
+    )
+    status, _, data = await pipeline.step_embedding_provider_probe(ctx, _as_client(client))
+    assert status == "pass"
+    assert ctx.embedding_unreachable is True
+    assert data["reachable"] is False
+
+
+async def test_rag_index_subset_happy_path():
+    """PRP-40 — index subset returns curated_hits + total_chunks counters."""
+    ctx = _make_showcase_ctx()
+    results = [
+        {"source_path": p, "status": "indexed", "chunks_created": 4, "error": None}
+        for p in sorted(pipeline._USER_GUIDE_CURATED_FILES)
+    ]
+    client = _RecordingClient(
+        None,
+        responses={
+            ("POST", "/rag/index/project-docs"): {
+                "results": results,
+                "total_files": 5,
+                "indexed": 5,
+                "updated": 0,
+                "unchanged": 0,
+                "failed": 0,
+                "total_chunks": 20,
+                "duration_ms": 120.0,
+            },
+        },
+    )
+    status, detail, data = await pipeline.step_rag_index_subset(ctx, _as_client(client))
+    assert status == "pass"
+    assert data["curated_hits"] == 5
+    assert data["total_chunks"] == 20
+    assert "files_indexed=5/5" in detail
+    # The POST body carried path_prefix="docs/user-guide".
+    body = client.calls[0][2]
+    assert body is not None
+    assert body["path_prefix"] == "docs/user-guide"
+    assert body["include_docs"] is True
+    assert body["include_prps"] is False
+    assert body["include_root"] is False
+
+
+async def test_rag_index_subset_skips_when_provider_unreachable():
+    """PRP-40 — skip with detail 'embedding provider unreachable'; no HTTP call."""
+    ctx = _make_showcase_ctx()
+    ctx.embedding_unreachable = True
+    client = _RecordingClient(None)  # any call would AssertionError
+    status, detail, _ = await pipeline.step_rag_index_subset(ctx, _as_client(client))
+    assert status == "skip"
+    assert "unreachable" in detail
+    assert client.calls == []
+
+
+async def test_rag_retrieve_probe_happy_path():
+    """PRP-40 — top hit + similarity score surface on PASS."""
+    ctx = _make_showcase_ctx()
+    client = _RecordingClient(
+        None,
+        responses={
+            ("POST", "/rag/retrieve"): {
+                "results": [
+                    {
+                        "source_path": "docs/user-guide/getting-started.md",
+                        "content": "...",
+                        "relevance_score": 0.87,
+                        "chunk_index": 0,
+                    }
+                ],
+                "total_chunks_searched": 20,
+            },
+        },
+    )
+    status, detail, data = await pipeline.step_rag_retrieve_probe(ctx, _as_client(client))
+    assert status == "pass"
+    assert data["results_count"] == 1
+    assert data["top_source_path"] == "docs/user-guide/getting-started.md"
+    assert data["top_relevance_score"] == 0.87
+    assert "score=0.870" in detail
+
+
+async def test_rag_retrieve_probe_zero_hits_emits_warn():
+    """PRP-40 — empty results list -> WARN (not FAIL); pipeline still green."""
+    ctx = _make_showcase_ctx()
+    client = _RecordingClient(
+        None,
+        responses={
+            ("POST", "/rag/retrieve"): {"results": [], "total_chunks_searched": 0},
+        },
+    )
+    status, detail, data = await pipeline.step_rag_retrieve_probe(ctx, _as_client(client))
+    assert status == "warn"
+    assert "no hits" in detail
+    assert data["results_count"] == 0
+
+
+async def test_rag_retrieve_probe_skips_when_provider_unreachable():
+    """PRP-40 — skip when ctx.embedding_unreachable; no HTTP call."""
+    ctx = _make_showcase_ctx()
+    ctx.embedding_unreachable = True
+    client = _RecordingClient(None)
+    status, detail, _ = await pipeline.step_rag_retrieve_probe(ctx, _as_client(client))
+    assert status == "skip"
+    assert "unreachable" in detail
+    assert client.calls == []
+
+
+async def test_run_pipeline_showcase_rich_runs_planning_and_knowledge(monkeypatch, tmp_path):
+    """PRP-40 — end-to-end SHOWCASE_RICH reaches the 5 new steps + greens."""
+    artifact = tmp_path / "artifacts" / "models" / "model_abc123def456.joblib"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(b"v2 bundle bytes")
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
+    # prophet_like wins so v2 path is exercised end-to-end.
+    wapes = {
+        "naive": 0.30,
+        "seasonal_naive": 0.18,
+        "moving_average": 0.25,
+        "prophet_like": 0.10,
+    }
+    monkeypatch.setattr(pipeline, "_Client", _build_fake_client(str(artifact), wapes))
+
+    req = DemoRunRequest(scenario=ScenarioPreset.SHOWCASE_RICH)
+    events = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=req)]
+    by_name = {e.step_name: e for e in events if e.event_type == "step_complete"}
+
+    # The 5 new step cards all emitted terminal statuses.
+    assert by_name["scenario_simulate_and_save"].status == "pass"
+    assert by_name["scenario_simulate_and_save"].data["method"] == "heuristic"
+    assert by_name["multi_plan_compare"].status == "pass"
+    assert by_name["multi_plan_compare"].data["ranked_by"] == "revenue_delta"
+    assert by_name["embedding_provider_probe"].status == "pass"
+    assert by_name["embedding_provider_probe"].data["reachable"] is True
+    assert by_name["rag_index_subset"].status == "pass"
+    assert by_name["rag_index_subset"].data["curated_hits"] == 5
+    assert by_name["rag_retrieve_probe"].status == "pass"
+    assert "docs/user-guide" in by_name["rag_retrieve_probe"].data["top_source_path"]
+
+    # Pipeline still greens.
+    final = events[-1]
+    assert final.event_type == "pipeline_complete"
+    assert final.status == "pass"
+
+
+async def test_run_pipeline_showcase_rich_skips_knowledge_when_provider_unreachable(
+    monkeypatch, tmp_path
+):
+    """PRP-40 C3 — every embedding provider unreachable -> 3x skip; pipeline green."""
+    artifact = tmp_path / "artifacts" / "models" / "model_abc123def456.joblib"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(b"v2 bundle bytes")
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: _fake_settings(
+            str(tmp_path / "reg"),
+            rag_embedding_provider="openai",
+            openai_api_key="",  # the embedding provider key is absent.
+        ),
+    )
+    wapes = {
+        "naive": 0.30,
+        "seasonal_naive": 0.18,
+        "moving_average": 0.25,
+        "prophet_like": 0.10,
+    }
+    monkeypatch.setattr(pipeline, "_Client", _build_fake_client(str(artifact), wapes))
+
+    req = DemoRunRequest(scenario=ScenarioPreset.SHOWCASE_RICH)
+    events = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=req)]
+    by_name = {e.step_name: e for e in events if e.event_type == "step_complete"}
+
+    # Probe still PASSES (always emits pass; just flags downstream to skip).
+    assert by_name["embedding_provider_probe"].status == "pass"
+    assert by_name["embedding_provider_probe"].data["reachable"] is False
+    # Downstream knowledge steps skip.
+    assert by_name["rag_index_subset"].status == "skip"
+    assert by_name["rag_retrieve_probe"].status == "skip"
+    # Pipeline still greens.
+    final = events[-1]
+    assert final.event_type == "pipeline_complete"
+    assert final.status == "pass"

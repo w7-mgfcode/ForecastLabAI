@@ -46,7 +46,7 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 | jobs | GET | `/jobs/{job_id}` | Status + result JSON |
 | jobs | DELETE | `/jobs/{job_id}` | Cancel pending |
 | rag | POST | `/rag/index` | Index a markdown/openapi document; idempotent via content hash |
-| rag | POST | `/rag/index/project-docs` | Bulk-index bundled `docs/`, `PRPs/`, and root markdown; per-file + aggregate summary; idempotent via content hash; `502` if the embedding provider fails |
+| rag | POST | `/rag/index/project-docs` | Bulk-index bundled `docs/`, `PRPs/`, and root markdown; per-file + aggregate summary; idempotent via content hash; `502` if the embedding provider fails. **PRP-40** — body accepts an additive Optional `path_prefix: str \| None` (default `None`) that restricts the docs/ root scan to a sub-path (e.g. `docs/user-guide`); a path-traversal-escaping prefix returns `422 application/problem+json`. |
 | rag | POST | `/rag/retrieve` | Semantic search (HNSW), top-k with similarity threshold |
 | rag | GET | `/rag/sources` | List indexed sources |
 | rag | DELETE | `/rag/sources/{source_id}` | Delete source + cascaded chunks |
@@ -91,7 +91,8 @@ Drives the end-to-end demo pipeline for the dashboard Showcase page. Verified ag
   - `pipeline_complete` — final event; `data` carries `winner_model_type`, `winner_wape`, `winning_run_id`, `alias`, `wall_clock_s`, `v2_run_id` (PRP-38; null when no V2 run was registered).
   - `error` — bad start frame or a concurrent run already in progress; one event, then the server closes.
 - Concurrency: a module-level `asyncio.Lock` allows one pipeline at a time. A second `POST /demo/run` returns `409`; a second `WS /demo/stream` receives one `error` event.
-- PRP-38 — `scenario="showcase_rich"` extends the data phase with `phase2_enrichment` + `historical_backfill` steps and the modeling phase with `v2_train` (one V2 `prophet_like` run). Total step count: 14 for `showcase_rich`, 11 for `demo_minimal` and `sparse`. Phase ids are `data` / `modeling` / `decision` / `verify` / `agent` / `cleanup` (6 phases).
+- PRP-38 — `scenario="showcase_rich"` extends the data phase with `phase2_enrichment` + `historical_backfill` steps and the modeling phase with `v2_train` (one V2 `prophet_like` run). Phase ids are `data` / `modeling` / `decision` / `verify` / `agent` / `cleanup` (6 phases).
+- PRP-40 — `scenario="showcase_rich"` ALSO adds two phases inserted BEFORE `verify`: `planning` (2 steps — `scenario_simulate_and_save`, `multi_plan_compare`) and `knowledge` (3 steps — `embedding_provider_probe`, `rag_index_subset`, `rag_retrieve_probe`). Total step count: 19 for `showcase_rich`, 11 for `demo_minimal` and `sparse`. Phase ids on `showcase_rich` are `data` / `modeling` / `decision` / `planning` / `knowledge` / `verify` / `agent` / `cleanup` (8 phases). The knowledge steps SKIP gracefully when the embedding provider is unreachable; the pipeline still goes green.
 
 ## Async Events / Queues
 
