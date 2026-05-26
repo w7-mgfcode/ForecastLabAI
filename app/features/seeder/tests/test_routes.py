@@ -323,3 +323,81 @@ class TestVerify:
         data = response.json()
         assert data["passed"] is False
         assert data["failed_count"] == 1
+
+
+class TestPhase2Enrichment:
+    """Tests for POST /seeder/phase2-enrichment endpoint (PRP-38)."""
+
+    def test_happy_path(self, client, mock_settings, mock_db):
+        """Service returns counts; route surfaces them with 201."""
+        mock_result = schemas.Phase2EnrichmentResponse(
+            success=True,
+            records_created={
+                "product": 15,
+                "replenishment_event": 1300,
+                "exogenous_signal": 360,
+                "sales_returns": 42,
+            },
+            duration_ms=234.5,
+        )
+        with patch(
+            "app.features.seeder.routes.service.phase2_enrichment",
+            return_value=mock_result,
+        ):
+            response = client.post(
+                "/seeder/phase2-enrichment",
+                json={"seed": 42, "returns_probability": 0.02},
+            )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        data = response.json()
+        assert data["success"] is True
+        assert data["records_created"]["product"] == 15
+        assert data["records_created"]["replenishment_event"] == 1300
+
+    def test_strict_mode_rejects_string_seed(self, client, mock_settings):
+        """ConfigDict(strict=True) — JSON string is not coerced to int."""
+        response = client.post(
+            "/seeder/phase2-enrichment",
+            json={"seed": "42"},
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    def test_invalid_probability_rejected(self, client, mock_settings):
+        """returns_probability > 1.0 is rejected by Field(le=1.0)."""
+        response = client.post(
+            "/seeder/phase2-enrichment",
+            json={"returns_probability": 1.5},
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    def test_empty_database_returns_rfc7807(self, client, mock_settings, mock_db):
+        """Service raises UnprocessableEntityError on empty dimensions/calendar.
+
+        The global exception handler converts it to RFC 7807
+        ``application/problem+json``.
+        """
+        from app.core.exceptions import UnprocessableEntityError
+
+        with patch(
+            "app.features.seeder.routes.service.phase2_enrichment",
+            side_effect=UnprocessableEntityError(
+                message="Empty dimensions or calendar — Phase 2 enrichment requires a "
+                "seeded database. Run /seeder/generate first.",
+            ),
+        ):
+            response = client.post("/seeder/phase2-enrichment", json={})
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.headers["content-type"].startswith("application/problem+json")
+        body = response.json()
+        assert "Empty dimensions or calendar" in body["detail"]
+
+    def test_blocked_in_production(self, client, mock_db):
+        """Production guard returns 403 (mirrors other seeder endpoints)."""
+        with patch("app.features.seeder.routes.get_settings") as mock_settings_local:
+            mock_settings_local.return_value.seeder_allow_production = False
+            mock_settings_local.return_value.app_env = "production"
+            response = client.post("/seeder/phase2-enrichment", json={})
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN

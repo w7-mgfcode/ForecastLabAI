@@ -195,6 +195,102 @@ def test_run_demo_e2e_exits_green(uvicorn_subprocess: subprocess.Popen[bytes]) -
     assert "runs=3" in stdout
 
 
+# PRP-38 — wall-clock budgets for the in-process showcase_rich pipeline.
+SHOWCASE_RICH_WALL_BUDGET_SOFT_S: float = 240.0
+SHOWCASE_RICH_WALL_BUDGET_HARD_S: float = 300.0
+
+
+@pytest.mark.integration
+def test_run_demo_showcase_rich_e2e(
+    uvicorn_subprocess: subprocess.Popen[bytes],
+) -> None:
+    """PRP-38 — POST /demo/run with scenario=showcase_rich exits green.
+
+    Asserts:
+
+    - HTTP 200 from /demo/run within the SOFT wall-clock budget (240 s) —
+      soft-warn beyond, hard-fail beyond the HARD budget (300 s).
+    - Pipeline ``overall_status == "pass"``.
+    - At least one V2 run was registered: the ``v2_train`` step's data
+      carries ``feature_frame_version == 2`` and a non-empty
+      ``v2_run_id``.
+    - The ``backtest`` step's data echoes ``bucketed_aggregated_metrics``
+      with the expected bucket-id subset (PRP-36 contract).
+    """
+    import json
+
+    # The pipeline expects a seeded DB; reset+skip_seed=False so the run
+    # generates SHOWCASE_RICH data first. POST /demo/run is synchronous —
+    # it returns the full DemoRunResult.
+    body = json.dumps(
+        {
+            "seed": 42,
+            "reset": True,
+            "skip_seed": False,
+            "scenario": "showcase_rich",
+        }
+    ).encode("utf-8")
+
+    start = time.monotonic()
+    req = urllib.request.Request(  # noqa: S310 — http://127.0.0.1 internal URL
+        f"{DEMO_API_URL}/demo/run",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=SHOWCASE_RICH_WALL_BUDGET_HARD_S) as resp:  # noqa: S310
+            payload = resp.read()
+            assert resp.status == 200, f"POST /demo/run -> {resp.status}"
+    except urllib.error.HTTPError as exc:
+        # An RFC 7807 problem+json comes back here; surface it.
+        raise AssertionError(f"POST /demo/run failed: HTTP {exc.code} body={exc.read()!r}") from exc
+    wall = time.monotonic() - start
+    result = json.loads(payload)
+
+    # ---- Wall-clock budget ----------------------------------------------------
+    if wall > SHOWCASE_RICH_WALL_BUDGET_HARD_S:
+        pytest.fail(
+            f"showcase_rich exceeded HARD budget: {wall:.1f}s > "
+            f"{SHOWCASE_RICH_WALL_BUDGET_HARD_S:.0f}s"
+        )
+    if wall > SHOWCASE_RICH_WALL_BUDGET_SOFT_S:
+        # Soft-warn — surface to the operator but keep the test green.
+        print(
+            f"⚠️ showcase_rich over SOFT budget: {wall:.1f}s > "
+            f"{SHOWCASE_RICH_WALL_BUDGET_SOFT_S:.0f}s",
+            file=sys.stderr,
+        )
+
+    # ---- Overall status ------------------------------------------------------
+    assert result["overall_status"] == "pass", (
+        f"pipeline did not pass: status={result['overall_status']!r} "
+        f"steps={[(s['step_name'], s['status'], s['detail']) for s in result['steps']]}"
+    )
+
+    # ---- V2 run registered ---------------------------------------------------
+    by_name = {s["step_name"]: s for s in result["steps"]}
+    v2 = by_name.get("v2_train")
+    assert v2 is not None, "v2_train step missing from showcase_rich run"
+    assert v2["status"] == "pass", (
+        f"v2_train did not pass: {v2['status']!r} detail={v2['detail']!r}"
+    )
+    assert v2["data"]["feature_frame_version"] == 2
+    assert v2["data"]["v2_run_id"], "v2_train did not surface a v2_run_id"
+
+    # ---- Bucket metrics populated --------------------------------------------
+    bt = by_name.get("backtest")
+    assert bt is not None and bt["status"] == "pass"
+    buckets = bt["data"].get("bucketed_aggregated_metrics")
+    assert buckets is not None and len(buckets) >= 1, (
+        f"backtest emitted no horizon-bucket metrics on showcase_rich: "
+        f"detail={bt['detail']!r} data_keys={list(bt['data'].keys())}"
+    )
+    # At minimum the near-horizon buckets should be present given
+    # n_splits=3, horizon=14.
+    assert "h_1_7" in buckets
+
+
 @pytest.mark.integration
 def test_run_demo_precondition_failure_exits_2() -> None:
     """A bogus API URL surfaces as a precondition failure with exit 2.

@@ -3,9 +3,11 @@ import { renderHook } from '@testing-library/react'
 import {
   applyEvent,
   createInitialSteps,
+  derivePhases,
   initialState,
   useDemoPipeline,
 } from './use-demo-pipeline'
+import type { DemoStep } from './use-demo-pipeline'
 import type { StepEvent } from '@/types/api'
 
 /** Build a StepEvent with sensible defaults for the fields not under test. */
@@ -163,11 +165,131 @@ describe('applyEvent', () => {
 })
 
 describe('useDemoPipeline', () => {
-  it('initializes with 11 idle steps and the idle phase', () => {
+  it('initializes with 11 idle steps and the idle phase (demo_minimal default)', () => {
     const { result } = renderHook(() => useDemoPipeline())
     expect(result.current.steps).toHaveLength(11)
     expect(result.current.phase).toBe('idle')
     expect(result.current.isRunning).toBe(false)
     expect(result.current.summary).toBeNull()
+    // PRP-38 — every idle step carries a phase tag (no real wire events yet).
+    expect(result.current.steps.every((s) => !!s.phaseName)).toBe(true)
+    expect(result.current.phases.length).toBe(6)
+    expect(result.current.phases.map((p) => p.id)).toEqual([
+      'data',
+      'modeling',
+      'decision',
+      'verify',
+      'agent',
+      'cleanup',
+    ])
+  })
+})
+
+
+// =============================================================================
+// PRP-38 — derivePhases + phase-aware applyEvent + showcase_rich layout
+// =============================================================================
+
+
+describe('PRP-38 derivePhases', () => {
+  it('groups steps by phaseName preserving first-seen order', () => {
+    const steps: DemoStep[] = [
+      {
+        name: 'precheck',
+        label: 'Health check',
+        status: 'pass',
+        detail: '',
+        durationMs: 0,
+        data: {},
+        phaseName: 'data',
+      },
+      {
+        name: 'train',
+        label: 'Train models',
+        status: 'pass',
+        detail: '',
+        durationMs: 0,
+        data: {},
+        phaseName: 'modeling',
+      },
+      {
+        name: 'reset',
+        label: 'Reset',
+        status: 'skip',
+        detail: '',
+        durationMs: 0,
+        data: {},
+        phaseName: 'data',
+      },
+    ]
+    const groups = derivePhases(steps)
+    expect(groups.map((g) => g.id)).toEqual(['data', 'modeling'])
+    expect(groups[0]?.steps.map((s) => s.name)).toEqual(['precheck', 'reset'])
+    expect(groups[1]?.steps.map((s) => s.name)).toEqual(['train'])
+  })
+
+  it("falls back to a 'pipeline' bucket when no step carries a phase (legacy)", () => {
+    const steps: DemoStep[] = [
+      {
+        name: 'precheck',
+        label: 'Health check',
+        status: 'pass',
+        detail: '',
+        durationMs: 0,
+        data: {},
+      },
+    ]
+    const groups = derivePhases(steps)
+    expect(groups.length).toBe(1)
+    expect(groups[0]?.id).toBe('pipeline')
+  })
+})
+
+
+describe('PRP-38 applyEvent phase propagation', () => {
+  it('captures phase_name from a step_start event', () => {
+    const next = applyEvent(
+      initialState(),
+      makeEvent({ event_type: 'step_start', step_name: 'train', phase_name: 'modeling' })
+    )
+    const step = next.steps.find((s) => s.name === 'train')
+    expect(step?.phaseName).toBe('modeling')
+  })
+
+  it('captures phase_name from a step_complete event', () => {
+    const next = applyEvent(
+      initialState(),
+      makeEvent({
+        event_type: 'step_complete',
+        step_name: 'backtest',
+        status: 'pass',
+        phase_name: 'decision',
+      })
+    )
+    expect(next.steps.find((s) => s.name === 'backtest')?.phaseName).toBe('decision')
+  })
+})
+
+
+describe('PRP-38 createInitialSteps(showcase_rich)', () => {
+  it('returns 14 idle steps in the showcase_rich layout', () => {
+    const steps = createInitialSteps('showcase_rich')
+    expect(steps.length).toBe(14)
+    expect(steps.map((s) => s.name)).toEqual([
+      'precheck',
+      'reset',
+      'seed',
+      'status',
+      'features',
+      'phase2_enrichment',
+      'historical_backfill',
+      'train',
+      'v2_train',
+      'backtest',
+      'register',
+      'verify',
+      'agent',
+      'cleanup',
+    ])
   })
 })

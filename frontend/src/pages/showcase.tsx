@@ -1,8 +1,10 @@
-import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Play, Loader2, Trophy, AlertTriangle, ArrowRight } from 'lucide-react'
+import { useState } from 'react'
 import { useDemoPipeline } from '@/hooks/use-demo-pipeline'
-import { DemoStepCard } from '@/components/demo'
+import type { DemoStep } from '@/hooks/use-demo-pipeline'
+import { DemoPhasePanel } from '@/components/demo/DemoPhasePanel'
+import { ScenarioPicker } from '@/components/demo/ScenarioPicker'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -11,16 +13,95 @@ import { cn } from '@/lib/utils'
 
 const TERMINAL_STATUSES = new Set(['pass', 'fail', 'skip', 'warn'])
 
+/**
+ * PRP-38 — resolve the per-step Inspect deep link.
+ *
+ * Returns null when the step has no payload to inspect; the step card
+ * suppresses the button. Targets:
+ * - `train`     -> /visualize/forecast (store_id + product_id from step.data)
+ * - `v2_train`  -> /explorer/runs/{v2_run_id} (Feature Frame panel)
+ * - `register`  -> /explorer/runs/{run_id} (the winner)
+ * - `backtest`  -> /visualize/backtest (store_id + product_id from ctx)
+ */
+function resolveInspectHref(step: DemoStep): string | null {
+  const data = step.data
+  const storeId = typeof data.store_id === 'number' ? data.store_id : null
+  const productId = typeof data.product_id === 'number' ? data.product_id : null
+  const v2RunId = typeof data.v2_run_id === 'string' ? data.v2_run_id : null
+  const runId = typeof data.run_id === 'string' ? data.run_id : null
+  switch (step.name) {
+    case 'train':
+      if (storeId !== null && productId !== null) {
+        return `${ROUTES.VISUALIZE.FORECAST}?store_id=${storeId}&product_id=${productId}`
+      }
+      return null
+    case 'v2_train':
+      return v2RunId ? `${ROUTES.EXPLORER.RUNS}/${v2RunId}` : null
+    case 'register':
+      return runId ? `${ROUTES.EXPLORER.RUNS}/${runId}` : null
+    case 'backtest':
+      if (storeId !== null && productId !== null) {
+        return `${ROUTES.VISUALIZE.BACKTEST}?store_id=${storeId}&product_id=${productId}`
+      }
+      return null
+    default:
+      return null
+  }
+}
+
 export default function ShowcasePage() {
-  const { steps, phase, summary, errorMessage, isRunning, connectionStatus, start } =
-    useDemoPipeline()
+  const {
+    steps,
+    phases,
+    runningPhase,
+    phase,
+    summary,
+    errorMessage,
+    isRunning,
+    connectionStatus,
+    start,
+    scenario,
+    setScenario,
+  } = useDemoPipeline()
   const [reseed, setReseed] = useState(false)
   const [resetDb, setResetDb] = useState(false)
 
   const completed = steps.filter((s) => TERMINAL_STATUSES.has(s.status)).length
 
   const handleRun = () => {
-    start({ seed: 42, skip_seed: !reseed, reset: resetDb })
+    start({ seed: 42, skip_seed: !reseed, reset: resetDb, scenario })
+  }
+
+  // For the Inspect link to surface store_id/product_id on the train/backtest
+  // cards, we forward those ids from the status step's data (read once after
+  // it completes).
+  const statusStep = steps.find((s) => s.name === 'status')
+  const ctxStoreId =
+    statusStep && typeof statusStep.data.store_id === 'number' ? statusStep.data.store_id : null
+  const ctxProductId =
+    statusStep && typeof statusStep.data.product_id === 'number'
+      ? statusStep.data.product_id
+      : null
+
+  const getInspectHref = (step: DemoStep) => {
+    // Augment the step's own data with the discovered grain when not already
+    // present (status sets it; train/backtest don't always echo it).
+    if (
+      (step.name === 'train' || step.name === 'backtest') &&
+      ctxStoreId !== null &&
+      ctxProductId !== null
+    ) {
+      const augmented: DemoStep = {
+        ...step,
+        data: {
+          ...step.data,
+          store_id: ctxStoreId,
+          product_id: ctxProductId,
+        },
+      }
+      return resolveInspectHref(augmented)
+    }
+    return resolveInspectHref(step)
   }
 
   return (
@@ -29,10 +110,10 @@ export default function ShowcasePage() {
       <div>
         <h1 className="text-3xl font-bold">End-to-End Showcase</h1>
         <p className="mt-1 text-muted-foreground">
-          Run the full forecasting pipeline live — seed → features → train ×3 → backtest ×3 →
-          register the winning model → verify → agent. The same flow as{' '}
+          Run the full forecasting pipeline live — phase by phase. The same flow as{' '}
           <code className="rounded bg-muted px-1 py-0.5 text-sm">make demo</code>, streamed to
-          the browser.
+          the browser. Pick a scenario to control depth (demo_minimal stays fast;
+          showcase_rich exercises V1+V2 modeling).
         </p>
       </div>
 
@@ -45,11 +126,12 @@ export default function ShowcasePage() {
               ? 'Streaming live…'
               : isRunning
                 ? 'Connecting…'
-                : 'Drives the published API in-process. Takes ~30–60 s on a seeded database.'}
+                : 'Drives the published API in-process. Wall-clock budget depends on the scenario.'}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex flex-wrap items-center gap-6">
+          <div className="flex flex-wrap items-end gap-6">
+            <ScenarioPicker value={scenario} onChange={setScenario} disabled={isRunning} />
             <Button onClick={handleRun} disabled={isRunning} size="lg">
               {isRunning ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -153,12 +235,12 @@ export default function ShowcasePage() {
         </Card>
       )}
 
-      {/* Step cards */}
-      <div className="space-y-3">
-        {steps.map((step, index) => (
-          <DemoStepCard key={step.name} step={step} index={index} />
-        ))}
-      </div>
+      {/* Phase accordion */}
+      <DemoPhasePanel
+        phases={phases}
+        runningPhase={runningPhase}
+        getInspectHref={getInspectHref}
+      />
     </div>
   )
 }

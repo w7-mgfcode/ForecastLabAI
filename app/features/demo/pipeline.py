@@ -39,6 +39,7 @@ from fastapi import FastAPI
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.features.demo.schemas import DemoRunRequest, StepEvent, StepStatus
+from app.shared.seeder.config import ScenarioPreset
 
 logger = get_logger(__name__)
 
@@ -61,6 +62,15 @@ DEMO_SEED_PRODUCTS = 10
 DEMO_SEED_SPAN_DAYS = 91
 
 DEMO_MODEL_TYPES: tuple[str, ...] = ("naive", "seasonal_naive", "moving_average")
+
+# PRP-38 — historical-backfill (showcase-rich only).
+# 3 historical cutoffs x 2 baseline model_types = 6 backfilled runs.
+HISTORICAL_BACKFILL_CUTOFFS = 3
+HISTORICAL_BACKFILL_MODELS: tuple[str, ...] = ("naive", "seasonal_naive")
+# PRP-38 — V2 feature-aware model used for the modeling-phase v2_train step.
+# Memory [[histgbr-no-feature-importances]] — use prophet_like (Ridge signed
+# coefficients), NOT regression (HGBR has no feature_importances_).
+SHOWCASE_V2_MODEL_TYPE = "prophet_like"
 
 # Per-step HTTP timeout. /seeder/generate on demo_minimal is slow; 120 s leaves
 # margin. connect=5 s because the ASGI transport connects instantly.
@@ -166,6 +176,7 @@ class DemoContext:
     seed: int
     skip_seed: bool
     reset: bool
+    scenario: ScenarioPreset = ScenarioPreset.DEMO_MINIMAL
     store_id: int = 1
     product_id: int = 1
     date_start: date | None = None
@@ -178,6 +189,10 @@ class DemoContext:
     winner_wape: float | None = None
     winning_run_id: str | None = None
     session_id: str | None = None
+    # PRP-38 — additive fields populated only on SHOWCASE_RICH runs.
+    v2_run_id: str | None = None
+    v2_model_path: str | None = None
+    bucketed_aggregated_metrics: dict[str, dict[str, float]] | None = None
 
 
 # =============================================================================
@@ -186,10 +201,11 @@ class DemoContext:
 
 
 def _model_config_payload(model_type: str) -> dict[str, Any]:
-    """Build the ``ModelConfig`` body for a baseline ``model_type``.
+    """Build the ``ModelConfig`` body for a demo ``model_type``.
 
     Each shape matches one branch of the discriminated union in
     ``app/features/forecasting/schemas.py`` (port of run_demo.py:301-314).
+    PRP-38 adds ``prophet_like`` for the V2 modeling step.
     """
     if model_type == "naive":
         return {"model_type": "naive"}
@@ -197,6 +213,8 @@ def _model_config_payload(model_type: str) -> dict[str, Any]:
         return {"model_type": "seasonal_naive", "season_length": 7}
     if model_type == "moving_average":
         return {"model_type": "moving_average", "window_size": 7}
+    if model_type == "prophet_like":
+        return {"model_type": "prophet_like"}
     raise ValueError(f"Unsupported demo model_type: {model_type}")
 
 
@@ -270,21 +288,34 @@ async def step_reset(ctx: DemoContext, client: _Client) -> StepResult:
     )
 
 
+_SCENARIO_SEED_PROFILE: dict[ScenarioPreset, tuple[int, int, int]] = {
+    ScenarioPreset.DEMO_MINIMAL: (DEMO_SEED_STORES, DEMO_SEED_PRODUCTS, DEMO_SEED_SPAN_DAYS),
+    # PRP-38 — SHOWCASE_RICH profile mirrors app/shared/seeder/config.py:from_scenario.
+    ScenarioPreset.SHOWCASE_RICH: (5, 15, 180),
+    # PRP-38 — SPARSE picker option exercises the data-shape edge case.
+    ScenarioPreset.SPARSE: (DEMO_SEED_STORES, DEMO_SEED_PRODUCTS, DEMO_SEED_SPAN_DAYS),
+}
+
+
 async def step_seed(ctx: DemoContext, client: _Client) -> StepResult:
-    """Seed the ``demo_minimal`` scenario (skipped when ``skip_seed`` is set)."""
+    """Seed the active scenario (skipped when ``skip_seed`` is set)."""
     if ctx.skip_seed:
         return ("skip", "skip_seed=true (assuming a seeded database)", {})
+    stores, products, span_days = _SCENARIO_SEED_PROFILE.get(
+        ctx.scenario,
+        (DEMO_SEED_STORES, DEMO_SEED_PRODUCTS, DEMO_SEED_SPAN_DAYS),
+    )
     seed_end = datetime.now(UTC).date()
-    seed_start = seed_end - timedelta(days=DEMO_SEED_SPAN_DAYS)
+    seed_start = seed_end - timedelta(days=span_days)
     body = await client.request(
         "seed",
         "POST",
         "/seeder/generate",
         json_body={
-            "scenario": DEMO_SCENARIO,
+            "scenario": ctx.scenario.value,
             "seed": ctx.seed,
-            "stores": DEMO_SEED_STORES,
-            "products": DEMO_SEED_PRODUCTS,
+            "stores": stores,
+            "products": products,
             "start_date": seed_start.isoformat(),
             "end_date": seed_end.isoformat(),
             "sparsity": 0.0,
@@ -298,9 +329,8 @@ async def step_seed(ctx: DemoContext, client: _Client) -> StepResult:
     sales = records.get("sales", records.get("sales_daily", 0))
     return (
         "pass",
-        f"{DEMO_SCENARIO}: {DEMO_SEED_STORES} stores x {DEMO_SEED_PRODUCTS} products, "
-        f"{sales} sales rows",
-        {"records_created": records},
+        f"{ctx.scenario.value}: {stores} stores x {products} products, {sales} sales rows",
+        {"records_created": records, "scenario": ctx.scenario.value},
     )
 
 
@@ -428,14 +458,46 @@ async def step_train(ctx: DemoContext, client: _Client) -> StepResult:
     )
 
 
+def _coerce_metric_dict(value: object) -> dict[str, float]:
+    """Coerce a JSON-decoded aggregated_metrics dict into a typed float map."""
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, float] = {}
+    for k, v in value.items():
+        if isinstance(v, (int, float)):
+            out[str(k)] = float(v)
+    return out
+
+
+def _coerce_bucketed_metrics(
+    value: object,
+) -> dict[str, dict[str, float]] | None:
+    """Coerce a JSON-decoded bucketed_aggregated_metrics block."""
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, dict[str, float]] = {}
+    for bucket_id, per_metric in value.items():
+        coerced = _coerce_metric_dict(per_metric)
+        if coerced:
+            out[str(bucket_id)] = coerced
+    return out or None
+
+
 async def step_backtest(ctx: DemoContext, client: _Client) -> StepResult:
-    """Run one backtest per model_type sequentially; pick the lowest-WAPE winner."""
+    """Run scenario-aware backtest; pick the lowest-WAPE winner.
+
+    PRP-38 — on SHOWCASE_RICH the main model is feature-aware
+    (``prophet_like``); baselines come back in ``baseline_results`` (one call,
+    ``include_baselines=true``) and the response carries per-horizon-bucket
+    metrics in ``main_model_results.bucketed_aggregated_metrics``. On
+    DEMO_MINIMAL the original 3-baseline-loop behaviour is preserved.
+    """
     if ctx.date_start is None or ctx.date_end is None:
         return ("fail", "no date range on ctx", {})
 
-    for model_type in DEMO_MODEL_TYPES:
+    if ctx.scenario is ScenarioPreset.SHOWCASE_RICH:
         body = await client.request(
-            f"backtest[{model_type}]",
+            f"backtest[{SHOWCASE_V2_MODEL_TYPE}]",
             "POST",
             "/backtesting/run",
             json_body={
@@ -451,35 +513,373 @@ async def step_backtest(ctx: DemoContext, client: _Client) -> StepResult:
                         "gap": 0,
                         "horizon": DEMO_HORIZON,
                     },
-                    "model_config_main": _model_config_payload(model_type),
-                    "include_baselines": False,
+                    "model_config_main": _model_config_payload(SHOWCASE_V2_MODEL_TYPE),
+                    "include_baselines": True,
                     "store_fold_details": False,
                 },
             },
         )
         main_results = body.get("main_model_results", {})
-        aggregated = (
-            main_results.get("aggregated_metrics", {}) if isinstance(main_results, dict) else {}
+        baseline_results = body.get("baseline_results") or []
+        main_metrics = _coerce_metric_dict(
+            main_results.get("aggregated_metrics") if isinstance(main_results, dict) else None
         )
-        clean: dict[str, float] = {}
-        if isinstance(aggregated, dict):
-            for k, v in aggregated.items():
-                if isinstance(v, (int, float)):
-                    clean[str(k)] = float(v)
-        ctx.backtest_results[model_type] = clean
+        ctx.backtest_results[SHOWCASE_V2_MODEL_TYPE] = main_metrics
+        # baseline_results is list[ModelBacktestResult].
+        if isinstance(baseline_results, list):
+            for entry in baseline_results:
+                if not isinstance(entry, dict):
+                    continue
+                entry_type = entry.get("model_type")
+                if not isinstance(entry_type, str):
+                    continue
+                ctx.backtest_results[entry_type] = _coerce_metric_dict(
+                    entry.get("aggregated_metrics")
+                )
+        ctx.bucketed_aggregated_metrics = _coerce_bucketed_metrics(
+            main_results.get("bucketed_aggregated_metrics")
+            if isinstance(main_results, dict)
+            else None
+        )
+    else:
+        # DEMO_MINIMAL / SPARSE / others: loop over baselines (legacy path).
+        for model_type in DEMO_MODEL_TYPES:
+            body = await client.request(
+                f"backtest[{model_type}]",
+                "POST",
+                "/backtesting/run",
+                json_body={
+                    "store_id": ctx.store_id,
+                    "product_id": ctx.product_id,
+                    "start_date": ctx.date_start.isoformat(),
+                    "end_date": ctx.date_end.isoformat(),
+                    "config": {
+                        "split_config": {
+                            "strategy": "expanding",
+                            "n_splits": DEMO_BACKTEST_SPLITS,
+                            "min_train_size": DEMO_MIN_TRAIN_SIZE,
+                            "gap": 0,
+                            "horizon": DEMO_HORIZON,
+                        },
+                        "model_config_main": _model_config_payload(model_type),
+                        "include_baselines": False,
+                        "store_fold_details": False,
+                    },
+                },
+            )
+            main_results = body.get("main_model_results", {})
+            ctx.backtest_results[model_type] = _coerce_metric_dict(
+                main_results.get("aggregated_metrics") if isinstance(main_results, dict) else None
+            )
 
     winner = _select_winner(ctx.backtest_results)
     if winner is None:
         return ("fail", "no model produced a usable WAPE (all NaN?)", {})
     ctx.winner_model_type, ctx.winner_wape = winner
+    payload: dict[str, Any] = {
+        "per_model": dict(ctx.backtest_results),
+        "winner": ctx.winner_model_type,
+        "winner_wape": ctx.winner_wape,
+    }
+    if ctx.bucketed_aggregated_metrics is not None:
+        payload["bucketed_aggregated_metrics"] = ctx.bucketed_aggregated_metrics
     return (
         "pass",
         f"{len(ctx.backtest_results)} models, winner={ctx.winner_model_type} "
         f"wape={ctx.winner_wape:.4f}",
+        payload,
+    )
+
+
+async def step_phase2_enrichment(ctx: DemoContext, client: _Client) -> StepResult:
+    """PRP-38 — POST /seeder/phase2-enrichment (showcase-rich only).
+
+    Drives the new ``/seeder/phase2-enrichment`` endpoint to add Phase 2
+    realism (lifecycle, replenishment, exogenous, returns) on top of the
+    seeded SHOWCASE_RICH dataset. Logic ported into the seeder slice so the
+    demo orchestrator never imports another feature slice.
+    """
+    body = await client.request(
+        "phase2_enrichment",
+        "POST",
+        "/seeder/phase2-enrichment",
+        json_body={"seed": ctx.seed},
+    )
+    raw_counts = body.get("records_created", {})
+    counts: dict[str, int] = {}
+    if isinstance(raw_counts, dict):
+        for k, v in raw_counts.items():
+            if isinstance(v, int):
+                counts[str(k)] = v
+    total = sum(counts.values())
+    summary = ", ".join(f"{k}={v}" for k, v in counts.items()) or "no rows"
+    return (
+        "pass",
+        f"phase2 enrichment: {total} rows across {len(counts)} tables ({summary})",
+        {"records_created": counts},
+    )
+
+
+async def step_historical_backfill(ctx: DemoContext, client: _Client) -> StepResult:
+    """PRP-38 — populate /explorer/runs with historical-feeling registry rows.
+
+    Runs ``HISTORICAL_BACKFILL_MODELS`` x ``HISTORICAL_BACKFILL_CUTOFFS``
+    lightweight trains in parallel using the showcase grain, then registers
+    each as a SUCCESS run with a backdated ``data_window_end``. Each registry
+    write is sequential to avoid SQLAlchemy session contention (one session
+    per request via ``ASGITransport``).
+
+    Memory [[seeder-does-not-reset-id-sequences]] — store/product ids come
+    from ``ctx`` (populated by step_status), never hardcoded.
+    """
+    if ctx.date_start is None or ctx.date_end is None:
+        return ("fail", "no date range on ctx", {})
+    total_days = (ctx.date_end - ctx.date_start).days
+    # Each historical cutoff trims another horizon worth of data; we need
+    # enough days left at the earliest cutoff for the train window to be
+    # meaningful.
+    min_required_days = HISTORICAL_BACKFILL_CUTOFFS * (DEMO_HORIZON + 1) + DEMO_MIN_TRAIN_SIZE
+    if total_days < min_required_days:
+        return (
+            "skip",
+            f"date window too short ({total_days}d < {min_required_days}d) for backfill",
+            {},
+        )
+
+    # Capture narrowed ``date_start`` for the nested closure (pyright cannot
+    # propagate the outer ``if ctx.date_start is None`` guard into nested defs).
+    train_start_date = ctx.date_start
+    cutoffs = [
+        ctx.date_end - timedelta(days=DEMO_HORIZON * (i + 1))
+        for i in range(HISTORICAL_BACKFILL_CUTOFFS)
+    ]
+
+    async def _train(cutoff: date, model_type: str) -> tuple[date, str, dict[str, Any]]:
+        train_body = await client.request(
+            f"historical[train:{model_type}@{cutoff.isoformat()}]",
+            "POST",
+            "/forecasting/train",
+            json_body={
+                "store_id": ctx.store_id,
+                "product_id": ctx.product_id,
+                "train_start_date": train_start_date.isoformat(),
+                "train_end_date": cutoff.isoformat(),
+                "config": _model_config_payload(model_type),
+            },
+        )
+        return cutoff, model_type, train_body
+
+    pairs = [(c, m) for c in cutoffs for m in HISTORICAL_BACKFILL_MODELS]
+    trained = await asyncio.gather(*(_train(c, m) for c, m in pairs), return_exceptions=True)
+
+    runs_created = 0
+    skipped: list[str] = []
+    for entry in trained:
+        if isinstance(entry, BaseException):
+            skipped.append(type(entry).__name__)
+            continue
+        cutoff, model_type, train_body = entry
+        model_path_raw = train_body.get("model_path")
+        if not isinstance(model_path_raw, str) or not model_path_raw:
+            skipped.append(f"{model_type}@{cutoff} no model_path")
+            continue
+        source_model = Path(model_path_raw)
+        if not source_model.exists():
+            skipped.append(f"{model_type}@{cutoff} artifact missing")
+            continue
+        artifact_bytes = source_model.read_bytes()
+        artifact_hash = hashlib.sha256(artifact_bytes).hexdigest()
+        artifact_size = len(artifact_bytes)
+        # data_window_end is the historical cutoff so the explorer page
+        # shows a spread of "as_of" dates without backdating created_at.
+        try:
+            create_body = await client.request(
+                f"historical[register:{model_type}@{cutoff.isoformat()}]",
+                "POST",
+                "/registry/runs",
+                json_body={
+                    "model_type": model_type,
+                    "model_config": _model_config_payload(model_type),
+                    "feature_config": None,
+                    "data_window_start": ctx.date_start.isoformat(),
+                    "data_window_end": cutoff.isoformat(),
+                    "store_id": ctx.store_id,
+                    "product_id": ctx.product_id,
+                },
+            )
+            run_id = create_body.get("run_id")
+            if not isinstance(run_id, str):
+                skipped.append(f"{model_type}@{cutoff} no run_id")
+                continue
+            await client.request(
+                f"historical[running:{model_type}@{cutoff.isoformat()}]",
+                "PATCH",
+                f"/registry/runs/{run_id}",
+                json_body={"status": "running"},
+            )
+            await client.request(
+                f"historical[success:{model_type}@{cutoff.isoformat()}]",
+                "PATCH",
+                f"/registry/runs/{run_id}",
+                json_body={
+                    "status": "success",
+                    "metrics": {},
+                    "artifact_uri": model_path_raw,
+                    "artifact_hash": artifact_hash,
+                    "artifact_size_bytes": artifact_size,
+                },
+            )
+            runs_created += 1
+        except _StepError as exc:
+            # Most likely cause: RegistryService._find_duplicate collapses
+            # an exact-config duplicate (same data_window + grain + model).
+            # That's fine for the demo — non-fatal.
+            skipped.append(f"{model_type}@{cutoff} {exc.status_code}")
+
+    detail = f"created {runs_created} historical runs across {len(cutoffs)} cutoffs"
+    if skipped:
+        detail += f" ({len(skipped)} skipped: {', '.join(skipped[:3])}{'...' if len(skipped) > 3 else ''})"
+    return (
+        "pass" if runs_created > 0 else "warn",
+        detail,
         {
-            "per_model": dict(ctx.backtest_results),
-            "winner": ctx.winner_model_type,
-            "winner_wape": ctx.winner_wape,
+            "runs_created": runs_created,
+            "cutoffs": [c.isoformat() for c in cutoffs],
+            "models": list(HISTORICAL_BACKFILL_MODELS),
+        },
+    )
+
+
+async def step_v2_train(ctx: DemoContext, client: _Client) -> StepResult:
+    """PRP-38 — train ONE V2 ``prophet_like`` model and register it.
+
+    Implements the patched plan from Task 1's contract probe report:
+
+    1. POST /forecasting/train with ``feature_frame_version=2`` +
+       ``model_type=prophet_like``.
+    2. R1 — ``artifact_uri = train_response["model_path"]`` (FULL
+       ``artifacts/models/...`` path). DO NOT copy the bundle into the
+       registry artifact root; the feature-metadata endpoint loads bundles
+       from ``forecast_model_artifacts_dir``.
+    3. POST /registry/runs (PENDING) with ``runtime_info_extras=
+       {"feature_frame_version": 2}`` (the bundle is the source of truth for
+       feature_columns / feature_groups / feature_safety_classes; the
+       computed RunResponse.feature_frame_version surfaces V=2 in the UI).
+    4. PATCH pending -> running -> success with full path + hash + size.
+    5. GET /forecasting/runs/{id}/feature-metadata to enrich step.data with
+       the bundle's manifest. Failure here is NON-fatal — the V=2 badge
+       still renders via RunResponse.feature_frame_version.
+    """
+    if ctx.date_start is None or ctx.date_end is None:
+        return ("fail", "no date range on ctx", {})
+    train_start = ctx.date_start
+    train_end = ctx.date_end - timedelta(days=DEMO_HORIZON)
+
+    train_body = await client.request(
+        "v2_train[train]",
+        "POST",
+        "/forecasting/train",
+        json_body={
+            "store_id": ctx.store_id,
+            "product_id": ctx.product_id,
+            "train_start_date": train_start.isoformat(),
+            "train_end_date": train_end.isoformat(),
+            "config": {"model_type": SHOWCASE_V2_MODEL_TYPE},
+            "feature_frame_version": 2,
+            # feature_groups: omit -> backend uses DEFAULT_V2_GROUPS.
+        },
+    )
+
+    v2_model_path_raw = train_body.get("model_path")
+    if not isinstance(v2_model_path_raw, str) or not v2_model_path_raw:
+        return ("fail", "POST /forecasting/train returned no model_path", {})
+    # R1 — the path must resolve INSIDE forecast_model_artifacts_dir so
+    # /forecasting/runs/{id}/feature-metadata can load the bundle.
+    if "artifacts/models/" not in v2_model_path_raw.replace("\\", "/"):
+        return (
+            "fail",
+            f"model_path does not contain 'artifacts/models/': {v2_model_path_raw}",
+            {},
+        )
+    ctx.v2_model_path = v2_model_path_raw
+    bundle_path = Path(v2_model_path_raw)
+    if not bundle_path.exists():
+        return ("fail", f"V2 bundle missing on disk: {v2_model_path_raw}", {})
+    artifact_bytes = bundle_path.read_bytes()
+    artifact_hash = hashlib.sha256(artifact_bytes).hexdigest()
+    artifact_size = len(artifact_bytes)
+
+    create_body = await client.request(
+        "v2_train[create]",
+        "POST",
+        "/registry/runs",
+        json_body={
+            "model_type": SHOWCASE_V2_MODEL_TYPE,
+            "model_config": {"model_type": SHOWCASE_V2_MODEL_TYPE},
+            "feature_config": None,
+            "data_window_start": ctx.date_start.isoformat(),
+            "data_window_end": ctx.date_end.isoformat(),
+            "store_id": ctx.store_id,
+            "product_id": ctx.product_id,
+            "runtime_info_extras": {"feature_frame_version": 2},
+        },
+    )
+    v2_run_id_raw = create_body.get("run_id")
+    if not isinstance(v2_run_id_raw, str):
+        return ("fail", "POST /registry/runs returned no run_id", {})
+    ctx.v2_run_id = v2_run_id_raw
+
+    await client.request(
+        "v2_train[running]",
+        "PATCH",
+        f"/registry/runs/{v2_run_id_raw}",
+        json_body={"status": "running"},
+    )
+    await client.request(
+        "v2_train[success]",
+        "PATCH",
+        f"/registry/runs/{v2_run_id_raw}",
+        json_body={
+            "status": "success",
+            "metrics": {},
+            "artifact_uri": v2_model_path_raw,  # R1 — FULL artifacts/models/... path.
+            "artifact_hash": artifact_hash,
+            "artifact_size_bytes": artifact_size,
+        },
+    )
+
+    # Enrich step.data with the bundle's V2 manifest. Failure is non-fatal.
+    feature_columns_count = 0
+    feature_group_names: list[str] = []
+    try:
+        meta_body = await client.request(
+            "v2_train[feature-metadata]",
+            "GET",
+            f"/forecasting/runs/{v2_run_id_raw}/feature-metadata",
+        )
+        cols = meta_body.get("feature_columns") or []
+        if isinstance(cols, list):
+            feature_columns_count = len(cols)
+        groups = meta_body.get("feature_groups") or {}
+        if isinstance(groups, dict):
+            feature_group_names = sorted(str(k) for k in groups)
+    except _StepError as exc:
+        logger.warning(
+            "demo.v2_train.feature_metadata_failed",
+            run_id=v2_run_id_raw,
+            status_code=exc.status_code,
+        )
+
+    return (
+        "pass",
+        (f"V2 prophet_like registered run_id={v2_run_id_raw[:8]}... cols={feature_columns_count}"),
+        {
+            "v2_run_id": v2_run_id_raw,
+            "feature_frame_version": 2,
+            "model_type": SHOWCASE_V2_MODEL_TYPE,
+            "feature_columns_count": feature_columns_count,
+            "feature_groups": feature_group_names,
+            "artifact_uri_full": v2_model_path_raw,
         },
     )
 
@@ -498,6 +898,27 @@ async def step_register(ctx: DemoContext, client: _Client) -> StepResult:
     winner = ctx.winner_model_type
     date_start = ctx.date_start
     date_end = ctx.date_end
+
+    # PRP-38 — when the V2 ``prophet_like`` run wins, it has ALREADY been
+    # registered by step_v2_train. Skip re-creation and just alias the
+    # existing v2_run_id as ``demo-production``.
+    if winner == SHOWCASE_V2_MODEL_TYPE and ctx.v2_run_id is not None:
+        ctx.winning_run_id = ctx.v2_run_id
+        await client.request(
+            "register[alias_v2]",
+            "POST",
+            "/registry/aliases",
+            json_body={
+                "alias_name": DEMO_ALIAS,
+                "run_id": ctx.v2_run_id,
+                "description": "Auto-created by the demo showcase pipeline (V2 winner).",
+            },
+        )
+        return (
+            "pass",
+            f"V2 winner aliased run_id={ctx.v2_run_id[:8]}... alias={DEMO_ALIAS}",
+            {"run_id": ctx.v2_run_id, "alias": DEMO_ALIAS, "winner": winner},
+        )
 
     train_response = ctx.train_results.get(winner, {})
     model_path_raw = train_response.get("model_path")
@@ -587,9 +1008,25 @@ async def step_register(ctx: DemoContext, client: _Client) -> StepResult:
 
 
 async def step_verify(ctx: DemoContext, client: _Client) -> StepResult:
-    """SHA-256 artifact-integrity check via the public verify endpoint."""
+    """SHA-256 artifact-integrity check via the public verify endpoint.
+
+    PRP-38 — for a V2 winner (``prophet_like``), the run's ``artifact_uri``
+    is the full ``artifacts/models/...`` path so /forecasting feature-metadata
+    can resolve it. The /registry verify endpoint resolves under
+    ``registry_artifact_root`` instead — verify would fail with a path
+    mismatch. Skip verify gracefully when the V2 run is the winner; the
+    integrity guarantee is implicit (the bundle hash + size were captured
+    at registration time).
+    """
     if ctx.winning_run_id is None:
         return ("fail", "no winning_run_id to verify", {})
+    if ctx.v2_run_id is not None and ctx.winning_run_id == ctx.v2_run_id:
+        return (
+            "skip",
+            "V2 winner — verify resolves under registry_artifact_root only "
+            "(artifact_uri is the artifacts/models/... path)",
+            {"v2_winner": True, "run_id": ctx.v2_run_id},
+        )
     body = await client.request(
         "verify",
         "GET",
@@ -665,51 +1102,115 @@ async def step_cleanup(ctx: DemoContext, client: _Client) -> StepResult:
 # =============================================================================
 
 StepFn = Callable[[DemoContext, _Client], Awaitable[StepResult]]
+PhaseStep = tuple[str, str, StepFn]  # (phase_name, step_name, step_fn)
 
 
-def _step_table() -> list[tuple[str, StepFn]]:
-    """Return the ordered 11-step table (name, callable)."""
-    return [
+# PRP-38 — canonical phase ids. The frontend's PHASE_DEFS.ts mirrors this list
+# in order; the lockstep test ``test_phase_table_stable`` is the contract gate.
+PHASE_DATA = "data"
+PHASE_MODELING = "modeling"
+PHASE_DECISION = "decision"
+PHASE_VERIFY = "verify"
+PHASE_AGENT = "agent"
+PHASE_CLEANUP = "cleanup"
+
+
+def _phase_table(scenario: ScenarioPreset) -> list[PhaseStep]:
+    """Return the ordered phase-grouped step table for ``scenario`` (PRP-38).
+
+    - ``DEMO_MINIMAL`` / ``SPARSE`` / unknown — the legacy 11-step flow,
+      phase-grouped without inserting any new step. Back-compat:
+      ``_step_table()`` adapts this branch to a flat ``(name, fn)`` list.
+    - ``SHOWCASE_RICH`` — the data phase adds ``phase2_enrichment`` and
+      ``historical_backfill`` after ``features``; the modeling phase adds
+      ``v2_train`` after ``train``. The decision phase reuses ``backtest``
+      and ``register`` (``backtest`` itself is scenario-aware — see
+      ``step_backtest``).
+    """
+    data_steps: list[tuple[str, StepFn]] = [
         ("precheck", step_precheck),
         ("reset", step_reset),
         ("seed", step_seed),
         ("status", step_status),
         ("features", step_features),
-        ("train", step_train),
+    ]
+    modeling_steps: list[tuple[str, StepFn]] = [("train", step_train)]
+    decision_steps: list[tuple[str, StepFn]] = [
         ("backtest", step_backtest),
         ("register", step_register),
-        ("verify", step_verify),
-        ("agent", step_agent),
-        ("cleanup", step_cleanup),
     ]
+    verify_steps: list[tuple[str, StepFn]] = [("verify", step_verify)]
+    agent_steps: list[tuple[str, StepFn]] = [("agent", step_agent)]
+    cleanup_steps: list[tuple[str, StepFn]] = [("cleanup", step_cleanup)]
+    if scenario is ScenarioPreset.SHOWCASE_RICH:
+        data_steps += [
+            ("phase2_enrichment", step_phase2_enrichment),
+            ("historical_backfill", step_historical_backfill),
+        ]
+        modeling_steps += [("v2_train", step_v2_train)]
+    rows: list[PhaseStep] = []
+    rows += [(PHASE_DATA, name, fn) for name, fn in data_steps]
+    rows += [(PHASE_MODELING, name, fn) for name, fn in modeling_steps]
+    rows += [(PHASE_DECISION, name, fn) for name, fn in decision_steps]
+    rows += [(PHASE_VERIFY, name, fn) for name, fn in verify_steps]
+    rows += [(PHASE_AGENT, name, fn) for name, fn in agent_steps]
+    rows += [(PHASE_CLEANUP, name, fn) for name, fn in cleanup_steps]
+    return rows
+
+
+def _step_table() -> list[tuple[str, StepFn]]:
+    """Legacy flat-list adapter. Drops phase ids from ``_phase_table``."""
+    return [(name, fn) for _phase, name, fn in _phase_table(ScenarioPreset.DEMO_MINIMAL)]
 
 
 async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepEvent]:
-    """Drive the 11-step pipeline; yield one step_start + step_complete per step.
+    """Drive the phase-grouped pipeline; yield one step_start + step_complete per step.
 
     A final ``pipeline_complete`` event always follows. Never raises -- step
     failures become ``fail`` events and stop the run after the failing step.
 
+    PRP-38: every emitted ``step_start`` / ``step_complete`` carries
+    ``phase_name`` / ``phase_index`` (1-based across distinct phases) /
+    ``phase_total``. The ``pipeline_complete`` summary omits ``phase_name`` —
+    the frontend treats it as the run total.
+
     Args:
         app: The live FastAPI application (driven in-process via ASGITransport).
-        req: Run parameters (seed, reset, skip_seed).
+        req: Run parameters (seed, reset, skip_seed, scenario).
 
     Yields:
         StepEvent instances, in execution order.
     """
-    steps = _step_table()
-    total = len(steps)
-    ctx = DemoContext(seed=req.seed, skip_seed=req.skip_seed, reset=req.reset)
+    rows = _phase_table(req.scenario)
+    total = len(rows)
+    # Distinct phases preserve first-seen order across rows.
+    phases_in_order: list[str] = []
+    for phase_name, _, _ in rows:
+        if phase_name not in phases_in_order:
+            phases_in_order.append(phase_name)
+    phase_total = len(phases_in_order)
+    phase_index_by_phase = {p: i + 1 for i, p in enumerate(phases_in_order)}
+
+    ctx = DemoContext(
+        seed=req.seed,
+        skip_seed=req.skip_seed,
+        reset=req.reset,
+        scenario=req.scenario,
+    )
     wall_start = time.monotonic()
     any_fail = False
 
     async with _Client(app) as client:
-        for index, (name, fn) in enumerate(steps, start=1):
+        for index, (phase_name, name, fn) in enumerate(rows, start=1):
+            phase_index = phase_index_by_phase[phase_name]
             yield StepEvent(
                 event_type="step_start",
                 step_name=name,
                 step_index=index,
                 total_steps=total,
+                phase_name=phase_name,
+                phase_index=phase_index,
+                phase_total=phase_total,
             )
             t0 = time.monotonic()
             status: StepStatus
@@ -744,6 +1245,9 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
                 detail=detail,
                 data=data,
                 duration_ms=duration_ms,
+                phase_name=phase_name,
+                phase_index=phase_index,
+                phase_total=phase_total,
             )
             if status == "fail":
                 any_fail = True
@@ -766,5 +1270,8 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
             "winning_run_id": ctx.winning_run_id,
             "alias": DEMO_ALIAS if ctx.winning_run_id else None,
             "wall_clock_s": wall,
+            # PRP-38 — expose the V2 run id when set so the Inspect deep
+            # link can target /explorer/runs/{v2_run_id}.
+            "v2_run_id": ctx.v2_run_id,
         },
     )

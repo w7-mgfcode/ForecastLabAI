@@ -57,7 +57,8 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 | agents | DELETE | `/agents/sessions/{session_id}` | Close session |
 | agents | WS | `/agents/stream` | Token-by-token streaming + tool-call events |
 | seeder | (see `app/features/seeder/routes.py`) | `/seeder/*` | Trigger scenarios, status, customization |
-| demo | POST | `/demo/run` | Run the end-to-end demo pipeline in-process; returns a `DemoRunResult`. `409 application/problem+json` if a run is already active |
+| seeder | POST | `/seeder/phase2-enrichment` | PRP-38 — run Phase 2 generators (lifecycle, replenishment, exogenous, returns) against the existing seeded data. `422 application/problem+json` on an empty database. |
+| demo | POST | `/demo/run` | Run the end-to-end demo pipeline in-process; returns a `DemoRunResult`. `409 application/problem+json` if a run is already active. **PRP-38** — body accepts an Optional `scenario: 'demo_minimal' \| 'showcase_rich' \| 'sparse'` field; default `'demo_minimal'` (back-compat). |
 | demo | WS | `/demo/stream` | Stream one `StepEvent` per pipeline step for the live Showcase page |
 | config | GET | `/config/ai` | Effective AI-model config (agent LLM + RAG embeddings); API keys masked, never raw |
 | config | PATCH | `/config/ai` | Persist + apply AI-model changes live (no restart). `409` if an embedding-dimension change would orphan indexed RAG chunks (resend with `force=true`) |
@@ -82,14 +83,15 @@ Verified against `app/features/agents/websocket.py` and `app/features/agents/sch
 
 Drives the end-to-end demo pipeline for the dashboard Showcase page. Verified against `app/features/demo/routes.py` and `app/features/demo/schemas.py` (`StepEvent`).
 
-- **Client → server (one start frame):** `{"seed": int, "reset": bool, "skip_seed": bool}` — all fields optional (`DemoRunRequest` supplies defaults `seed=42`, `reset=false`, `skip_seed=true`). The pipeline runs once, then the server closes.
-- **Server → client (every frame):** Pydantic-serialized `StepEvent` — `{"event_type", "step_name", "step_index", "total_steps", "status", "detail", "duration_ms", "data", "timestamp"}`.
+- **Client → server (one start frame):** `{"seed": int, "reset": bool, "skip_seed": bool, "scenario"?: "demo_minimal" | "showcase_rich" | "sparse"}` — all fields optional (`DemoRunRequest` supplies defaults `seed=42`, `reset=false`, `skip_seed=true`, `scenario="demo_minimal"`). The pipeline runs once, then the server closes.
+- **Server → client (every frame):** Pydantic-serialized `StepEvent` — `{"event_type", "step_name", "step_index", "total_steps", "status", "detail", "duration_ms", "data", "timestamp", "phase_name"?, "phase_index"?, "phase_total"?}`. PRP-38 — the three `phase_*` fields are Optional + Nullable so legacy clients that don't render phases keep working.
 - **`event_type` values (Literal in `StepEvent`):**
   - `step_start` — a step began; `status` is `null`.
-  - `step_complete` — a step finished; `status ∈ {pass, fail, skip, warn}`, `data` carries structured payload (backtest `per_model` WAPE + `winner`; register `run_id` + `alias`).
-  - `pipeline_complete` — final event; `data` carries `winner_model_type`, `winner_wape`, `winning_run_id`, `alias`, `wall_clock_s`.
+  - `step_complete` — a step finished; `status ∈ {pass, fail, skip, warn}`, `data` carries structured payload (backtest `per_model` WAPE + `winner` + `bucketed_aggregated_metrics` on PRP-36/38 feature-aware runs; register `run_id` + `alias`; PRP-38 `v2_train` → `v2_run_id` + `feature_frame_version` + `feature_columns_count` + `feature_groups` + `artifact_uri_full`).
+  - `pipeline_complete` — final event; `data` carries `winner_model_type`, `winner_wape`, `winning_run_id`, `alias`, `wall_clock_s`, `v2_run_id` (PRP-38; null when no V2 run was registered).
   - `error` — bad start frame or a concurrent run already in progress; one event, then the server closes.
 - Concurrency: a module-level `asyncio.Lock` allows one pipeline at a time. A second `POST /demo/run` returns `409`; a second `WS /demo/stream` receives one `error` event.
+- PRP-38 — `scenario="showcase_rich"` extends the data phase with `phase2_enrichment` + `historical_backfill` steps and the modeling phase with `v2_train` (one V2 `prophet_like` run). Total step count: 14 for `showcase_rich`, 11 for `demo_minimal` and `sparse`. Phase ids are `data` / `modeling` / `decision` / `verify` / `agent` / `cleanup` (6 phases).
 
 ## Async Events / Queues
 
