@@ -1,12 +1,23 @@
 import { useState } from 'react'
+import { format } from 'date-fns'
+import { DateRange } from 'react-day-picker'
 import { Link } from 'react-router-dom'
 import { BarChart3, Download, ExternalLink, Loader2, Play } from 'lucide-react'
 import { useJob, useCreateJob } from '@/hooks/use-jobs'
 import { useJobExplanation } from '@/hooks/use-explanations'
 import { useJobFeatureMetadata } from '@/hooks/use-feature-metadata'
+import { useStores } from '@/hooks/use-stores'
+import { useProducts } from '@/hooks/use-products'
 import { ExplanationPanel } from '@/components/explainability/explanation-panel'
 import { FeatureImportancePanel } from '@/components/explainability/feature-importance-panel'
 import { ModelFamilyBadge } from '@/components/common/model-family-badge'
+import { DateRangePicker } from '@/components/common/date-range-picker'
+import { ModelFamilyTabs } from '@/components/forecast-intelligence/model-family-tabs'
+import { ModelTypeSelect } from '@/components/forecast-intelligence/model-type-select'
+import { MODEL_FAMILY_MAP } from '@/components/forecast-intelligence/model-type-utils'
+import { FeatureFrameSelect } from '@/components/forecast-intelligence/feature-frame-select'
+import { FeatureGroupsToggle } from '@/components/forecast-intelligence/feature-groups-toggle'
+import { defaultV2Groups } from '@/lib/feature-frame-utils'
 import {
   Collapsible,
   CollapsibleContent,
@@ -26,9 +37,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { FEATURE_GROUP_VALUES } from '@/types/api'
 import { downloadCsv, toCsv, type CsvColumn } from '@/lib/csv-export'
 import { getErrorMessage } from '@/lib/api'
-import type { ForecastPoint } from '@/types/api'
+import type {
+  FeatureFrameVersion,
+  FeatureGroup,
+  ForecastPoint,
+  ModelFamily,
+} from '@/types/api'
 
 /** Horizon presets (days) for an in-page predict run. */
 const HORIZON_OPTIONS = [7, 14, 30, 60, 90]
@@ -46,6 +63,23 @@ export default function ForecastPage() {
   const [horizon, setHorizon] = useState(14)
   const [showInterval, setShowInterval] = useState(false)
   const [runError, setRunError] = useState<string | null>(null)
+
+  // PRP-37 Slice C — train-from-page control row state.
+  const [trainFamily, setTrainFamily] = useState<ModelFamily>('baseline')
+  const [trainModelType, setTrainModelType] = useState<string>('seasonal_naive')
+  const [trainStoreId, setTrainStoreId] = useState('')
+  const [trainProductId, setTrainProductId] = useState('')
+  const [trainDateRange, setTrainDateRange] = useState<DateRange | undefined>()
+  const [trainVersion, setTrainVersion] = useState<FeatureFrameVersion>(1)
+  const [trainGroups, setTrainGroups] = useState<FeatureGroup[]>([])
+  const [trainError, setTrainError] = useState<string | null>(null)
+
+  const storesQuery = useStores({ page: 1, pageSize: 100 })
+  const productsQuery = useProducts({ page: 1, pageSize: 100 })
+
+  // V2 is meaningful only for feature-aware families. Baselines do not consume
+  // features, so the V2 option is locked off there.
+  const isV2Available = trainFamily !== 'baseline'
 
   const { data: job, isLoading, error } = useJob(searchJobId, !!searchJobId)
   const { data: trainJob } = useJob(trainJobId, !!trainJobId)
@@ -99,6 +133,65 @@ export default function ForecastPage() {
     }
   }
 
+  /** PRP-37 — narrow trainModelType to the picked family. */
+  function handleFamilyChange(next: ModelFamily) {
+    setTrainFamily(next)
+    const valid = MODEL_FAMILY_MAP[next]
+    if (!valid.includes(trainModelType)) {
+      setTrainModelType(valid[0] ?? '')
+    }
+    if (next === 'baseline') {
+      // Baseline cannot consume features — drop V2 + groups when switching back.
+      setTrainVersion(1)
+      setTrainGroups([])
+    }
+  }
+
+  function handleVersionChange(next: FeatureFrameVersion) {
+    setTrainVersion(next)
+    if (next === 1) {
+      setTrainGroups([])
+    } else if (trainGroups.length === 0) {
+      setTrainGroups(defaultV2Groups())
+    }
+  }
+
+  const trainFormReady =
+    !!trainStoreId &&
+    !!trainProductId &&
+    !!trainDateRange?.from &&
+    !!trainDateRange?.to &&
+    !!trainModelType
+
+  async function handleSubmitTrain() {
+    if (!trainFormReady || !trainDateRange?.from || !trainDateRange?.to) return
+    setTrainError(null)
+    const params: Record<string, unknown> = {
+      model_type: trainModelType,
+      store_id: Number(trainStoreId),
+      product_id: Number(trainProductId),
+      start_date: format(trainDateRange.from, 'yyyy-MM-dd'),
+      end_date: format(trainDateRange.to, 'yyyy-MM-dd'),
+    }
+    // Backend treats V1 + omit-feature_groups as the default — only forward the
+    // new fields when the operator explicitly opted into V2.
+    if (trainVersion === 2) {
+      params.feature_frame_version = 2
+      if (trainGroups.length > 0) {
+        params.feature_groups = trainGroups
+      }
+    }
+    try {
+      const newJob = await createJob.mutateAsync({
+        job_type: 'train',
+        params,
+      })
+      setTrainJobId(newJob.job_id)
+    } catch (caught) {
+      setTrainError(getErrorMessage(caught))
+    }
+  }
+
   function handleExport() {
     if (forecastData.length === 0 || !job) return
     downloadCsv(`forecast-${job.job_id}.csv`, toCsv(forecastData, csvColumns))
@@ -107,6 +200,116 @@ export default function ForecastPage() {
   return (
     <div className="space-y-6">
       <h1 className="text-3xl font-bold">Forecast Visualization</h1>
+
+      {/* PRP-37 Slice C — segmented control row to train a new model. */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Train a new model</CardTitle>
+          <CardDescription>
+            Pick a family, a model, a store/product/date window. V2 unlocks
+            feature-aware models (tree + additive); V1 is target-only.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1">
+              <span className="text-xs text-muted-foreground">Family</span>
+              <ModelFamilyTabs
+                family={trainFamily}
+                onChange={handleFamilyChange}
+              />
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs text-muted-foreground">Model</span>
+              <ModelTypeSelect
+                family={trainFamily}
+                value={trainModelType}
+                onChange={setTrainModelType}
+                className="w-[260px]"
+              />
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs text-muted-foreground">Feature frame</span>
+              <FeatureFrameSelect
+                value={trainVersion}
+                onChange={handleVersionChange}
+                isV2Available={isV2Available}
+                v2DisabledReason={
+                  trainFamily === 'baseline'
+                    ? 'Baseline models do not consume features — V2 is meaningful for tree and additive families only.'
+                    : undefined
+                }
+              />
+            </div>
+          </div>
+          {trainVersion === 2 && isV2Available && (
+            <FeatureGroupsToggle
+              value={trainGroups}
+              onChange={setTrainGroups}
+              availableGroups={[...FEATURE_GROUP_VALUES]}
+              defaults={defaultV2Groups()}
+            />
+          )}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="space-y-1">
+              <span className="text-xs text-muted-foreground">Store</span>
+              <Select value={trainStoreId} onValueChange={setTrainStoreId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Pick a store…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(storesQuery.data?.stores ?? []).map((store) => (
+                    <SelectItem key={store.id} value={String(store.id)}>
+                      {store.code} · {store.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs text-muted-foreground">Product</span>
+              <Select value={trainProductId} onValueChange={setTrainProductId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Pick a product…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(productsQuery.data?.products ?? []).map((product) => (
+                    <SelectItem key={product.id} value={String(product.id)}>
+                      {product.sku} · {product.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs text-muted-foreground">Date window</span>
+              <DateRangePicker
+                value={trainDateRange}
+                onChange={setTrainDateRange}
+              />
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              onClick={handleSubmitTrain}
+              disabled={!trainFormReady || createJob.isPending}
+            >
+              {createJob.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Play className="mr-2 h-4 w-4" />
+              )}
+              Train model
+            </Button>
+            {!trainFormReady && (
+              <span className="text-sm text-muted-foreground">
+                Pick a model, store, product and date window to enable.
+              </span>
+            )}
+          </div>
+          {trainError && <p className="text-sm text-destructive">{trainError}</p>}
+        </CardContent>
+      </Card>
 
       {/* Run a new forecast in-page */}
       <Card>

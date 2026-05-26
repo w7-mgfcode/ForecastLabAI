@@ -14,6 +14,7 @@ import { useRunExplanation } from '@/hooks/use-explanations'
 import { useRunFeatureMetadata } from '@/hooks/use-feature-metadata'
 import { ExplanationPanel } from '@/components/explainability/explanation-panel'
 import { FeatureImportancePanel } from '@/components/explainability/feature-importance-panel'
+import { FeatureFramePanel } from '@/components/forecast-intelligence/feature-frame-panel'
 import { JsonBlock } from '@/components/common/json-block'
 import { ErrorDisplay } from '@/components/common/error-display'
 import { LoadingState } from '@/components/common/loading-state'
@@ -161,6 +162,15 @@ export default function RunDetailPage() {
           </dl>
         </CardContent>
       </Card>
+
+      {/* PRP-37 — Feature frame panel: surfaces V1/V2 + feature_groups +
+          per-column safety classes. Empty-state for pre-PRP-35 runs. */}
+      <FeatureFramePanel
+        feature_frame_version={run.feature_frame_version}
+        feature_groups={run.feature_groups}
+        feature_safety_classes={featureMetaQuery.data?.feature_safety_classes}
+        isLoading={featureMetaQuery.isLoading}
+      />
 
       {run.status === 'failed' && run.error_message && (
         <Card className="border-destructive/50">

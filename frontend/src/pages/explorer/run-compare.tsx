@@ -9,6 +9,7 @@ import { ErrorDisplay } from '@/components/common/error-display'
 import { LoadingState } from '@/components/common/loading-state'
 import { ModelFamilyBadge } from '@/components/common/model-family-badge'
 import { StatusBadge } from '@/components/common/status-badge'
+import { ChampionCompatibilityBadge } from '@/components/forecast-intelligence/champion-compatibility-badge'
 import { getStatusVariant } from '@/lib/status-utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -152,6 +153,27 @@ export default function RunComparePage() {
 
       {a && b && compareQuery.isLoading && <LoadingState message="Comparing runs..." />}
 
+      {/* PRP-37 — Champion-compatibility verdict for the picked pair. */}
+      {a && b && comparison && (
+        <Card>
+          <CardHeader>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <CardTitle>Champion compatibility</CardTitle>
+                <CardDescription>
+                  Two runs are comparable iff they share grain (store + product),
+                  overlapping data windows, and feature_frame_version.
+                </CardDescription>
+              </div>
+              <ChampionCompatibilityBadge
+                runA={comparison.run_a}
+                runB={comparison.run_b}
+              />
+            </div>
+          </CardHeader>
+        </Card>
+      )}
+
       {a && b && comparison && (
         <>
           <Card>
@@ -214,6 +236,30 @@ export default function RunComparePage() {
                       {comparison.run_b.data_window_start} → {comparison.run_b.data_window_end}
                     </TableCell>
                   </TableRow>
+                  {/* PRP-37 — feature frame version row.
+                      Renders for every comparison; pre-PRP-35 runs surface "V1 (default)". */}
+                  {(comparison.run_a.feature_frame_version !== undefined ||
+                    comparison.run_b.feature_frame_version !== undefined) && (
+                    <TableRow data-testid="run-compare-feature-frame-row">
+                      <TableCell className="font-medium">
+                        Feature frame version
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        V{comparison.run_a.feature_frame_version ?? 1}
+                        {comparison.run_a.feature_frame_version === undefined ||
+                        comparison.run_a.feature_frame_version === null
+                          ? ' (default)'
+                          : ''}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        V{comparison.run_b.feature_frame_version ?? 1}
+                        {comparison.run_b.feature_frame_version === undefined ||
+                        comparison.run_b.feature_frame_version === null
+                          ? ' (default)'
+                          : ''}
+                      </TableCell>
+                    </TableRow>
+                  )}
                   <TableRow>
                     <TableCell className="font-medium">Config hash</TableCell>
                     <TableCell className="break-all font-mono text-xs">

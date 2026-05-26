@@ -7,6 +7,7 @@ import type {
   RunCompareResponse,
   RunStatus,
   ArtifactVerifyResponse,
+  FeatureFrameVersion,
 } from '@/types/api'
 
 interface UseRunsParams {
@@ -18,6 +19,12 @@ interface UseRunsParams {
   productId?: number
   sortBy?: string
   sortOrder?: 'asc' | 'desc'
+  /**
+   * PRP-37 — accepted by the hook so callers can keep one filter object;
+   * NOT forwarded to the registry list endpoint today (no backend filter
+   * exists). Used purely to scope the query key for client-side caches.
+   */
+  featureFrameVersion?: FeatureFrameVersion
   enabled?: boolean
 }
 
@@ -30,12 +37,23 @@ export function useRuns({
   productId,
   sortBy,
   sortOrder,
+  featureFrameVersion,
   enabled = true,
 }: UseRunsParams) {
   return useQuery({
     queryKey: [
       'runs',
-      { page, pageSize, modelType, status, storeId, productId, sortBy, sortOrder },
+      {
+        page,
+        pageSize,
+        modelType,
+        status,
+        storeId,
+        productId,
+        sortBy,
+        sortOrder,
+        featureFrameVersion,
+      },
     ],
     queryFn: () =>
       api<RunListResponse>('/registry/runs', {
@@ -48,6 +66,8 @@ export function useRuns({
           product_id: productId,
           sort_by: sortBy,
           sort_order: sortOrder,
+          // NOTE: featureFrameVersion is intentionally NOT forwarded — see
+          // PRP-37 Task 23 + contract probe report (no backend filter).
         },
       }),
     placeholderData: keepPreviousData,
