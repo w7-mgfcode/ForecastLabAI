@@ -86,6 +86,83 @@ function RegisterDetail({ data }: { data: Record<string, unknown> }) {
   )
 }
 
+/** PRP-39 — champion-compat compare mini-summary chip-line. */
+function ChampionCompatDetail({ data }: { data: Record<string, unknown> }) {
+  const va = data.feature_frame_version_a
+  const vb = data.feature_frame_version_b
+  const compatible = data.compatible
+  const reason = typeof data.comparable_reason === 'string' ? data.comparable_reason : null
+  if (typeof compatible !== 'boolean') return null
+  const vaDisplay = va === null || va === undefined ? '1' : String(va)
+  const vbDisplay = vb === null || vb === undefined ? '1' : String(vb)
+  return (
+    <div className="mt-3 flex flex-wrap gap-2 text-xs">
+      <span className="rounded-md bg-muted px-2 py-1 font-mono">V_a={vaDisplay}</span>
+      <span className="rounded-md bg-muted px-2 py-1 font-mono">V_b={vbDisplay}</span>
+      <span className="rounded-md bg-muted px-2 py-1 font-mono">
+        compatible={String(compatible)}
+      </span>
+      {!compatible && reason && (
+        <span className="rounded-md bg-muted px-2 py-1 font-mono">reason={reason}</span>
+      )}
+    </div>
+  )
+}
+
+/** PRP-39 — stale-alias trigger mini-summary chip-line. */
+function StaleAliasDetail({ data }: { data: Record<string, unknown> }) {
+  const aliasName = typeof data.alias_name === 'string' ? data.alias_name : null
+  const staleReason = typeof data.stale_reason === 'string' ? data.stale_reason : null
+  const aliasV = data.alias_feature_frame_version
+  const comparableV = data.comparable_run_feature_frame_version
+  if (!aliasName || !staleReason) return null
+  return (
+    <div className="mt-3 flex flex-wrap gap-2 text-xs">
+      <span className="rounded-md bg-muted px-2 py-1 font-mono">alias={aliasName}</span>
+      <span className="rounded-md bg-muted px-2 py-1 font-mono">
+        stale_reason={staleReason}
+      </span>
+      <span className="rounded-md bg-muted px-2 py-1 font-mono">
+        V_alias={String(aliasV ?? 'null')} → V_comparable={String(comparableV ?? 'null')}
+      </span>
+    </div>
+  )
+}
+
+/** PRP-39 — safer-Promote flow mini-summary chip-line. */
+function SaferPromoteDetail({ data }: { data: Record<string, unknown> }) {
+  const aliasName = typeof data.alias_name === 'string' ? data.alias_name : null
+  const before = typeof data.before_run_id === 'string' ? data.before_run_id : null
+  const after = typeof data.after_run_id === 'string' ? data.after_run_id : null
+  if (!aliasName || !before || !after) return null
+  return (
+    <div className="mt-3 flex flex-wrap gap-2 text-xs">
+      <span className="rounded-md bg-muted px-2 py-1 font-mono">alias={aliasName}</span>
+      <span className="rounded-md bg-muted px-2 py-1 font-mono">
+        before={before.slice(0, 8)} → after={after.slice(0, 8)}
+      </span>
+    </div>
+  )
+}
+
+/** PRP-39 — batch preset mini-summary chip-line. */
+function BatchPresetDetail({ data }: { data: Record<string, unknown> }) {
+  const presetSource = typeof data.preset_source === 'string' ? data.preset_source : null
+  const completed = data.completed_items
+  const total = data.total_items
+  const status = typeof data.status === 'string' ? data.status : null
+  if (!presetSource || !status) return null
+  return (
+    <div className="mt-3 flex flex-wrap gap-2 text-xs">
+      <span className="rounded-md bg-muted px-2 py-1 font-mono">preset={presetSource}</span>
+      <span className="rounded-md bg-muted px-2 py-1 font-mono">
+        {String(completed ?? '?')}/{String(total ?? '?')} done
+      </span>
+      <span className="rounded-md bg-muted px-2 py-1 font-mono">status={status}</span>
+    </div>
+  )
+}
+
 interface DemoStepCardProps {
   step: DemoStep
   index: number
@@ -139,6 +216,13 @@ export function DemoStepCard({ step, index, inspectHref }: DemoStepCardProps) {
             <HorizonBucketsMini bucketed={bucketed} />
           )}
           {step.name === 'register' && <RegisterDetail data={step.data} />}
+          {/* PRP-39 — terminal-pass mini-summaries for the 4 new step kinds. */}
+          {step.name === 'champion_compat_compare' && (
+            <ChampionCompatDetail data={step.data} />
+          )}
+          {step.name === 'stale_alias_trigger' && <StaleAliasDetail data={step.data} />}
+          {step.name === 'safer_promote_flow' && <SaferPromoteDetail data={step.data} />}
+          {step.name === 'batch_preset' && <BatchPresetDetail data={step.data} />}
           {showInspect && (
             <div className="mt-3">
               <Button asChild variant="outline" size="sm">
