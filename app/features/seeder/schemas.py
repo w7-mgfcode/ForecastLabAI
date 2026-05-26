@@ -475,4 +475,11 @@ class Phase2EnrichmentResponse(BaseModel):
             "(product, replenishment_event, exogenous_signal, sales_returns)."
         ),
     )
+    records_skipped: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Count of rows skipped per table on an idempotent re-run "
+            "(populated when prior phase-2 data is already present in scope)."
+        ),
+    )
     duration_ms: float = Field(description="Wall-clock duration in milliseconds.")
