@@ -4,7 +4,14 @@
 > `/showcase` upgrade epic.
 > **Parent:** `PRPs/INITIAL/INITIAL-showcase-rich-demo-control-center.md`
 > **Sequence index:** `PRPs/INITIAL/INITIAL-showcase-rich-demo-index.md`
-> **Prerequisites:** PRP-39 AND PRP-40 merged.
+> **Prerequisites:**
+> - PRP-39 (#316) AND PRP-40 (#315) merged into `dev` ✅
+> - Issue #312 (`fix(seeder): make phase2 enrichment idempotent`) merged
+>   before PRP-41 dogfood — the 16-line manual checklist below re-runs
+>   `showcase-rich` against a populated DB; the current `IntegrityError →
+>   HTTP 500` on a repeated `POST /seeder/phase2-enrichment` would block
+>   that. **Out of PRP-41 scope** (separate seeder fix), but must land
+>   before PRP-41's dogfood pass to keep the checklist runnable.
 > **Unlocks:** epic complete.
 
 ## FEATURE:
@@ -76,29 +83,44 @@ existing `agent` step's position)
     `session_id` into `step.data`.
   - Skip-gracefully gate: `_llm_key_present()` returns False → emit `skip`
     with the same wording the existing `step_agent` uses
-    (`app/features/demo/pipeline.py:606-616`).
+    (`app/features/demo/pipeline.py::step_agent`; file lines drifted by
+    PRP-39 + PRP-40 — locate by symbol, not by line number).
   - Hard fallback: if no approval within 90 s, emit `skip` with detail
     `"approval timed out — pipeline continued"` and continue.
 
 **Phase: `ops`** (after `agents`, before `cleanup`)
 - `ops_snapshot` — fetches `GET /ops/summary`,
   `GET /ops/retraining-candidates?limit=5`,
-  `GET /ops/model-health?grain=store_product&limit=5` (or whichever grain
-  has populated rows after PRP-39 — defer to the contract probe). Embeds a
-  small KPI summary in `step.data`:
+  `GET /ops/model-health?limit=5` — the model-health endpoint takes ONLY
+  `limit`; **no `grain` query param exists**. Results are sorted
+  degrading-first across all `(store, product)` grains; the demo step counts
+  entries whose drift verdict is `degrading`. Embeds a small KPI summary in
+  `step.data`:
   ```
   {
-    "stale_aliases_count": int,
-    "retraining_candidates_count": int,
-    "total_runs": int,
-    "total_aliases": int,
-    "degrading_health_count": int
+    "stale_aliases_count": int,           # sum(a.is_stale for a in summary.aliases)
+    "retraining_candidates_count": int,   # len(retraining_candidates_body.candidates)
+    "total_runs": int,                    # summary.runs.<count field on RunHealth>
+    "total_aliases": int,                 # len(summary.aliases)
+    "degrading_health_count": int         # count of entries with drift_verdict == "degrading"
   }
   ```
   so the frontend renders a small KPI mini-grid in the step card without a
   second fetch.
 
-Update `step_cleanup` (existing, `app/features/demo/pipeline.py:651`) only
+  **Derivation note.** `/ops/summary` (response model `OpsSummaryResponse`)
+  has **no flat top-level** `stale_aliases` / `total_aliases` / `alias_count`
+  keys. Its actual shape is `system`, `jobs`, `runs`, `aliases: list[AliasHealth]`,
+  `freshness`, `attention_items`, `generated_at`. Staleness lives on each
+  `AliasHealth.is_stale: bool` — the demo step computes
+  `stale_aliases_count = sum(a.is_stale for a in body.aliases)` and
+  `total_aliases = len(body.aliases)`. `retraining_candidates_count` is
+  derived from the separate `/ops/retraining-candidates` response; the
+  `degrading_health_count` filters `ModelHealthResponse.entries` (or the
+  list field actually emitted — confirm in the Task-1 contract probe) by
+  `drift_verdict == "degrading"`.
+
+Update `step_cleanup` (existing, `app/features/demo/pipeline.py::step_cleanup`) only
 if the HITL session is not already covered by its existing
 `DELETE /agents/sessions/{id}` path — the existing close path likely
 already covers `ctx.session_id`, but the contract probe MUST confirm.
@@ -125,17 +147,38 @@ Five cross-cutting polish surfaces, all additive.
 
 1. **KPI strip** — `frontend/src/components/demo/ShowcaseKpiStrip.tsx`
    (new). Horizontal strip of 5 tiles rendered at the top of `/showcase`,
-   hidden until the first `step_complete` event arrives. Counts:
+   hidden until the first `step_complete` event arrives. Counts (every key
+   name below has been verified against PRP-39/PRP-40 emitted `step.data`
+   payloads on `dev` — never invent a key, always grep the step function in
+   `app/features/demo/pipeline.py` first):
    - `runs_registered` — count `register` + `stale_alias_trigger` +
-     `safer_promote_flow` + `v2_train` `step.data.run_id` keys.
-   - `aliases_live` — read `step.data.alias_count` (or fall back to alias
-     creation events).
-   - `batch_items_completed` — from `batch_preset` `step.data.completed_count`
-     (PRP-39).
-   - `scenario_plans_saved` — count `scenario_save` / `scenario_compare`
-     payloads (PRP-40).
-   - `rag_chunks_indexed` — from `rag_index_subset` `step.data.chunks_indexed`
-     (PRP-40).
+     `safer_promote_flow` + `v2_train` events with a populated
+     `step.data.run_id` (all four steps emit `run_id` on PASS).
+   - `aliases_live` — read the new `ops_snapshot` step's
+     `step.data.total_aliases` (the step computes it from
+     `len(OpsSummaryResponse.aliases)` — there is **no flat `alias_count`
+     key** on `/ops/summary` to consume directly). Fall back to counting
+     events with a populated `step.data.alias` key across `register` /
+     `safer_promote_flow` / `stale_alias_trigger` when `ops_snapshot` was
+     skipped.
+   - `batch_items_completed` — from `batch_preset` `step.data.completed_items`
+     (PRP-39 emits `completed_items` / `total_items` / `failed_items` —
+     there is **no `completed_count` key**; see `step_batch_preset` in
+     `app/features/demo/pipeline.py`).
+   - `scenario_plans_saved` — count `scenario_simulate_and_save` events with
+     a populated `step.data.scenario_id` (1 per run on PASS) PLUS
+     `multi_plan_compare` events with a populated
+     `step.data.winner_scenario_id` AND `step.data.ranked` of length ≥ 2
+     (1 per run on PASS — the holiday plan saved successfully). PRP-40's
+     actual step names are `scenario_simulate_and_save` and
+     `multi_plan_compare` — there is **no `scenario_save` or
+     `scenario_compare` step**.
+   - `rag_chunks_indexed` — from `rag_index_subset` `step.data.total_chunks`
+     (the chunks emitted across this run's curated 5-file index pass —
+     PRP-40 does **not** emit a `chunks_indexed` key). `curated_hits`
+     (files matched against the curated allow-list) is the natural
+     files-indexed companion; `indexed` / `updated` / `unchanged` /
+     `failed` give per-file outcome counts on the same payload.
    The hook returns derived counters; the tile renders `Card` + a single
    number + label.
 
@@ -189,6 +232,23 @@ Five cross-cutting polish surfaces, all additive.
    from `step.data` when `step_name === 'ops_snapshot'` (5 number tiles in a
    `grid grid-cols-5 gap-2 text-xs` layout).
 
+7. **Phase accordion unlock after completion (fold-in of issue #311)** —
+   `frontend/src/components/demo/DemoPhasePanel.tsx` currently renders the
+   shadcn `<Accordion value={value}>` fully-controlled with no
+   `onValueChange` handler. While the pipeline runs, `value` follows
+   `runningPhase` and auto-advances the open panel — works as intended.
+   After `pipeline_complete`, `runningPhase` becomes `null` and `value`
+   falls back to `phases[0]?.id` (i.e., `'data'`); clicks on later phase
+   headers register focus but Radix immediately snaps the open panel back
+   to `data` because the controlled `value` never moves. The PRP-41
+   Inspect-Artifacts panel + Run-history Replay UX assumes the visitor
+   can re-open any phase post-run to inspect step cards, so this is
+   load-bearing polish for the dogfood checklist below.
+   Fix: thread an `onValueChange={setValue}` handler (with `value` lifted
+   to local state seeded from `runningPhase`), so post-run clicks toggle
+   panels normally and a fresh run reseats the running phase. Tracked by
+   GitHub issue #311.
+
 ### Walkthrough docs (in scope of PRP-41 only)
 
 PRP-41 updates `docs/user-guide/showcase-walkthrough.md` (the planning-track
@@ -239,48 +299,59 @@ PRP-41 also does NOT add:
 | D7 | `showcase-rich` end-to-end (PRP-38 + PRP-39 + PRP-40 + PRP-41 phases) still ≤ 240 s. | `pytest -m integration` wall-clock assertion |
 | D8 | Backend `_phase_table()` and frontend `PHASE_DEFS` still match. | `test_phase_table_stable` (both sides) |
 | D9 | All five validation gates green. | CI |
+| D10 | Phase accordion is no longer pinned to `data` after `pipeline_complete`; clicking any later phase header opens it (closes issue #311). | Manual dogfood + a new `DemoPhasePanel.test.tsx` case asserting `onValueChange` toggles the open panel post-run |
 
 ## EXAMPLES:
 
 **Pattern to imitate (the existing demo slice — PRP-38..40 baseline):**
 
-- `app/features/demo/pipeline.py:606-648` — existing `step_agent` (the
-  single-turn chat). `agent_hitl_flow` extends this pattern with the
-  approval round-trip; the `_StepError` → `skip` mapping stays identical.
-- `app/features/demo/pipeline.py:651-660` — existing `step_cleanup`
-  (session-close pattern). `agent_hitl_flow` reuses `ctx.session_id` so
-  cleanup keeps working unchanged.
-- `app/features/demo/pipeline.py:203-219` — `_llm_key_present()`
-  skip-gracefully gate. `agent_hitl_flow` MUST call this first.
-- `app/features/demo/pipeline.py:670-684` — `_step_table()`. PRP-41 replaces
-  the `("agent", step_agent)` entry and appends `("ops_snapshot", …)`.
+- `app/features/demo/pipeline.py::step_agent` — existing single-turn chat
+  step. `agent_hitl_flow` extends this pattern with the approval
+  round-trip; the `_StepError` → `skip` mapping stays identical. (Locate
+  by symbol — PRP-39 + PRP-40 shifted file lines substantially.)
+- `app/features/demo/pipeline.py::step_cleanup` — existing session-close
+  pattern. `agent_hitl_flow` reuses `ctx.session_id` so cleanup keeps
+  working unchanged.
+- `app/features/demo/pipeline.py::_llm_key_present` — skip-gracefully gate.
+  `agent_hitl_flow` MUST call this first.
+- `app/features/demo/pipeline.py::_step_table` (and the matching
+  `_phase_table`). PRP-41 replaces the `("agent", step_agent)` entry and
+  appends `("ops_snapshot", …)`.
 
 **Pattern to imitate (agents HITL flow):**
 
-- `app/features/agents/service.py:640-720` — `approve_action` is the
-  endpoint `agent_hitl_flow` calls. Returns the approved tool's result.
-- `app/features/agents/service.py:540-580` — `approval_required` event
-  emission (the shape the chat response carries when a gated tool is hit).
-- `app/features/agents/agents/experiment.py:419-480` — `tool_save_scenario`
-  is gated by `requires_approval("save_scenario")` and lives in
-  `agent_require_approval` (`app/core/config.py:184`). PRP-41 does NOT
+- `app/features/agents/service.py::approve_action` — the endpoint
+  `agent_hitl_flow` calls. Returns the approved tool's result.
+- `app/features/agents/service.py` — `approval_required` event emission
+  (grep for `event_type="approval_required"`; the shape the chat response
+  carries when a gated tool is hit).
+- `app/features/agents/agents/experiment.py::tool_save_scenario` — gated by
+  `requires_approval("save_scenario")` and lives in `agent_require_approval`
+  (`app/core/config.py:184` — verified single-line cite). PRP-41 does NOT
   widen this list — it consumes the existing gate.
 
 **Pattern to imitate (ops snapshot):**
 
-- `app/features/ops/routes.py:22-52` — `GET /ops/summary`.
-- `app/features/ops/routes.py:55-88` — `GET /ops/retraining-candidates`.
-- `app/features/ops/routes.py:91-…` — `GET /ops/model-health`.
+- `app/features/ops/routes.py::get_ops_summary` — `GET /ops/summary`.
+- `app/features/ops/routes.py::get_retraining_candidates` — `GET /ops/retraining-candidates` (takes `?limit=` only).
+- `app/features/ops/routes.py::get_model_health` — `GET /ops/model-health`
+  (takes `?limit=` only; **no `grain` query param** — results are sorted
+  degrading-first across all grains).
 - `app/features/ops/schemas.py` — `OpsSummaryResponse`,
   `RetrainingCandidatesResponse`, `ModelHealthResponse`. Verify the response
-  shape in the Task 1 contract probe.
+  shape in the Task 1 contract probe. Key fields actually on
+  `OpsSummaryResponse`: `system`, `jobs`, `runs`, `aliases: list[AliasHealth]`,
+  `freshness`, `attention_items`, `generated_at` — no flat
+  `stale_aliases` / `alias_count` keys; derive those.
 
 **Pattern to imitate (frontend):**
 
-- `frontend/src/hooks/use-demo-pipeline.ts:145-188` — existing hook shape;
-  `stop()` is a new `useCallback` that calls the already-imported
-  `disconnect()` from `useWebSocket()` and resets the step state to idle.
-- `frontend/src/pages/showcase.tsx:14-22` — `useDemoPipeline()` consumer
+- `frontend/src/hooks/use-demo-pipeline.ts::useDemoPipeline` — existing
+  hook shape; the hook already holds a `disconnectRef` pointing at the
+  `disconnect()` returned by `useWebSocket()`. `stop()` is a new
+  `useCallback` that calls `disconnectRef.current?.()` and resets the step
+  state to idle.
+- `frontend/src/pages/showcase.tsx` — `useDemoPipeline()` consumer
   pattern; `stop` joins the destructure alongside `start`.
 - `frontend/src/lib/constants.ts:ROUTES` — deep-link source of truth the
   Inspect-Artifacts panel consumes; PRP-41 adds no new routes (every page
