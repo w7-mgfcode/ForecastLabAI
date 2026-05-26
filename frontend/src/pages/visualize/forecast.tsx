@@ -117,7 +117,7 @@ export default function ForecastPage() {
   // from `job.result.model_path` directly. Recorded in memory
   // `[[scenario-run-id-vs-registry-run-id]]`.
   const trainJobMetadata = useJobFeatureMetadata(trainJobId, !!trainJobId)
-  const trainFamily = trainJobMetadata.data?.model_family
+  const loadedTrainFamily = trainJobMetadata.data?.model_family
 
   async function handleRunForecast() {
     if (!trainRunId) return
@@ -494,8 +494,8 @@ export default function ForecastPage() {
                   <CollapsibleTrigger className="flex w-full items-center justify-between gap-2">
                     <CardTitle className="flex items-center gap-2 text-base">
                       Model details
-                      {trainFamily ? (
-                        <ModelFamilyBadge family={trainFamily} />
+                      {loadedTrainFamily ? (
+                        <ModelFamilyBadge family={loadedTrainFamily} />
                       ) : null}
                     </CardTitle>
                     <span className="text-xs text-muted-foreground">
