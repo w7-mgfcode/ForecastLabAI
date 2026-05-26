@@ -769,15 +769,15 @@ Task 7 — EXTEND backtesting metrics with RMSE + per-horizon-bucket helper:
   - EXTEND MetricsCalculator.calculate_all to include rmse alongside mae/smape/wape/bias.
   - DO NOT change aggregate_fold_metrics signature; ADD a sibling aggregate_bucket_metrics(fold_bucket_metrics: list[dict[str, dict[str, float]]]) -> dict[str, dict[str, float]] that returns per-bucket means across folds, skipping NaN.
 
-Task 8 — WIRE backtesting service to emit per-fold horizon_bucket_metrics:
+Task 8 — WIRE backtesting service to emit per-fold horizon_bucket_metrics (V1 fold path only):
+  - SCOPE: this Task lands bucket metrics on the EXISTING V1 fold path only. V2 backtesting dispatch was DEFERRED in PRP-35 (tracked at #299), so there is no V1/V2 fold-loop dispatch to preserve in `backtesting/service.py` today. V2 bucket-metric emission lands jointly with the V2 dispatch follow-up under #299 — DO NOT attempt to add it here.
   - app/features/backtesting/service.py:
     - For each fold, compute `horizon_offsets = [(test_dates[i] - test_dates[0]).days + 1 for i in range(len(test_dates))]` (test_dates[0] is horizon day 1).
     - After computing the existing per-fold metrics, call compute_bucket_metrics(actuals, predictions, horizon_offsets) and attach to FoldResult.horizon_bucket_metrics.
     - After the fold loop, compute aggregate_bucket_metrics across all fold_bucket_metric dicts → main_model_results.bucketed_aggregate_metrics.
     - Mirror for baseline_results when baselines are run alongside.
-  - PRESERVE the V1/V2 dispatch PRP-35 Task 13 added — no change to it.
   - PRESERVE leakage_check_passed flow.
-  - LOG: per-fold metric log lines now include feature_frame_version (already added by PRP-35) AND the bucket count.
+  - LOG: per-fold metric log lines include the bucket count. `feature_frame_version` will be added to the log line when V2 dispatch ships under #299; do NOT add it here.
 
 Task 9 — EXTEND backtesting schemas:
   - FoldResult: add horizon_bucket_metrics: dict[str, dict[str, float]] = Field(default_factory=dict, ...).
@@ -1267,10 +1267,20 @@ patch the relevant Task in this PRP file BEFORE writing any new code.
    `TrainRequest.feature_groups: list[str] | None = None` exist on the
    schema with the V1-rejects-feature_groups validator (the post-patch
    wording from this conversation). PRP-35 Task 7 promises this.
-7. `backtesting/service.py` already reads
-   `bundle.metadata.get("feature_frame_version", 1)` BEFORE the fold loop
-   AND dispatches the build_*_feature_rows_v2 calls at the V1 call sites
-   (lines 493 / 553 in the V1 codebase). PRP-35 Task 13 promises this.
+7. ⚠️ **VERIFIED FAILED — backtesting V2 dispatch was DEFERRED.** PRP-35
+   Task 13 ("read `feature_frame_version` from the fitted bundle BEFORE the
+   fold loop") was NOT part of PRP-35's final shipped scope — see
+   `PRPs/ai_docs/prp-35-final-contract-snapshot.md` § 10. The literal
+   wording is incompatible with `backtesting/service.py`'s architecture
+   (trains fresh per fold from `BacktestConfig.model_config_main`, never
+   loads a bundle); the re-designed surface — additive
+   `feature_frame_version` + `feature_groups` on `BacktestConfig` plus V2
+   fold feature construction — is tracked at issue **#299**. On `dev` today,
+   `backtesting/service.py` calls only the V1 `build_historical_feature_rows`
+   / `build_future_feature_rows` builders at lines 493 / 553; it does not
+   read `bundle.metadata` and has zero mentions of `feature_frame_version`.
+   Task 8 has been re-scoped to the V1 fold path only; V2 bucket-metric
+   emission lands jointly with #299.
 8. `forecasting/service.py` already writes `feature_frame_version` AND
    `feature_groups` into `extra_metadata` (and thence `model_run.runtime_info`
    via the registry create_run path). PRP-35 Task 9 promises this.
@@ -1280,8 +1290,13 @@ patch the relevant Task in this PRP file BEFORE writing any new code.
    `assemble_v2_historical_sidecar`, `assemble_v2_future_sidecar`. PRP-35
    Task 8 promises this. The model_zoo backtest path reuses them.
 10. `FeatureGroup` enum names match the values used in
-    `DEFAULT_V2_GROUPS = (TARGET_HISTORY, ROLLING, TREND, CALENDAR,
-    PRICE_PROMO, LIFECYCLE)`. PRP-35 Task 1 promises this.
+    `DEFAULT_V2_GROUPS = (TARGET_HISTORY, CALENDAR, ROLLING, TREND,
+    PRICE_PROMO, LIFECYCLE)`. Verified on `dev @ f2bf7c8`: membership
+    matches; canonical ordering has CALENDAR at position 2 (corrected
+    here — the original assumption had CALENDAR at position 4). Group
+    ordering is documentation-only; the canonical column manifest in
+    `app/shared/feature_frames/contract_v2.py` drives output order, not
+    the enum tuple. See snapshot § 3.
 
 If ANY assumption above fails Task 1 verification: open a `chore(docs):
 refresh PRP-36 against PRP-35 final contract (#<this-issue>)` PR that
