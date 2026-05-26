@@ -5,7 +5,8 @@ import { toast } from 'sonner'
 import { useModelHealth, useOpsSummary, useRetrainingCandidates } from '@/hooks/use-ops'
 import { useProviderHealth } from '@/hooks/use-config'
 import { useCreateJob } from '@/hooks/use-jobs'
-import { useCreateAlias } from '@/hooks/use-runs'
+import { useCreateAlias, useRun, useAliases } from '@/hooks/use-runs'
+import { PromoteConfirmationDialog } from '@/components/forecast-intelligence/promote-confirmation-dialog'
 import {
   attentionBadgeVariant,
   attentionItemLink,
@@ -47,7 +48,6 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Input } from '@/components/ui/input'
 import { downloadCsv, toCsv } from '@/lib/csv-export'
 import { attentionCsvColumns, buildIncidentMarkdown, downloadMarkdown } from '@/lib/incident-report'
 import { buildRetrainJob } from '@/lib/ops-actions'
@@ -98,13 +98,32 @@ export default function OpsPage() {
   const candidatesQuery = useRetrainingCandidates()
   const modelHealthQuery = useModelHealth()
   const providerQuery = useProviderHealth()
+  const aliasesQuery = useAliases()
   const createJob = useCreateJob()
   const createAlias = useCreateAlias()
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [retrainConfirmOpen, setRetrainConfirmOpen] = useState(false)
   const [actionBusy, setActionBusy] = useState(false)
   const [promoteTarget, setPromoteTarget] = useState<PromoteTarget | null>(null)
-  const [aliasName, setAliasName] = useState('')
+
+  // PRP-37 — load the candidate run + the current champion's run (when a
+  // production alias points at this grain) for the safer Promote dialog.
+  const promoteRunQuery = useRun(
+    promoteTarget?.runId ?? '',
+    promoteTarget !== null,
+  )
+  const aliasList = aliasesQuery.data ?? []
+  const championAlias = promoteTarget
+    ? aliasList.find(
+        (a) =>
+          (a.alias_name === 'production' || a.alias_name === 'champion') &&
+          a.run_id !== promoteTarget.runId,
+      )
+    : undefined
+  const championRunQuery = useRun(
+    championAlias?.run_id ?? '',
+    !!championAlias?.run_id,
+  )
 
   if (summaryQuery.error) {
     return (
@@ -200,12 +219,11 @@ export default function OpsPage() {
   /** Open the promote-to-alias dialog for a grain's latest successful run. */
   function openPromote(runId: string | null, storeId: number, productId: number) {
     if (runId === null) return
-    setAliasName('')
     setPromoteTarget({ runId, storeId, productId })
   }
 
   /** Promote the targeted run to a deployment alias via POST /registry/aliases. */
-  async function runPromote() {
+  async function runPromote(aliasName: string) {
     if (promoteTarget === null) return
     const target = promoteTarget
     const name = aliasName.trim()
@@ -218,6 +236,16 @@ export default function OpsPage() {
     }
     setActionBusy(false)
     setPromoteTarget(null)
+  }
+
+  /** PRP-36 enum → human-readable reason chip label. */
+  function staleReasonLabel(reason: string | null): string {
+    if (reason === null) return '—'
+    if (reason === 'feature_frame_version_mismatch') return 'V mismatch'
+    if (reason === 'newer_success_run') return 'newer success run'
+    if (reason === 'artifact_not_verified') return 'artifact not verified'
+    if (reason === 'run_not_success') return 'run not success'
+    return reason
   }
 
   return (
@@ -417,6 +445,81 @@ export default function OpsPage() {
             </CardContent>
           </Card>
 
+          {/* PRP-37 — Stale aliases. Surfaces the new
+              feature_frame_version_mismatch reason chip (PRP-36) alongside
+              the existing newer-run / artifact-not-verified / run-not-success
+              reasons. */}
+          {summary.aliases.some((a) => a.is_stale) && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Stale aliases</CardTitle>
+                <CardDescription>
+                  Deployment aliases the Control Center flagged as out of date.
+                  Each row carries the precise stale reason and (when known)
+                  the alias vs. comparable run's feature_frame_version.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Alias</TableHead>
+                      <TableHead>Grain</TableHead>
+                      <TableHead>Reason</TableHead>
+                      <TableHead>Alias V</TableHead>
+                      <TableHead>Comparable V</TableHead>
+                      <TableHead className="text-right">WAPE</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {summary.aliases
+                      .filter((a) => a.is_stale)
+                      .map((alias) => (
+                        <TableRow
+                          key={`${alias.alias_name}-${alias.run_id}`}
+                          data-testid={`stale-alias-row-${alias.alias_name}`}
+                        >
+                          <TableCell className="font-medium">
+                            {alias.alias_name}
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">
+                            store {alias.store_id} / product{' '}
+                            {alias.product_id}
+                          </TableCell>
+                          <TableCell>
+                            <StatusBadge
+                              variant={
+                                alias.stale_reason ===
+                                'feature_frame_version_mismatch'
+                                  ? 'warning'
+                                  : 'info'
+                              }
+                              data-testid={`stale-reason-${alias.alias_name}`}
+                            >
+                              {staleReasonLabel(alias.stale_reason)}
+                            </StatusBadge>
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">
+                            {alias.alias_feature_frame_version
+                              ? `V${alias.alias_feature_frame_version}`
+                              : '—'}
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">
+                            {alias.comparable_run_feature_frame_version
+                              ? `V${alias.comparable_run_feature_frame_version}`
+                              : '—'}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {alias.wape === null ? '—' : alias.wape.toFixed(1)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Section 5 — Model Health */}
           <Card>
             <CardHeader>
@@ -441,14 +544,19 @@ export default function OpsPage() {
                       <TableHead>Product</TableHead>
                       <TableHead>Drift</TableHead>
                       <TableHead className="text-right">Latest WAPE</TableHead>
+                      <TableHead className="text-right">Prev WAPE</TableHead>
                       <TableHead className="text-right">Δ WAPE</TableHead>
-                      <TableHead className="text-right">Runs</TableHead>
+                      <TableHead className="text-right">Runs evaluated</TableHead>
+                      <TableHead className="text-right">Staleness</TableHead>
                       <TableHead className="text-right">Action</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {modelHealthEntries.map((entry) => (
-                      <TableRow key={`${entry.store_id}-${entry.product_id}`}>
+                      <TableRow
+                        key={`${entry.store_id}-${entry.product_id}`}
+                        data-testid={`model-health-row-${entry.store_id}-${entry.product_id}`}
+                      >
                         <TableCell className="font-mono text-xs">{entry.store_id}</TableCell>
                         <TableCell className="font-mono text-xs">{entry.product_id}</TableCell>
                         <TableCell>
@@ -460,10 +568,18 @@ export default function OpsPage() {
                           {entry.latest_wape === null ? '—' : entry.latest_wape.toFixed(1)}
                         </TableCell>
                         <TableCell className="text-right tabular-nums">
+                          {entry.previous_wape === null
+                            ? '—'
+                            : entry.previous_wape.toFixed(1)}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
                           {formatWapeDelta(entry.wape_delta)}
                         </TableCell>
                         <TableCell className="text-right tabular-nums">
                           {entry.run_count}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {formatStaleness(entry.staleness_days)}
                         </TableCell>
                         <TableCell className="text-right">
                           <Button
@@ -608,45 +724,21 @@ export default function OpsPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Confirm gate — promote a run to a deployment alias. */}
-      <AlertDialog
-        open={promoteTarget !== null}
-        onOpenChange={(open) => {
-          if (!open) setPromoteTarget(null)
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Promote to alias</AlertDialogTitle>
-            <AlertDialogDescription>
-              {promoteTarget
-                ? `Point a deployment alias at the latest successful run for store ${promoteTarget.storeId} / product ${promoteTarget.productId}. An existing alias of the same name is repointed.`
-                : ''}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <div className="space-y-2">
-            <label htmlFor="promote-alias-name" className="text-sm font-medium">
-              Alias name
-            </label>
-            <Input
-              id="promote-alias-name"
-              value={aliasName}
-              onChange={(event) => setAliasName(event.target.value)}
-              placeholder="e.g. production"
-              autoComplete="off"
-            />
-          </div>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={aliasName.trim() === '' || actionBusy}
-              onClick={() => void runPromote()}
-            >
-              Promote
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* PRP-37 — safer Promote dialog: artifact verify + worse-WAPE +
+          V-mismatch gates. Replaces the prior inline alias-name AlertDialog. */}
+      {promoteTarget && promoteRunQuery.data && (
+        <PromoteConfirmationDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setPromoteTarget(null)
+          }}
+          run={promoteRunQuery.data}
+          currentChampion={championRunQuery.data}
+          defaultAliasName="production"
+          onConfirm={runPromote}
+          isPromoting={actionBusy}
+        />
+      )}
     </div>
   )
 }

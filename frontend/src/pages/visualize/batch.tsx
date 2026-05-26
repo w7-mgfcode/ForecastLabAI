@@ -18,6 +18,17 @@ import { useState } from 'react'
 import { ErrorDisplay } from '@/components/common/error-display'
 import { LoadingState } from '@/components/common/loading-state'
 import { StatusBadge } from '@/components/common/status-badge'
+import { BatchPresetSelect } from '@/components/forecast-intelligence/batch-preset-select'
+import {
+  buildPresetConfigs,
+  type BatchPresetId,
+} from '@/components/forecast-intelligence/batch-preset-utils'
+import {
+  BatchMatrixPicker,
+  type MatrixRow,
+} from '@/components/forecast-intelligence/batch-matrix-picker'
+import { defaultV2Groups } from '@/lib/feature-frame-utils'
+import { FEATURE_GROUP_VALUES } from '@/types/api'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -56,8 +67,23 @@ import {
 } from '@/hooks/use-batches'
 import {
   TERMINAL_BATCH_STATES,
+  type BatchModelConfig,
   type BatchSubmitRequest,
 } from '@/types/api'
+
+const AVAILABLE_BATCH_MODELS: string[] = [
+  'naive',
+  'seasonal_naive',
+  'moving_average',
+  'weighted_moving_average',
+  'seasonal_average',
+  'regression',
+  'lightgbm',
+  'xgboost',
+  'random_forest',
+  'prophet_like',
+  'trend_regression_baseline',
+]
 
 export default function BatchRunnerPage() {
   // Last-submitted batch the page tracks. null = nothing yet.
@@ -72,6 +98,24 @@ export default function BatchRunnerPage() {
   // PRP-34: per-batch parallelism request (server runtime-clamps by the
   // global cap). Default matches the server's default of 4.
   const [maxParallel, setMaxParallel] = useState(4)
+  // PRP-37: sweep matrix — multi-model × multi-feature-pack picker.
+  const [preset, setPreset] = useState<BatchPresetId | undefined>(undefined)
+  const [matrixRows, setMatrixRows] = useState<MatrixRow[]>([])
+
+  function handlePresetChange(next: BatchPresetId) {
+    setPreset(next)
+    // Map each preset's BatchModelConfig list into MatrixRow values the
+    // BatchMatrixPicker renders. A preset with no feature_frame_version
+    // (baseline sweep) maps to V1; otherwise V2 + the preset's groups.
+    const configs = buildPresetConfigs(next)
+    setMatrixRows(
+      configs.map((config) => ({
+        model_type: config.model_type,
+        feature_frame_version: config.feature_frame_version ?? 1,
+        feature_groups: config.feature_groups ?? [],
+      })),
+    )
+  }
 
   const submit = useSubmitBatch()
   const cancel = useCancelBatch()
@@ -90,6 +134,22 @@ export default function BatchRunnerPage() {
         .map((t) => parseInt(t.trim(), 10))
         .filter((n) => !Number.isNaN(n))
 
+    // PRP-37 — translate the matrix into BatchModelConfig rows. Fall back to
+    // the single-naive submit when the matrix is empty (preserves the prior
+    // PRP-33/34 default behaviour).
+    const matrixConfigs: BatchModelConfig[] = matrixRows.map((row) => {
+      const config: BatchModelConfig = {
+        model_type: row.model_type as BatchModelConfig['model_type'],
+      }
+      if (row.feature_frame_version === 2) {
+        config.feature_frame_version = 2
+        if (row.feature_groups.length > 0) {
+          config.feature_groups = row.feature_groups
+        }
+      }
+      return config
+    })
+
     const payload: BatchSubmitRequest = {
       operation: 'backtest',
       scope: {
@@ -97,7 +157,10 @@ export default function BatchRunnerPage() {
         store_ids: parseIds(storeIds),
         product_ids: parseIds(productIds),
       },
-      model_configs: [{ model_type: 'naive', params: {} }],
+      model_configs:
+        matrixConfigs.length > 0
+          ? matrixConfigs
+          : [{ model_type: 'naive', params: {} }],
       start_date: startDate,
       end_date: endDate,
       max_parallel: maxParallel,
@@ -163,6 +226,32 @@ export default function BatchRunnerPage() {
                 onChange={(e) => setEndDate(e.target.value)}
               />
             </label>
+            <div className="space-y-3 sm:col-span-2">
+              {/* PRP-37 — preset Select + matrix picker. Preset prefills the
+                  matrix; rows can still be hand-edited afterward. */}
+              <div className="space-y-1">
+                <span className="text-sm font-medium">Sweep preset</span>
+                <BatchPresetSelect
+                  value={preset}
+                  onChange={handlePresetChange}
+                />
+                <p className="text-muted-foreground text-xs">
+                  Optional. Picking a preset overwrites the matrix below.
+                </p>
+              </div>
+              <div className="space-y-1">
+                <span className="text-sm font-medium">
+                  Sweep matrix (model × feature frame)
+                </span>
+                <BatchMatrixPicker
+                  availableModels={AVAILABLE_BATCH_MODELS}
+                  availableGroups={[...FEATURE_GROUP_VALUES]}
+                  defaults={defaultV2Groups()}
+                  value={matrixRows}
+                  onChange={setMatrixRows}
+                />
+              </div>
+            </div>
             <div className="space-y-2 sm:col-span-2">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium">

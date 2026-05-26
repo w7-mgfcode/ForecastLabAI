@@ -7,10 +7,15 @@ import { useJob, useCreateJob } from '@/hooks/use-jobs'
 import { useStores } from '@/hooks/use-stores'
 import { useProducts } from '@/hooks/use-products'
 import { BacktestFoldsChart, MetricsSummary } from '@/components/charts/backtest-folds-chart'
+import { BacktestHorizonBucketsChart } from '@/components/charts/backtest-horizon-buckets-chart'
 import { DateRangePicker } from '@/components/common/date-range-picker'
 import { EmptyState } from '@/components/common/error-display'
 import { JobPicker } from '@/components/common/job-picker'
 import { LoadingState } from '@/components/common/loading-state'
+import { ModelFamilyTabs } from '@/components/forecast-intelligence/model-family-tabs'
+import { ModelTypeSelect } from '@/components/forecast-intelligence/model-type-select'
+import { MODEL_FAMILY_MAP } from '@/components/forecast-intelligence/model-type-utils'
+import { HorizonBucketTable } from '@/components/forecast-intelligence/horizon-bucket-table'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -24,6 +29,11 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { downloadCsv, toCsv, type CsvColumn } from '@/lib/csv-export'
 import { getErrorMessage } from '@/lib/api'
+import type {
+  BacktestResponse,
+  ModelBacktestResult,
+  ModelFamily,
+} from '@/types/api'
 
 interface FoldMetric {
   fold: number
@@ -48,19 +58,11 @@ interface BacktestResult {
   }
 }
 
-// MLZOO-D / PRP-31 — Feature-aware backtesting (B.2) made the four advanced
-// families reachable from the UI. The allow-list now includes all seven
-// canonical model types; see PRP-MLZOO-B.2 for the per-fold X_train/X_future
-// split that keeps the feature-aware backtest leakage-safe.
-const MODEL_OPTIONS = [
-  { value: 'naive', label: 'Naive' },
-  { value: 'seasonal_naive', label: 'Seasonal Naive' },
-  { value: 'moving_average', label: 'Moving Average' },
-  { value: 'regression', label: 'Regression (HistGBR)' },
-  { value: 'lightgbm', label: 'LightGBM' },
-  { value: 'xgboost', label: 'XGBoost' },
-  { value: 'prophet_like', label: 'Prophet-like (additive)' },
-]
+/** Format a metric value to 2 decimal places; '—' when missing. */
+function fmt(value: number | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
+  return value.toFixed(2)
+}
 
 const foldCsvColumns: CsvColumn<FoldMetric>[] = [
   { key: 'fold', header: 'Fold' },
@@ -77,11 +79,17 @@ export default function BacktestPage() {
   // In-page "Run new backtest" form state.
   const [storeId, setStoreId] = useState('')
   const [productId, setProductId] = useState('')
+  // PRP-37 — split the flat model select into family + filtered type.
+  const [family, setFamily] = useState<ModelFamily>('baseline')
   const [modelType, setModelType] = useState('naive')
   const [dateRange, setDateRange] = useState<DateRange | undefined>()
   const [nSplits, setNSplits] = useState(5)
   const [testSize, setTestSize] = useState(14)
   const [runError, setRunError] = useState<string | null>(null)
+  // PRP-37 — per-horizon-bucket viz metric switcher (PRP-36).
+  const [bucketMetric, setBucketMetric] = useState<
+    'mae' | 'smape' | 'wape' | 'bias' | 'rmse'
+  >('wape')
 
   const { data: job, isLoading, error } = useJob(searchJobId, !!searchJobId)
   const createJob = useCreateJob()
@@ -89,8 +97,24 @@ export default function BacktestPage() {
   const storesQuery = useStores({ page: 1, pageSize: 100 })
   const productsQuery = useProducts({ page: 1, pageSize: 100 })
 
-  // Extract backtest result from job
+  // Extract backtest result from job. job.result is JSONB so we read it
+  // optimistically — the legacy `aggregated_metrics.mae_mean` shape and the
+  // PRP-36 `main_model_results.aggregated_metrics["mae"]` shape coexist in
+  // the registry.
   const backtestResult = job?.result as BacktestResult | undefined
+  const prp36 = job?.result as Partial<BacktestResponse> | undefined
+  const mainResult: ModelBacktestResult | undefined = prp36?.main_model_results
+  const baselineResults: ModelBacktestResult[] = prp36?.baseline_results ?? []
+  const rmse = mainResult?.aggregated_metrics?.['rmse']
+  const bucketed = mainResult?.bucketed_aggregated_metrics ?? null
+
+  function handleFamilyChange(next: ModelFamily) {
+    setFamily(next)
+    const valid = MODEL_FAMILY_MAP[next]
+    if (!valid.includes(modelType)) {
+      setModelType(valid[0] ?? '')
+    }
+  }
 
   // The number inputs can be cleared to 0; require a valid split count and
   // test size so an invalid backtest config can never be submitted.
@@ -177,19 +201,17 @@ export default function BacktestPage() {
               </Select>
             </div>
             <div className="space-y-1">
+              <span className="text-xs text-muted-foreground">Family</span>
+              <ModelFamilyTabs family={family} onChange={handleFamilyChange} />
+            </div>
+            <div className="space-y-1">
               <span className="text-xs text-muted-foreground">Model</span>
-              <Select value={modelType} onValueChange={setModelType}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {MODEL_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <ModelTypeSelect
+                family={family}
+                value={modelType}
+                onChange={setModelType}
+                className="w-full"
+              />
             </div>
             <div className="space-y-1">
               <span className="text-xs text-muted-foreground">Date window</span>
@@ -296,31 +318,164 @@ export default function BacktestPage() {
                 metrics={[
                   {
                     label: 'MAE',
-                    value: backtestResult.aggregated_metrics?.mae_mean ?? 0,
+                    value:
+                      mainResult?.aggregated_metrics?.['mae'] ??
+                      backtestResult.aggregated_metrics?.mae_mean ??
+                      0,
                     description: 'Mean Absolute Error',
                   },
                   {
                     label: 'sMAPE',
-                    value: backtestResult.aggregated_metrics?.smape_mean ?? 0,
+                    value:
+                      mainResult?.aggregated_metrics?.['smape'] ??
+                      backtestResult.aggregated_metrics?.smape_mean ??
+                      0,
                     unit: '%',
                     description: 'Symmetric MAPE (0-200)',
                   },
                   {
                     label: 'WAPE',
-                    value: backtestResult.aggregated_metrics?.wape_mean ?? 0,
+                    value:
+                      mainResult?.aggregated_metrics?.['wape'] ??
+                      backtestResult.aggregated_metrics?.wape_mean ??
+                      0,
                     unit: '%',
                     description: 'Weighted APE',
                   },
-                  {
-                    label: 'Stability',
-                    value: backtestResult.aggregated_metrics?.stability_index ?? 0,
-                    unit: '%',
-                    description: 'Lower is better',
-                  },
+                  // PRP-37 — RMSE is a key inside aggregated_metrics (PRP-36).
+                  // Omit entirely when absent rather than zero-padding.
+                  ...(typeof rmse === 'number'
+                    ? [
+                        {
+                          label: 'RMSE',
+                          value: rmse,
+                          description: 'Root mean squared error',
+                        },
+                      ]
+                    : [
+                        {
+                          label: 'Stability',
+                          value:
+                            backtestResult.aggregated_metrics?.stability_index ?? 0,
+                          unit: '%',
+                          description: 'Lower is better',
+                        },
+                      ]),
                 ]}
               />
             </CardContent>
           </Card>
+
+          {/* PRP-37 — Per-horizon-bucket metrics (PRP-36). Rendered only when
+              the backend emits bucketed_aggregated_metrics. */}
+          {bucketed && Object.keys(bucketed).length > 0 && (
+            <Card>
+              <CardHeader>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <CardTitle>Per-horizon-bucket metrics</CardTitle>
+                    <CardDescription>
+                      Forecast error split by horizon distance. Near-horizon
+                      buckets typically improve faster than far-horizon ones.
+                    </CardDescription>
+                  </div>
+                  <Select
+                    value={bucketMetric}
+                    onValueChange={(value) =>
+                      setBucketMetric(value as typeof bucketMetric)
+                    }
+                  >
+                    <SelectTrigger className="w-[140px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="mae">MAE</SelectItem>
+                      <SelectItem value="smape">sMAPE</SelectItem>
+                      <SelectItem value="wape">WAPE</SelectItem>
+                      <SelectItem value="bias">Bias</SelectItem>
+                      <SelectItem value="rmse">RMSE</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </CardHeader>
+              <CardContent className="grid gap-4 md:grid-cols-2">
+                <HorizonBucketTable
+                  bucketed={bucketed}
+                  metric={bucketMetric}
+                  metricLabel={bucketMetric.toUpperCase()}
+                />
+                <BacktestHorizonBucketsChart
+                  bucketed={bucketed}
+                  metric={bucketMetric}
+                  title="Bucketed view"
+                />
+              </CardContent>
+            </Card>
+          )}
+
+          {/* PRP-37 — Baseline vs. feature-aware comparison (PRP-36). Shown
+              only when the response includes one or more baseline ModelBacktestResult
+              rows. */}
+          {baselineResults.length > 0 && mainResult && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Baseline vs feature-aware</CardTitle>
+                <CardDescription>
+                  Same folds, identical splits — every baseline competes against
+                  the main feature-aware model. Lower WAPE / RMSE wins.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left">
+                      <th className="py-1.5">Model</th>
+                      <th className="py-1.5 text-right">MAE</th>
+                      <th className="py-1.5 text-right">sMAPE</th>
+                      <th className="py-1.5 text-right">WAPE</th>
+                      <th className="py-1.5 text-right">RMSE</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="border-t font-medium">
+                      <td className="py-1.5">{mainResult.model_type} (main)</td>
+                      <td className="py-1.5 text-right tabular-nums">
+                        {fmt(mainResult.aggregated_metrics?.['mae'])}
+                      </td>
+                      <td className="py-1.5 text-right tabular-nums">
+                        {fmt(mainResult.aggregated_metrics?.['smape'])}
+                      </td>
+                      <td className="py-1.5 text-right tabular-nums">
+                        {fmt(mainResult.aggregated_metrics?.['wape'])}
+                      </td>
+                      <td className="py-1.5 text-right tabular-nums">
+                        {fmt(mainResult.aggregated_metrics?.['rmse'])}
+                      </td>
+                    </tr>
+                    {baselineResults.map((b) => (
+                      <tr key={b.model_type} className="border-t">
+                        <td className="text-muted-foreground py-1.5">
+                          {b.model_type}
+                        </td>
+                        <td className="py-1.5 text-right tabular-nums">
+                          {fmt(b.aggregated_metrics?.['mae'])}
+                        </td>
+                        <td className="py-1.5 text-right tabular-nums">
+                          {fmt(b.aggregated_metrics?.['smape'])}
+                        </td>
+                        <td className="py-1.5 text-right tabular-nums">
+                          {fmt(b.aggregated_metrics?.['wape'])}
+                        </td>
+                        <td className="py-1.5 text-right tabular-nums">
+                          {fmt(b.aggregated_metrics?.['rmse'])}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Baseline Comparison */}
           {backtestResult.baseline_comparison && (
