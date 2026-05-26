@@ -135,23 +135,34 @@ def classify_drift(
     return "stable", delta
 
 
-def _run_feature_frame_version(run: ModelRun) -> int | None:
+def _run_feature_frame_version(run: ModelRun) -> int:
     """Read ``feature_frame_version`` from ``run.runtime_info`` JSONB (PRP-36).
 
-    Returns ``None`` when the key is absent (legacy V1 run) OR when the
-    runtime_info column is None. Plain ``int`` otherwise.
+    Returns the int when the key is present, else **V=1**. This is the
+    same load-bearing back-compat seam as
+    :meth:`RegistryService._feature_frame_version_filter` — a legacy run
+    that pre-dates PRP-35 is treated as V=1 everywhere in the ops layer
+    so that ``_alias_staleness`` doesn't fabricate a
+    ``feature_frame_version_mismatch`` between a legacy alias and an
+    explicit-V=1 comparable run.
+
+    Notes:
+        The schema-side :attr:`RunResponse.feature_frame_version` deliberately
+        keeps ``None`` for "key absent" — UIs that need to distinguish
+        "no V info" from "V=1" can do so off the response, while internal
+        comparison logic uses this normalized helper.
     """
     info = run.runtime_info or {}
     value = info.get("feature_frame_version")
-    if isinstance(value, int):
+    if isinstance(value, int) and value in (1, 2):
         return value
-    return None
+    return 1
 
 
 def _alias_staleness(
     run: ModelRun,
     latest_success_by_grain: dict[tuple[int, int], ModelRun],
-) -> tuple[bool, str | None, int | None, int | None]:
+) -> tuple[bool, str | None, int, int | None]:
     """Decide whether an aliased run is stale, and why (PRP-36).
 
     An alias is stale when:
@@ -171,8 +182,10 @@ def _alias_staleness(
 
     Returns:
         ``(is_stale, reason, alias_v, comparable_v)``. ``reason`` is None
-        when not stale. ``alias_v`` is always the V of the aliased run.
-        ``comparable_v`` is non-None only when the mismatch branch fires.
+        when not stale. ``alias_v`` is always an int (legacy runs without
+        the JSONB key are normalized to V=1 — see
+        :func:`_run_feature_frame_version`). ``comparable_v`` is non-None
+        only when the mismatch branch fires.
     """
     alias_v = _run_feature_frame_version(run)
     if run.status != RunStatus.SUCCESS.value:
@@ -185,7 +198,9 @@ def _alias_staleness(
     # PRP-36 — V-mismatch wins over NEWER_SUCCESS_RUN. A V1 alias with a
     # newer V2 comparable run is classified as a mismatch so Slice C can
     # surface "this alias's V is now stale" distinctly from "a newer run
-    # exists at the same V".
+    # exists at the same V". Both sides are normalized via the helper so
+    # a legacy missing-key run never spuriously mismatches an explicit
+    # V=1 comparable run.
     if alias_v != latest_v:
         return (
             True,

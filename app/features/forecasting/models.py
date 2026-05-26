@@ -89,6 +89,87 @@ class FitResult:
     metrics: dict[str, float] = field(default_factory=lambda: {})
 
 
+# ---------------------------------------------------------------------------
+# Shared PRP-36 helpers (reused by the forecasters AND the explainers).
+#
+# Centralising these here means the explainer's h=1 math always matches the
+# forecaster's predict() math byte-for-byte — no two-place drift when a
+# default changes.  These are pure functions: no I/O, no state.
+# ---------------------------------------------------------------------------
+
+
+def compute_weighted_average_weights(
+    window_size: int,
+    weight_strategy: Literal["linear", "exponential"],
+    decay: float,
+) -> np.ndarray[Any, np.dtype[np.floating[Any]]]:
+    """Build the weight vector :class:`WeightedMovingAverageForecaster` applies.
+
+    ``'linear'`` → ``np.arange(1, window_size+1)`` (newest = ``window_size``).
+    ``'exponential'`` → ``decay ** np.arange(window_size-1, -1, -1)`` (newest = 1.0).
+    """
+    if weight_strategy == "linear":
+        return np.arange(1, window_size + 1, dtype=np.float64)
+    return np.power(decay, np.arange(window_size - 1, -1, -1, dtype=np.float64))
+
+
+def compute_seasonal_average_for_offset(
+    history: np.ndarray[Any, np.dtype[np.floating[Any]]],
+    season_length: int,
+    lookback_cycles: int,
+    target_offset: int,
+    trim_outliers: bool,
+) -> tuple[float, list[float], np.ndarray[Any, np.dtype[np.floating[Any]]]]:
+    """Compute the seasonal-average forecast for one ``target_offset``.
+
+    Mirrors :meth:`SeasonalAverageForecaster.predict` exactly for a single
+    horizon step. Returns ``(forecast, samples_used, samples_after_trim)``
+    so callers can report whichever array they need:
+
+    - ``forecast`` — the mean reported by the forecaster.
+    - ``samples_used`` — the raw samples drawn from ``history``.
+    - ``samples_after_trim`` — the array the mean was actually computed
+      from (equal to ``samples_used`` when ``trim_outliers`` is off or
+      ``len(samples) < 4``).
+    """
+    samples: list[float] = []
+    for k in range(1, lookback_cycles + 1):
+        idx_from_end = k * season_length - target_offset
+        if 0 <= idx_from_end < history.size:
+            samples.append(float(history[history.size - 1 - idx_from_end]))
+    if not samples:
+        fallback = float(history[-1])
+        fallback_arr = np.asarray([fallback], dtype=np.float64)
+        return fallback, [fallback], fallback_arr
+    arr = np.asarray(samples, dtype=np.float64)
+    if trim_outliers and arr.size >= 4:
+        arr = np.sort(arr)[1:-1]
+    return float(arr.mean()), samples, arr
+
+
+def build_trend_baseline_design_row(
+    elapsed_day: int,
+    include_dow: bool,
+    include_month: bool,
+) -> np.ndarray[Any, np.dtype[np.floating[Any]]]:
+    """Build one design row matching :class:`TrendRegressionBaselineForecaster`.
+
+    Layout: ``[elapsed_day, (dow_one_hot x7)?, (month_one_hot x12)?]``.
+
+    Synthetic encodings: ``elapsed_day % 7`` for dow, ``(elapsed_day // 30) % 12``
+    for month. Calendar-agnostic and deterministic — see the forecaster's
+    docstring for the rationale.
+    """
+    cols: list[float] = [float(elapsed_day)]
+    if include_dow:
+        dow = elapsed_day % 7
+        cols.extend(1.0 if i == dow else 0.0 for i in range(7))
+    if include_month:
+        month = (elapsed_day // 30) % 12
+        cols.extend(1.0 if i == month else 0.0 for i in range(12))
+    return np.asarray(cols, dtype=np.float64)
+
+
 class BaseForecaster(ABC):
     """Abstract base class for all forecasting models.
 
@@ -560,13 +641,13 @@ class WeightedMovingAverageForecaster(BaseForecaster):
         if y_arr.size < self.window_size:
             raise ValueError(f"Need at least {self.window_size} observations, got {y_arr.size}")
         tail = y_arr[-self.window_size :]
-        if self.weight_strategy == "linear":
-            self._weights = np.arange(1, self.window_size + 1, dtype=np.float64)
-        else:  # exponential
-            self._weights = np.power(
-                self.decay,
-                np.arange(self.window_size - 1, -1, -1, dtype=np.float64),
-            )
+        # PRP-36 — weight vector built via the shared helper so the
+        # explainer reuses the identical formula.
+        self._weights = compute_weighted_average_weights(
+            window_size=self.window_size,
+            weight_strategy=self.weight_strategy,
+            decay=self.decay,
+        )
         self._last_values = tail
         self._forecast_value = float(np.average(tail, weights=self._weights))
         self._is_fitted = True
@@ -674,25 +755,21 @@ class SeasonalAverageForecaster(BaseForecaster):
         """Average matching seasonal positions for every horizon step."""
         if not self._is_fitted or self._history is None:
             raise RuntimeError("Model must be fitted before predict")
-        history = self._history
-        S = self.season_length
         out = np.zeros(horizon, dtype=np.float64)
         for j in range(horizon):
-            target_offset = j + 1  # horizon day index, 1-based
-            samples: list[float] = []
-            for k in range(1, self.lookback_cycles + 1):
-                idx_from_end = k * S - target_offset
-                if 0 <= idx_from_end < history.size:
-                    samples.append(float(history[history.size - 1 - idx_from_end]))
-            if not samples:
-                # Defensive fallback (should not trip given the fit-time
-                # ``min_required`` check). Mirrors SeasonalNaive behaviour.
-                out[j] = float(history[-1])
-                continue
-            arr = np.asarray(samples, dtype=np.float64)
-            if self.trim_outliers and arr.size >= 4:
-                arr = np.sort(arr)[1:-1]  # drop the min + max sample
-            out[j] = float(arr.mean())
+            # PRP-36 — single source of truth for the h=j+1 math. The
+            # explainer reuses ``compute_seasonal_average_for_offset`` so
+            # the two paths never drift.
+            forecast_value, _samples_used, _samples_after_trim = (
+                compute_seasonal_average_for_offset(
+                    history=self._history,
+                    season_length=self.season_length,
+                    lookback_cycles=self.lookback_cycles,
+                    target_offset=j + 1,  # 1-based horizon day index
+                    trim_outliers=self.trim_outliers,
+                )
+            )
+            out[j] = forecast_value
         return out
 
     def get_params(self) -> dict[str, Any]:
@@ -747,21 +824,17 @@ class TrendRegressionBaselineForecaster(BaseForecaster):
     # ---------------------------------------------------------------- design
 
     def _design_row(self, elapsed_day: int) -> np.ndarray[Any, np.dtype[np.floating[Any]]]:
-        """Build a single design row from a synthetic elapsed-day index.
+        """Build a single design row.
 
-        The day-of-week / month one-hot uses ``elapsed_day % 7`` and
-        ``(elapsed_day // 30) % 12`` — synthetic, calendar-agnostic
-        encodings. This keeps the forecaster pure (no external calendar
-        reference) and deterministic in the test environment.
+        Thin wrapper over :func:`build_trend_baseline_design_row` — the
+        explainer calls the module-level helper directly so the training
+        and explanation paths share one source of truth for the encoding.
         """
-        cols: list[float] = [float(elapsed_day)]
-        if self.include_dow:
-            dow = elapsed_day % 7
-            cols.extend(1.0 if i == dow else 0.0 for i in range(7))
-        if self.include_month:
-            month = (elapsed_day // 30) % 12
-            cols.extend(1.0 if i == month else 0.0 for i in range(12))
-        return np.asarray(cols, dtype=np.float64)
+        return build_trend_baseline_design_row(
+            elapsed_day=elapsed_day,
+            include_dow=self.include_dow,
+            include_month=self.include_month,
+        )
 
     def _design_matrix(
         self,

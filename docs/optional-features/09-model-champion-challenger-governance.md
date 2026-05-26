@@ -29,8 +29,8 @@ the feature contract the alias points at.
 `RegistryService.find_comparable_runs(...)` is the canonical query and
 `OpsService.get_summary` uses the same predicate to classify staleness.
 When an alias's run has `V_a` and a newer comparable SUCCESS run has
-`V_b != V_a`, the alias is marked `is_stale=true` with stale-reason
-`feature_frame_version_mismatch` (a distinct value from
+`V_b != V_a`, the alias is marked `is_stale=true` with
+`stale_reason="feature_frame_version_mismatch"` (a distinct value from
 `newer_success_run`) so Slice C can render the mismatch separately.
 
 ## User Value

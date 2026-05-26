@@ -22,6 +22,11 @@ from app.features.explainability.schemas import (
     Direction,
     DriverContribution,
 )
+from app.features.forecasting.models import (
+    build_trend_baseline_design_row,
+    compute_seasonal_average_for_offset,
+    compute_weighted_average_weights,
+)
 
 # A 1-D float series, matching the forecasters' target-array type.
 FloatArray = np.ndarray[Any, np.dtype[np.floating[Any]]]
@@ -266,9 +271,13 @@ class WeightedMovingAverageExplainer(BaseExplainer):
         self.decay = decay
 
     def _weights(self) -> FloatArray:
-        if self.weight_strategy == "linear":
-            return np.arange(1, self.window_size + 1, dtype=np.float64)
-        return np.power(self.decay, np.arange(self.window_size - 1, -1, -1, dtype=np.float64))
+        # Reuses the forecaster's weight-construction helper so the
+        # explainer and the forecaster never drift.
+        return compute_weighted_average_weights(
+            window_size=self.window_size,
+            weight_strategy=self.weight_strategy,  # type: ignore[arg-type]
+            decay=self.decay,
+        )
 
     def explain(self, y: FloatArray) -> tuple[float, list[DriverContribution]]:
         if len(y) < self.window_size:
@@ -342,40 +351,39 @@ class SeasonalAverageExplainer(BaseExplainer):
         min_required = self.season_length * 2
         if len(y) < min_required:
             raise ValueError(f"Need at least {min_required} observations")
-        # Horizon day 1 maps to history offsets {k*S - 1} for k in
-        # [1..lookback_cycles] — mirror the forecaster exactly.
-        samples: list[float] = []
-        for k in range(1, self.lookback_cycles + 1):
-            idx_from_end = k * self.season_length - 1
-            if 0 <= idx_from_end < len(y):
-                samples.append(float(y[len(y) - 1 - idx_from_end]))
-        if not samples:
-            samples = [float(y[-1])]
-        arr = np.asarray(samples, dtype=np.float64)
-        used_trim = self.trim_outliers and arr.size >= 4
-        if used_trim:
-            arr = np.sort(arr)[1:-1]
-        forecast = float(arr.mean())
+        # PRP-36 — single source of truth shared with the forecaster.
+        forecast, samples_used, samples_after_trim = compute_seasonal_average_for_offset(
+            history=y,
+            season_length=self.season_length,
+            lookback_cycles=self.lookback_cycles,
+            target_offset=1,  # h=1 — the only horizon the explainer reports.
+            trim_outliers=self.trim_outliers,
+        )
+        used_trim = self.trim_outliers and len(samples_used) >= 4
         trim_note = " after trimming the min + max samples" if used_trim else ""
+        # Dispersion is reported on the SAME array the forecast was
+        # averaged from — trimmed when trimming applied, raw otherwise —
+        # so the value matches the "what we averaged" semantic.
         drivers = [
             DriverContribution(
                 name="seasonal_window_mean",
-                feature_value=forecast,
-                contribution=forecast,
+                feature_value=float(forecast),
+                contribution=float(forecast),
                 direction="positive",
                 description=(
-                    f"The forecast averages the values from the last {len(samples)} "
+                    f"The forecast averages the values from the last {len(samples_used)} "
                     f"matching seasonal positions (every {self.season_length} days){trim_note}."
                 ),
             ),
             DriverContribution(
                 name="sample_dispersion",
-                feature_value=float(np.std(samples)),
+                feature_value=float(np.std(samples_after_trim)),
                 contribution=0.0,
                 direction="neutral",
                 description=(
                     "Context only — standard deviation across the sampled "
-                    "seasonal positions; higher values indicate the season is noisy."
+                    "seasonal positions actually averaged (post-trim when "
+                    "trim_outliers is on)."
                 ),
             ),
         ]
@@ -414,14 +422,15 @@ class TrendRegressionBaselineExplainer(BaseExplainer):
         if len(y) < 2:
             raise ValueError("Need at least 2 observations")
         elapsed_day = len(y)
-        # h=1 elapsed-day continuation: the next index after training.
-        cols: list[float] = [float(elapsed_day)]
-        if self.include_dow:
-            dow = elapsed_day % 7
-            cols.extend(1.0 if i == dow else 0.0 for i in range(7))
-        if self.include_month:
-            month = (elapsed_day // 30) % 12
-            cols.extend(1.0 if i == month else 0.0 for i in range(12))
+        # h=1 elapsed-day continuation: the next index after training. The
+        # design row is built via the SAME helper the forecaster's
+        # ``_design_row`` wraps — single source of truth for the encoding.
+        cols_arr = build_trend_baseline_design_row(
+            elapsed_day=elapsed_day,
+            include_dow=self.include_dow,
+            include_month=self.include_month,
+        )
+        cols: list[float] = [float(v) for v in cols_arr]
         if len(cols) != len(self.coefficients):
             raise ValueError(
                 f"design row width ({len(cols)}) != coefficient count ({len(self.coefficients)})"

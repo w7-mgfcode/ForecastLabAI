@@ -183,9 +183,36 @@ def _make_run(
 
 
 def test_run_feature_frame_version_reads_runtime_info() -> None:
-    """V is read from runtime_info JSONB; missing key resolves to None."""
+    """V is read from runtime_info JSONB; missing key resolves to V=1 (filter-aligned)."""
     assert _run_feature_frame_version(_make_run(run_id="a", feature_frame_version=2)) == 2
-    assert _run_feature_frame_version(_make_run(run_id="b")) is None
+    assert _run_feature_frame_version(_make_run(run_id="b")) == 1
+
+
+def test_run_feature_frame_version_rejects_unsupported_value() -> None:
+    """Unknown int (e.g. 3) or non-int values fall back to V=1 (defensive)."""
+    legacy_explicit_v3 = _make_run(run_id="bad-int")
+    legacy_explicit_v3.runtime_info = {"feature_frame_version": 3}
+    legacy_str = _make_run(run_id="bad-str")
+    legacy_str.runtime_info = {"feature_frame_version": "2"}
+    assert _run_feature_frame_version(legacy_explicit_v3) == 1
+    assert _run_feature_frame_version(legacy_str) == 1
+
+
+def test_alias_staleness_legacy_run_treated_as_v1_no_spurious_mismatch() -> None:
+    """A legacy alias (no V key) compared to an explicit-V=1 comparable is NOT stale."""
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    legacy = _make_run(run_id="legacy", created_at=older)  # no V key
+    explicit_v1 = _make_run(
+        run_id="explicit-v1",
+        created_at=older,  # same created_at → no NEWER_SUCCESS_RUN either
+        feature_frame_version=1,
+    )
+    is_stale, reason, alias_v, comparable_v = _alias_staleness(legacy, {(1, 1): explicit_v1})
+    # Both normalize to V=1 — no mismatch, no newer (same created_at), so not stale.
+    assert is_stale is False
+    assert reason is None
+    assert alias_v == 1
+    assert comparable_v is None
 
 
 def test_alias_staleness_status_branch_wins() -> None:
@@ -235,7 +262,9 @@ def test_alias_staleness_v1_alias_v1_latest_legacy_back_compat() -> None:
     is_stale, reason, alias_v, comparable_v = _alias_staleness(run, {(1, 1): run})
     assert is_stale is False
     assert reason is None
-    assert alias_v is None  # legacy run carries no V key
+    # PRP-36 — legacy missing-key normalizes to V=1 inside the ops layer
+    # so it matches the registry's _feature_frame_version_filter contract.
+    assert alias_v == 1
     assert comparable_v is None
 
 

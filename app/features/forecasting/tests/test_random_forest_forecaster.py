@@ -136,3 +136,8 @@ class TestRandomForestForecaster:
         """max_depth below the minimum surfaces a clear error."""
         with pytest.raises(ValueError, match="max_depth"):
             RandomForestForecaster(max_depth=0)
+
+    def test_invalid_min_samples_leaf_raises(self) -> None:
+        """min_samples_leaf < 1 surfaces a clear error (rounds out the validation branches)."""
+        with pytest.raises(ValueError, match="min_samples_leaf"):
+            RandomForestForecaster(min_samples_leaf=0)
