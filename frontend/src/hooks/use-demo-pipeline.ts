@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useWebSocket } from '@/hooks/use-websocket'
 import { DEMO_WS_URL } from '@/lib/constants'
-import type { DemoRunRequest, StepEvent } from '@/types/api'
+import type { DemoRunRequest, ScenarioPreset, StepEvent } from '@/types/api'
+import { PHASE_LABEL, phaseDefsForScenario } from '@/components/demo/PHASE_DEFS'
 
 // UI-side step status -- adds 'idle' to the wire-level DemoStepStatus.
 export type DemoStepUiStatus = 'idle' | 'running' | 'pass' | 'fail' | 'skip' | 'warn'
@@ -16,6 +17,8 @@ export interface DemoStep {
   detail: string
   durationMs: number
   data: Record<string, unknown>
+  /** PRP-38 — populated when the wire event carries `phase_name`. */
+  phaseName?: string
 }
 
 export interface DemoSummary {
@@ -34,37 +37,35 @@ export interface DemoPipelineState {
   errorMessage: string | null
 }
 
-// The 11 pipeline steps, in order. Mirrors the backend `_step_table()` in
-// app/features/demo/pipeline.py so the page can render idle cards before a run.
-const STEP_DEFS: ReadonlyArray<{ name: string; label: string }> = [
-  { name: 'precheck', label: 'Health check' },
-  { name: 'reset', label: 'Reset database' },
-  { name: 'seed', label: 'Seed demo data' },
-  { name: 'status', label: 'Inspect dataset' },
-  { name: 'features', label: 'Compute features' },
-  { name: 'train', label: 'Train models' },
-  { name: 'backtest', label: 'Backtest models' },
-  { name: 'register', label: 'Register winner' },
-  { name: 'verify', label: 'Verify artifact' },
-  { name: 'agent', label: 'Agent chat' },
-  { name: 'cleanup', label: 'Cleanup' },
-]
-
-/** Build the 11 step cards in their initial idle state. */
-export function createInitialSteps(): DemoStep[] {
-  return STEP_DEFS.map((def) => ({
-    name: def.name,
+/**
+ * Build the initial idle-card list for one scenario. PRP-38 — DEMO_MINIMAL
+ * keeps the legacy 11-card layout; SHOWCASE_RICH renders the full 14-card
+ * layout up front so the operator sees the whole flow at idle.
+ */
+export function createInitialSteps(
+  scenario: ScenarioPreset = 'demo_minimal'
+): DemoStep[] {
+  return phaseDefsForScenario(scenario).map((def) => ({
+    name: def.step,
     label: def.label,
     status: 'idle',
     detail: '',
     durationMs: 0,
     data: {},
+    phaseName: def.phase,
   }))
 }
 
 /** The fresh pipeline state used before a run and on reset. */
-export function initialState(): DemoPipelineState {
-  return { steps: createInitialSteps(), phase: 'idle', summary: null, errorMessage: null }
+export function initialState(
+  scenario: ScenarioPreset = 'demo_minimal'
+): DemoPipelineState {
+  return {
+    steps: createInitialSteps(scenario),
+    phase: 'idle',
+    summary: null,
+    errorMessage: null,
+  }
 }
 
 function toNumber(value: unknown): number | null {
@@ -84,7 +85,14 @@ export function applyEvent(state: DemoPipelineState, event: StepEvent): DemoPipe
   switch (event.event_type) {
     case 'step_start': {
       const steps = state.steps.map((step) =>
-        step.name === event.step_name ? { ...step, status: 'running' as const } : step
+        step.name === event.step_name
+          ? {
+              ...step,
+              status: 'running' as const,
+              // PRP-38 — adopt phase metadata from the wire when present.
+              phaseName: event.phase_name ?? step.phaseName,
+            }
+          : step
       )
       return { ...state, steps, phase: 'running' }
     }
@@ -98,6 +106,7 @@ export function applyEvent(state: DemoPipelineState, event: StepEvent): DemoPipe
               detail: event.detail,
               durationMs: event.duration_ms,
               data: event.data,
+              phaseName: event.phase_name ?? step.phaseName,
             }
           : step
       )
@@ -122,14 +131,54 @@ export function applyEvent(state: DemoPipelineState, event: StepEvent): DemoPipe
   }
 }
 
+export interface PhaseGroup {
+  id: string
+  label: string
+  steps: DemoStep[]
+}
+
+/**
+ * PRP-38 — group a flat step list by `phaseName` (set when wire events carry
+ * `phase_name`). Legacy back-compat: when no step carries a phase, returns
+ * a single `pipeline` bucket so the page still renders.
+ */
+export function derivePhases(steps: DemoStep[]): PhaseGroup[] {
+  const hasPhases = steps.some((s) => !!s.phaseName)
+  if (!hasPhases) {
+    return [{ id: 'pipeline', label: 'Pipeline', steps }]
+  }
+  const phaseOrder: string[] = []
+  const byPhase = new Map<string, DemoStep[]>()
+  for (const s of steps) {
+    const p = s.phaseName ?? 'pipeline'
+    if (!byPhase.has(p)) {
+      phaseOrder.push(p)
+      byPhase.set(p, [])
+    }
+    const bucket = byPhase.get(p)
+    if (bucket) bucket.push(s)
+  }
+  return phaseOrder.map((id) => ({
+    id,
+    label: PHASE_LABEL[id] ?? id,
+    steps: byPhase.get(id) ?? [],
+  }))
+}
+
 export interface UseDemoPipelineResult {
   steps: DemoStep[]
+  phases: PhaseGroup[]
+  /** Phase id of the most recently `running` step, for accordion auto-expand. */
+  runningPhase: string | null
   phase: DemoPhase
   summary: DemoSummary | null
   errorMessage: string | null
   isRunning: boolean
   connectionStatus: ReturnType<typeof useWebSocket>['status']
   start: (req: DemoRunRequest) => void
+  /** PRP-38 — caller-supplied scenario; controls the idle layout. */
+  setScenario: (scenario: ScenarioPreset) => void
+  scenario: ScenarioPreset
 }
 
 /**
@@ -138,9 +187,13 @@ export interface UseDemoPipelineResult {
  * `start(req)` resets the cards, opens the socket, and sends the start frame
  * once connected. The socket is closed on `pipeline_complete` / `error` so it
  * never auto-reconnects and re-triggers a run.
+ *
+ * PRP-38 — accepts a scenario so the idle-card layout matches the run that
+ * will be triggered (14 cards for SHOWCASE_RICH; 11 for DEMO_MINIMAL).
  */
 export function useDemoPipeline(): UseDemoPipelineResult {
-  const [state, setState] = useState<DemoPipelineState>(initialState)
+  const [scenario, setScenarioInternal] = useState<ScenarioPreset>('demo_minimal')
+  const [state, setState] = useState<DemoPipelineState>(() => initialState('demo_minimal'))
   const pendingReq = useRef<DemoRunRequest | null>(null)
   const disconnectRef = useRef<(() => void) | null>(null)
 
@@ -169,22 +222,39 @@ export function useDemoPipeline(): UseDemoPipelineResult {
     }
   }, [status, send])
 
+  // PRP-38 — switching scenarios from idle re-renders the idle-card layout
+  // in one state update; this avoids the lint-flagged setState-in-effect
+  // anti-pattern.
+  const setScenario = useCallback((next: ScenarioPreset) => {
+    setScenarioInternal(next)
+    setState((prev) => (prev.phase === 'idle' ? initialState(next) : prev))
+  }, [])
+
   const start = useCallback(
     (req: DemoRunRequest) => {
-      setState({ ...initialState(), phase: 'running' })
+      const nextScenario = req.scenario ?? scenario
+      setState({ ...initialState(nextScenario), phase: 'running' })
       pendingReq.current = req
       reconnect()
     },
-    [reconnect]
+    [reconnect, scenario]
   )
+
+  const phases = useMemo(() => derivePhases(state.steps), [state.steps])
+  const runningStep = state.steps.find((s) => s.status === 'running')
+  const runningPhase = runningStep?.phaseName ?? null
 
   return {
     steps: state.steps,
+    phases,
+    runningPhase,
     phase: state.phase,
     summary: state.summary,
     errorMessage: state.errorMessage,
     isRunning: state.phase === 'running',
     connectionStatus: status,
     start,
+    setScenario,
+    scenario,
   }
 }

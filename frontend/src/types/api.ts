@@ -733,6 +733,10 @@ export interface VerifyResult {
 export type DemoStepStatus = 'running' | 'pass' | 'fail' | 'skip' | 'warn'
 export type DemoEventType = 'step_start' | 'step_complete' | 'pipeline_complete' | 'error'
 
+// PRP-38 — seeder scenario presets the picker offers. Mirrors the backend
+// app/shared/seeder/config.py:ScenarioPreset enum's string values.
+export type ScenarioPreset = 'demo_minimal' | 'showcase_rich' | 'sparse'
+
 // One streamed pipeline event from WS /demo/stream (matches the backend
 // StepEvent Pydantic model; snake_case on the wire).
 export interface StepEvent {
@@ -745,6 +749,11 @@ export interface StepEvent {
   duration_ms: number
   data: Record<string, unknown>
   timestamp: string
+  // PRP-38 — additive phase grouping; Optional + Nullable for back-compat
+  // with legacy demo_minimal clients that don't see phase fields.
+  phase_name?: string | null
+  phase_index?: number | null
+  phase_total?: number | null
 }
 
 // Start frame for WS /demo/stream and request body for POST /demo/run.
@@ -752,6 +761,8 @@ export interface DemoRunRequest {
   seed?: number
   reset?: boolean
   skip_seed?: boolean
+  // PRP-38 — optional scenario picker; default is 'demo_minimal' (back-compat).
+  scenario?: ScenarioPreset
 }
 
 // Aggregate result returned by the synchronous POST /demo/run.

@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import random
 import time
 from dataclasses import replace
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.core.exceptions import UnprocessableEntityError
 from app.core.logging import get_logger
 from app.features.data_platform.models import (
     Calendar,
@@ -43,6 +47,10 @@ from app.shared.seeder.config import (
     default_seed_end_date,
     default_seed_start_date,
 )
+from app.shared.seeder.generators.exogenous import ExogenousSignalGenerator
+from app.shared.seeder.generators.lifecycle import LifecycleGenerator
+from app.shared.seeder.generators.replenishment import ReplenishmentGenerator
+from app.shared.seeder.generators.returns import ReturnsGenerator
 
 logger = get_logger(__name__)
 
@@ -812,4 +820,226 @@ async def query_exogenous(
         store_id=store_id,
         records=records,
         total=len(records),
+    )
+
+
+# ============================================================================
+# PRP-38 — Phase 2 additive enrichment
+# ============================================================================
+
+
+PHASE2_ENRICHMENT_BATCH_SIZE = 2000
+"""Batch size for inserting replenishment / exogenous / returns rows."""
+
+
+def _assign_lifecycle(
+    rng: random.Random,
+    product_ids: list[int],
+    seed_start: date,
+    seed_end: date,
+    discontinue_probability: float,
+) -> dict[int, tuple[date, date | None, str]]:
+    """Assign launch_date / discontinue_date / lifecycle_stage per product.
+
+    Mirrors the algorithm in ``scripts/seed_phase2_only.py:_assign_lifecycle``:
+    launch is drawn uniformly across the first ~70% of the seeded range so most
+    products have plenty of post-launch sales history; a small fraction get a
+    discontinue_date in the last 20% of the range.
+
+    Args:
+        rng: Seeded RNG for reproducibility.
+        product_ids: All product IDs to enrich.
+        seed_start: Earliest seeded date (from ``calendar``).
+        seed_end: Latest seeded date.
+        discontinue_probability: Per-product probability of getting a
+            ``discontinue_date``.
+
+    Returns:
+        Mapping of ``product_id`` → ``(launch_date, discontinue_date|None, stage)``.
+
+    Raises:
+        ValueError: When the seeded calendar spans 0 days.
+    """
+    span_days = (seed_end - seed_start).days
+    if span_days <= 0:
+        raise ValueError(f"Seeded calendar must span at least 1 day; got {span_days}.")
+    launch_window_days = max(1, int(span_days * 0.7))
+    out: dict[int, tuple[date, date | None, str]] = {}
+    lc_cfg = LifecycleConfig(enable=True)
+    lc_gen = LifecycleGenerator(lc_cfg)
+    for pid in product_ids:
+        offset = rng.randint(0, launch_window_days)
+        launch = seed_start.fromordinal(seed_start.toordinal() + offset)
+        disc: date | None = None
+        if rng.random() < discontinue_probability:
+            disc_offset = rng.randint(int(span_days * 0.8), span_days)
+            disc_candidate = seed_start.fromordinal(seed_start.toordinal() + disc_offset)
+            if disc_candidate > launch:
+                disc = disc_candidate
+        stage = lc_gen.stage_for(seed_end, launch, disc)
+        out[pid] = (launch, disc, stage)
+    return out
+
+
+async def phase2_enrichment(
+    db: AsyncSession,
+    params: schemas.Phase2EnrichmentRequest,
+) -> schemas.Phase2EnrichmentResponse:
+    """Run Phase 2 additive enrichment against the existing seeded data (PRP-38).
+
+    Ports the logic from ``scripts/seed_phase2_only.py`` into the seeder slice:
+
+    1. UPDATE ``product.launch_date`` / ``discontinue_date`` / ``lifecycle_stage``
+       per product (lifecycle generator).
+    2. INSERT ``replenishment_event`` rows derived from the stochastic
+       lead-time generator.
+    3. INSERT ``exogenous_signal`` rows (weather + macro).
+    4. INSERT ``sales_returns`` rows sampled from the existing
+       positive-quantity ``sales_daily`` rows.
+
+    Args:
+        db: Async database session.
+        params: Caller-supplied seed + probabilities.
+
+    Returns:
+        Phase2EnrichmentResponse with per-table row counts and wall-clock.
+
+    Raises:
+        UnprocessableEntityError: When dimensions or calendar are empty
+            (caller must seed first); when the seeded calendar spans 0 days.
+    """
+    start_time = time.perf_counter()
+    rng = random.Random(params.seed)
+
+    store_ids = sorted(r[0] for r in (await db.execute(select(Store.id))).fetchall())
+    product_ids = sorted(r[0] for r in (await db.execute(select(Product.id))).fetchall())
+    cal_rows = (await db.execute(select(Calendar.date).order_by(Calendar.date))).fetchall()
+    dates = [r[0] for r in cal_rows]
+    if not store_ids or not product_ids or not dates:
+        raise UnprocessableEntityError(
+            message=(
+                "Empty dimensions or calendar — Phase 2 enrichment requires a "
+                "seeded database. Run /seeder/generate first."
+            ),
+        )
+
+    start_date, end_date = dates[0], dates[-1]
+    logger.info(
+        "seeder.phase2_enrichment.scope",
+        stores=len(store_ids),
+        products=len(product_ids),
+        days=len(dates),
+        start_date=str(start_date),
+        end_date=str(end_date),
+        seed=params.seed,
+    )
+
+    # ---- 1) Lifecycle: UPDATE per product
+    try:
+        lifecycle_map = _assign_lifecycle(
+            rng,
+            product_ids,
+            start_date,
+            end_date,
+            discontinue_probability=params.discontinue_probability,
+        )
+    except ValueError as exc:
+        raise UnprocessableEntityError(message=str(exc)) from exc
+    for pid, (launch, disc, stage) in lifecycle_map.items():
+        await db.execute(
+            update(Product)
+            .where(Product.id == pid)
+            .values(launch_date=launch, discontinue_date=disc, lifecycle_stage=stage)
+        )
+    product_updates = len(lifecycle_map)
+    await db.commit()
+
+    # ---- 2) Replenishment events
+    lt_cfg = LeadTimeConfig(
+        enable=True,
+        mean_lead_time_days=7,
+        lead_time_sigma_days=1.5,
+        safety_stock_days=3,
+        order_frequency_days=14,
+        fill_rate_mean=0.97,
+        fill_rate_sigma=0.05,
+    )
+    rep_gen = ReplenishmentGenerator(rng, lt_cfg)
+    rep_records = rep_gen.generate(store_ids, product_ids, dates, base_demand=100)
+    for i in range(0, len(rep_records), PHASE2_ENRICHMENT_BATCH_SIZE):
+        chunk = rep_records[i : i + PHASE2_ENRICHMENT_BATCH_SIZE]
+        if chunk:
+            await db.execute(pg_insert(ReplenishmentEvent).values(chunk))
+    await db.commit()
+
+    # ---- 3) Exogenous signals (weather + macro)
+    ex_cfg = ExogenousSignalConfig(
+        enable_weather=True,
+        enable_macro=True,
+        enable_events=False,
+        weather_climatology_mean_c=15.0,
+        weather_amplitude_c=12.0,
+        weather_noise_sigma_c=2.0,
+        macro_initial_value=100.0,
+        macro_step_sigma=0.5,
+    )
+    ex_gen = ExogenousSignalGenerator(rng, ex_cfg)
+    ex_records = ex_gen.generate(dates, store_ids)
+    for i in range(0, len(ex_records), PHASE2_ENRICHMENT_BATCH_SIZE):
+        chunk = ex_records[i : i + PHASE2_ENRICHMENT_BATCH_SIZE]
+        if chunk:
+            await db.execute(pg_insert(ExogenousSignal).values(chunk))
+    await db.commit()
+
+    # ---- 4) Sales returns (sampled from existing positive-quantity sales)
+    ret_cfg = ReturnsConfig(
+        enable=True,
+        return_probability=params.returns_probability,
+        return_lag_days_min=1,
+        return_lag_days_max=14,
+        return_quantity_fraction=0.5,
+    )
+    ret_gen = ReturnsGenerator(rng, ret_cfg)
+    sales_rows = (
+        await db.execute(
+            select(
+                SalesDaily.date,
+                SalesDaily.store_id,
+                SalesDaily.product_id,
+                SalesDaily.quantity,
+            ).where(SalesDaily.quantity > 0)
+        )
+    ).fetchall()
+    sales_records: list[dict[str, date | int | Decimal]] = [
+        {
+            "date": r[0],
+            "store_id": r[1],
+            "product_id": r[2],
+            "quantity": int(r[3]),
+        }
+        for r in sales_rows
+    ]
+    ret_records = ret_gen.generate(sales_records, end_date)
+    for i in range(0, len(ret_records), PHASE2_ENRICHMENT_BATCH_SIZE):
+        chunk = ret_records[i : i + PHASE2_ENRICHMENT_BATCH_SIZE]
+        if chunk:
+            await db.execute(pg_insert(SalesReturn).values(chunk))
+    await db.commit()
+
+    duration_ms = (time.perf_counter() - start_time) * 1000.0
+    counts = {
+        "product": product_updates,
+        "replenishment_event": len(rep_records),
+        "exogenous_signal": len(ex_records),
+        "sales_returns": len(ret_records),
+    }
+    logger.info(
+        "seeder.phase2_enrichment.complete",
+        duration_ms=duration_ms,
+        **counts,
+    )
+    return schemas.Phase2EnrichmentResponse(
+        success=True,
+        records_created=counts,
+        duration_ms=duration_ms,
     )

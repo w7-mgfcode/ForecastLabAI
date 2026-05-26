@@ -13,6 +13,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.shared.seeder.config import ScenarioPreset
+
 # One pipeline step's outcome.
 StepStatus = Literal["running", "pass", "fail", "skip", "warn"]
 # Kind of streamed event.
@@ -44,6 +46,19 @@ class DemoRunRequest(BaseModel):
         default=True,
         description="Assume an already-seeded database and skip the slow seed step.",
     )
+    # PRP-38: optional scenario picker. Default keeps existing demo_minimal
+    # behaviour wire-compatible with prior clients that omit the field.
+    # ``strict=False`` overrides the model-level ``strict=True`` so FastAPI's
+    # ``validate_python`` (called on the JSON-parsed dict) accepts the enum's
+    # string value form (e.g. ``"showcase_rich"``) on the wire — the same
+    # pattern used for ``date`` fields elsewhere in the repo (see
+    # ``docs/_base/SECURITY.md`` -> "Pydantic v2 strict mode on FastAPI
+    # request bodies").
+    scenario: ScenarioPreset = Field(
+        default=ScenarioPreset.DEMO_MINIMAL,
+        strict=False,
+        description="Seeder scenario preset that drives the pipeline shape.",
+    )
 
 
 class StepEvent(BaseModel):
@@ -70,6 +85,22 @@ class StepEvent(BaseModel):
         description="Structured payload (per-model metrics, run_id, ...).",
     )
     timestamp: datetime = Field(default_factory=_utc_now)
+    # PRP-38: additive phase grouping. Optional + Nullable so legacy clients
+    # that don't render phases keep working. Phase indices are 1-based.
+    phase_name: str | None = Field(
+        default=None,
+        description="Phase id (e.g. 'data', 'modeling'). None on summary events.",
+    )
+    phase_index: int | None = Field(
+        default=None,
+        ge=1,
+        description="1-based phase position across all phases of this run.",
+    )
+    phase_total: int | None = Field(
+        default=None,
+        ge=1,
+        description="Total number of distinct phases in this run.",
+    )
 
 
 class DemoRunResult(BaseModel):

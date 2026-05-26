@@ -1,6 +1,10 @@
+import { ArrowUpRight } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import type { DemoStep, DemoStepUiStatus } from '@/hooks/use-demo-pipeline'
+import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
+import { HorizonBucketsMini } from './HorizonBucketsMini'
 
 // Status glyphs -- the vocabulary from .claude/rules/output-formatting.md.
 const STATUS_GLYPH: Record<DemoStepUiStatus, string> = {
@@ -85,11 +89,19 @@ function RegisterDetail({ data }: { data: Record<string, unknown> }) {
 interface DemoStepCardProps {
   step: DemoStep
   index: number
+  /** Optional deep-link href; rendered as an Inspect button on terminal pass. */
+  inspectHref?: string | null
 }
 
 /** One pipeline step rendered as a status card. */
-export function DemoStepCard({ step, index }: DemoStepCardProps) {
+export function DemoStepCard({ step, index, inspectHref }: DemoStepCardProps) {
   const duration = formatDuration(step.durationMs)
+  // PRP-38 — bucketed metrics ride alongside per_model on the backtest step
+  // when the SHOWCASE_RICH path is active (main model is feature-aware).
+  const bucketed = step.data.bucketed_aggregated_metrics as
+    | Record<string, Record<string, number>>
+    | undefined
+  const showInspect = step.status === 'pass' && typeof inspectHref === 'string' && inspectHref
   return (
     <Card
       className={cn(
@@ -123,7 +135,20 @@ export function DemoStepCard({ step, index }: DemoStepCardProps) {
             <p className="mt-1 break-words text-sm text-muted-foreground">{step.detail}</p>
           )}
           {step.name === 'backtest' && <BacktestBreakdown data={step.data} />}
+          {step.name === 'backtest' && bucketed && (
+            <HorizonBucketsMini bucketed={bucketed} />
+          )}
           {step.name === 'register' && <RegisterDetail data={step.data} />}
+          {showInspect && (
+            <div className="mt-3">
+              <Button asChild variant="outline" size="sm">
+                <Link to={inspectHref}>
+                  Inspect
+                  <ArrowUpRight className="ml-1 h-3 w-3" />
+                </Link>
+              </Button>
+            </div>
+          )}
         </div>
       </div>
     </Card>

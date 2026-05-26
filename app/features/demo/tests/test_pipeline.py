@@ -15,6 +15,7 @@ from fastapi import FastAPI
 
 from app.features.demo import pipeline
 from app.features.demo.schemas import DemoRunRequest
+from app.shared.seeder.config import ScenarioPreset
 
 # A bare app instance -- the fake clients ignore it; it only satisfies the
 # run_pipeline(app: FastAPI, ...) signature.
@@ -55,15 +56,63 @@ def _canned_response(
     if path == "/backtesting/run":
         assert json_body is not None
         model_type = json_body["config"]["model_config_main"]["model_type"]
-        return {
+        wape = wapes.get(model_type, 0.5)
+        # PRP-38 — include_baselines=True adds a baseline_results block;
+        # bucketed_aggregated_metrics populated for the showcase-rich flow.
+        include_baselines = bool(json_body["config"].get("include_baselines"))
+        response: dict[str, Any] = {
             "main_model_results": {
-                "aggregated_metrics": {"wape": wapes[model_type], "mae": 1.0, "smape": 12.0}
+                "aggregated_metrics": {
+                    "wape": wape,
+                    "mae": 1.0,
+                    "rmse": 1.5,
+                    "smape": 12.0,
+                },
+                "bucketed_aggregated_metrics": {
+                    "h_1_7": {"wape": wape * 0.9, "mae": 0.9, "rmse": 1.3, "smape": 11.0},
+                    "h_8_14": {"wape": wape * 1.1, "mae": 1.1, "rmse": 1.7, "smape": 13.0},
+                },
             }
         }
+        if include_baselines:
+            response["baseline_results"] = [
+                {
+                    "model_type": "naive",
+                    "aggregated_metrics": {"wape": wapes.get("naive", 0.3)},
+                },
+                {
+                    "model_type": "seasonal_naive",
+                    "aggregated_metrics": {"wape": wapes.get("seasonal_naive", 0.2)},
+                },
+            ]
+        return response
     if path == "/registry/runs":
         return {"run_id": "demo-run-abc123def456"}
+    if path == "/seeder/phase2-enrichment":
+        return {
+            "success": True,
+            "records_created": {
+                "product": 15,
+                "replenishment_event": 1300,
+                "exogenous_signal": 360,
+                "sales_returns": 42,
+            },
+            "duration_ms": 234.5,
+        }
     if path.endswith("/verify"):
         return {"verified": True}
+    if path.endswith("/feature-metadata"):
+        return {
+            "run_id": "demo-run-abc123def456",
+            "model_type": "prophet_like",
+            "model_family": "additive",
+            "feature_columns": ["lag_1", "lag_7", "dow", "month"],
+            "features": [],
+            "importance_type": "ridge_coef",
+            "feature_frame_version": 2,
+            "feature_groups": {"target_history": ["lag_1", "lag_7"], "calendar": ["dow", "month"]},
+            "feature_safety_classes": {"lag_1": "leak_safe"},
+        }
     if path.startswith("/registry/runs/"):  # PATCH pending->running->success
         return {}
     if path == "/registry/aliases":
@@ -298,3 +347,174 @@ async def test_run_pipeline_transport_error_becomes_fail(monkeypatch):
     assert completes[0].status == "fail"
     assert "transport error" in completes[0].detail
     assert events[-1].status == "fail"
+
+
+# =============================================================================
+# PRP-38 — phase grouping + new scenarios
+# =============================================================================
+
+
+def test_phase_table_demo_minimal_matches_legacy_11_steps():
+    """PRP-38 — phase_table for DEMO_MINIMAL drops to the legacy 11-step flow.
+
+    Test gates the (phase_name, step_name) lockstep contract with the frontend
+    PHASE_DEFS.ts. If a phase or step is added in either tier without the
+    matching change here, this test fails.
+    """
+    rows = pipeline._phase_table(ScenarioPreset.DEMO_MINIMAL)
+    by_phase_step = [(p, s) for p, s, _fn in rows]
+    assert by_phase_step == [
+        ("data", "precheck"),
+        ("data", "reset"),
+        ("data", "seed"),
+        ("data", "status"),
+        ("data", "features"),
+        ("modeling", "train"),
+        ("decision", "backtest"),
+        ("decision", "register"),
+        ("verify", "verify"),
+        ("agent", "agent"),
+        ("cleanup", "cleanup"),
+    ]
+
+
+def test_phase_table_showcase_rich_adds_v2_steps():
+    """PRP-38 — phase_table for SHOWCASE_RICH adds 3 steps; phase order stable."""
+    rows = pipeline._phase_table(ScenarioPreset.SHOWCASE_RICH)
+    by_phase_step = [(p, s) for p, s, _fn in rows]
+    assert by_phase_step == [
+        ("data", "precheck"),
+        ("data", "reset"),
+        ("data", "seed"),
+        ("data", "status"),
+        ("data", "features"),
+        ("data", "phase2_enrichment"),
+        ("data", "historical_backfill"),
+        ("modeling", "train"),
+        ("modeling", "v2_train"),
+        ("decision", "backtest"),
+        ("decision", "register"),
+        ("verify", "verify"),
+        ("agent", "agent"),
+        ("cleanup", "cleanup"),
+    ]
+
+
+def test_phase_table_sparse_matches_demo_minimal_shape():
+    """PRP-38 — SPARSE is offered in the picker but does not extend the pipeline."""
+    sparse_rows = pipeline._phase_table(ScenarioPreset.SPARSE)
+    minimal_rows = pipeline._phase_table(ScenarioPreset.DEMO_MINIMAL)
+    assert [(p, s) for p, s, _ in sparse_rows] == [(p, s) for p, s, _ in minimal_rows]
+
+
+def test_legacy_step_table_adapter_returns_11_pairs():
+    """PRP-38 — ``_step_table()`` legacy adapter preserves the back-compat path."""
+    flat = pipeline._step_table()
+    assert len(flat) == 11
+    assert [name for name, _fn in flat] == [
+        "precheck",
+        "reset",
+        "seed",
+        "status",
+        "features",
+        "train",
+        "backtest",
+        "register",
+        "verify",
+        "agent",
+        "cleanup",
+    ]
+
+
+async def test_run_pipeline_emits_phase_fields(monkeypatch, tmp_path):
+    """PRP-38 — every step_start / step_complete event carries phase_* fields."""
+    artifact = tmp_path / "artifacts" / "models" / "model_x.joblib"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(b"x")
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
+    wapes = {"naive": 0.3, "seasonal_naive": 0.1, "moving_average": 0.2, "prophet_like": 0.08}
+    monkeypatch.setattr(pipeline, "_Client", _build_fake_client(str(artifact), wapes))
+
+    events = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=DemoRunRequest())]
+    step_events = [e for e in events if e.event_type in {"step_start", "step_complete"}]
+    assert step_events
+    for ev in step_events:
+        assert ev.phase_name in {"data", "modeling", "decision", "verify", "agent", "cleanup"}
+        assert ev.phase_index is not None and ev.phase_index >= 1
+        assert ev.phase_total == 6
+    # Verify phases appear in canonical order.
+    phases_seen = []
+    for ev in step_events:
+        if ev.phase_name and ev.phase_name not in phases_seen:
+            phases_seen.append(ev.phase_name)
+    assert phases_seen == ["data", "modeling", "decision", "verify", "agent", "cleanup"]
+
+
+async def test_run_pipeline_showcase_rich_runs_v2_and_buckets(monkeypatch, tmp_path):
+    """PRP-38 — SHOWCASE_RICH run reaches v2_train + bucket-visible backtest."""
+    # The fake artifact must live under a path that contains 'artifacts/models/'
+    # so step_v2_train's R1 check passes.
+    artifact = tmp_path / "artifacts" / "models" / "model_v2abc.joblib"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(b"v2 bundle bytes")
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
+    wapes = {
+        "naive": 0.30,
+        "seasonal_naive": 0.18,
+        "moving_average": 0.25,
+        "prophet_like": 0.10,
+    }
+    monkeypatch.setattr(pipeline, "_Client", _build_fake_client(str(artifact), wapes))
+
+    req = DemoRunRequest(scenario=ScenarioPreset.SHOWCASE_RICH)
+    events = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=req)]
+    by_name = {e.step_name: e for e in events if e.event_type == "step_complete"}
+
+    # Phase-2 enrichment step records counts
+    assert by_name["phase2_enrichment"].status == "pass"
+    assert by_name["phase2_enrichment"].data["records_created"]["product"] == 15
+
+    # V2 train step: artifact_uri = train_response["model_path"] (R1).
+    v2 = by_name["v2_train"]
+    assert v2.status == "pass"
+    assert v2.data["feature_frame_version"] == 2
+    assert v2.data["model_type"] == "prophet_like"
+    assert v2.data["v2_run_id"] == "demo-run-abc123def456"
+    assert v2.data["artifact_uri_full"] == str(artifact)
+    assert v2.data["feature_columns_count"] == 4
+    assert "target_history" in v2.data["feature_groups"]
+
+    # Backtest step emits buckets when SHOWCASE_RICH is active.
+    bt = by_name["backtest"]
+    assert bt.status == "pass"
+    buckets = bt.data["bucketed_aggregated_metrics"]
+    assert "h_1_7" in buckets
+    assert "h_8_14" in buckets
+    # Subset against HORIZON_BUCKETS ids.
+    from app.features.backtesting.metrics import HORIZON_BUCKETS
+
+    bucket_ids = {b[0] for b in HORIZON_BUCKETS}
+    assert set(buckets.keys()).issubset(bucket_ids)
+
+    # Pipeline summary surfaces the v2_run_id for the Inspect deep link.
+    final = events[-1]
+    assert final.event_type == "pipeline_complete"
+    assert final.data["v2_run_id"] == "demo-run-abc123def456"
+
+
+async def test_run_pipeline_showcase_rich_emits_14_steps(monkeypatch, tmp_path):
+    """PRP-38 — SHOWCASE_RICH adds 3 new steps (11 -> 14 total)."""
+    artifact = tmp_path / "artifacts" / "models" / "model_x.joblib"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(b"x")
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
+    wapes = {"naive": 0.3, "seasonal_naive": 0.1, "moving_average": 0.2, "prophet_like": 0.08}
+    monkeypatch.setattr(pipeline, "_Client", _build_fake_client(str(artifact), wapes))
+
+    req = DemoRunRequest(scenario=ScenarioPreset.SHOWCASE_RICH)
+    events = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=req)]
+    completes = [e for e in events if e.event_type == "step_complete"]
+    assert len(completes) == 14
+    # Every event reports total_steps=14
+    for ev in completes:
+        assert ev.total_steps == 14
