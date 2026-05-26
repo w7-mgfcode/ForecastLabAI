@@ -4,11 +4,58 @@
 
 Add serious forecasting models beyond current baselines:
 
-- LightGBM
-- XGBoost
+- LightGBM (opt-in extra)
+- XGBoost (opt-in extra)
+- Random Forest (pure scikit-learn, opt-in flag — PRP-36)
 - Prophet-like models with trend, seasonality, holiday, and regressor components
 
-The goal is not just to add dependencies, but to upgrade ForecastLabAI from baseline forecasting to a credible model comparison platform.
+PRP-36 also adds richer **always-on baselines** so a feature-aware
+model's "extra complexity is justified" statement actually means
+something:
+
+- `weighted_moving_average` — linear or exponential weight strategy
+- `seasonal_average` — average of last N seasonal cycles (with optional
+  outlier-trim)
+- `trend_regression_baseline` — Ridge over an elapsed-day index + dow/month
+  one-hots
+
+The goal is not just to add dependencies, but to upgrade ForecastLabAI
+from baseline forecasting to a credible model comparison platform.
+
+### PRP-36 — backtest comparison contract
+
+`POST /backtesting/run` now returns, in addition to the existing
+aggregate metrics:
+
+- `aggregated_metrics.rmse` — root-mean-squared error alongside
+  MAE / sMAPE / WAPE / bias.
+- `fold_results[*].horizon_bucket_metrics` — per-fold, per-bucket
+  metric dict, keyed by stable bucket ids: `h_1_7`, `h_8_14`,
+  `h_15_28`, `h_29_plus`. **Empty buckets are dropped** (a 14-day
+  horizon's payload never carries `h_29_plus`).
+- `main_model_results.bucketed_aggregated_metrics` and
+  `baseline_results[*].bucketed_aggregated_metrics` — per-bucket means
+  across folds. `None` when every fold reported an empty bucket dict.
+
+This is additive — older clients keep working unchanged.
+
+### PRP-36 — diagnostic script
+
+`examples/forecasting/model_zoo_compare.py` exercises every available
+model (always-on baselines + opt-in feature-aware models) for one
+`(store_id, product_id)` grain. It prints an aggregate metrics + per-bucket
+WAPE table without writing anything outside the existing
+`/forecasting/train` + `/backtesting/run` flow:
+
+```bash
+uv run python examples/forecasting/model_zoo_compare.py \
+    --store-id 1 --product-id 1 \
+    --start-date 2025-01-01 --end-date 2025-12-31
+```
+
+Optional models behind a flag (LightGBM / XGBoost / Random Forest) are
+SKIPPED with a printed note when their flag is off — the script never
+fails the run because an opt-in model is missing.
 
 ## Why It Fits ForecastLabAI
 

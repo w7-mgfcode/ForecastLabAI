@@ -77,17 +77,30 @@ def _feature_columns() -> list[str]:
 
 
 def test_model_family_for_maps_baseline_types_to_baseline() -> None:
-    for mt in ("naive", "seasonal_naive", "moving_average"):
+    # PRP-36 — weighted_moving_average + seasonal_average join the baselines.
+    for mt in (
+        "naive",
+        "seasonal_naive",
+        "moving_average",
+        "weighted_moving_average",
+        "seasonal_average",
+    ):
         assert model_family_for(mt) == ModelFamily.BASELINE
 
 
 def test_model_family_for_maps_tree_types_to_tree() -> None:
-    for mt in ("regression", "lightgbm", "xgboost"):
+    # PRP-36 — random_forest joins the tree family.
+    for mt in ("regression", "lightgbm", "xgboost", "random_forest"):
         assert model_family_for(mt) == ModelFamily.TREE
 
 
 def test_model_family_for_maps_prophet_like_to_additive() -> None:
     assert model_family_for("prophet_like") == ModelFamily.ADDITIVE
+
+
+def test_model_family_for_maps_trend_regression_baseline_to_additive() -> None:
+    """PRP-36 — Ridge trend baseline is ADDITIVE (matches prophet_like lineage)."""
+    assert model_family_for("trend_regression_baseline") == ModelFamily.ADDITIVE
 
 
 def test_model_family_for_unknown_returns_baseline() -> None:

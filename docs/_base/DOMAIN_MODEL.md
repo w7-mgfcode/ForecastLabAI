@@ -22,11 +22,13 @@
 ### `model_run` (Registry)
 - **Root:** `ModelRun(run_id: UUID, status: RunStatus)`
 - **Status state machine:** `pending` → `running` → `success` | `failed` → `archived`
-- **JSONB fields:** `model_config`, `metrics`, `runtime_info` (Python/numpy/pandas versions captured at training)
+- **JSONB fields:** `model_config`, `metrics`, `runtime_info` (Python/numpy/pandas versions captured at training; PRP-35/PRP-36 additionally pin `feature_frame_version`, `feature_columns`, `feature_groups`, `feature_safety_classes`, `feature_pinned_constants` when the caller supplies them via `RunCreate.runtime_info_extras`)
 - **Invariants:**
   - An alias may point only to a `success` run.
   - Artifact_uri SHA-256 hash must verify before any consumer trusts it (`GET /registry/runs/{id}/verify`).
   - `runtime_info` is immutable after `success`.
+  - **Comparable-run rule (PRP-36).** A run is comparable to another only when ALL three hold: same `(store_id, product_id)` grain, OVERLAPPING `data_window_start`/`data_window_end`, AND same `feature_frame_version`. The third clause is load-bearing — `RegistryService._find_duplicate`, `RegistryService.find_comparable_runs`, and `OpsService` staleness all enforce it. A V1 run and a V2 run with otherwise identical fields are NOT duplicates and NOT comparable; legacy rows without the JSONB key are treated as V=1.
+  - **Stale-alias V mismatch (PRP-36).** When an alias's run has `feature_frame_version=V_a` and a newer comparable SUCCESS run has `feature_frame_version=V_b != V_a`, the alias is marked `is_stale=true` with `stale_reason="feature_frame_version_mismatch"` — a distinct enum value from `newer_success_run` so the UI surfaces "your V is now stale" separately from "a newer run exists".
 
 ### `agent_session` (Agents)
 - **Root:** `AgentSession(session_id: UUID, status: SessionStatus)`

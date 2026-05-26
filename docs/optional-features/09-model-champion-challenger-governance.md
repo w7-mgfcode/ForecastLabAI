@@ -2,11 +2,36 @@
 
 ## Summary
 
-Add formal promotion gates for model aliases: compare champion vs challenger, validate metrics, verify artifacts, check data freshness, require approval, and record the decision.
+Add formal promotion gates for model aliases: compare champion vs
+challenger, validate metrics, verify artifacts, check data freshness,
+require approval, and record the decision.
 
 ## Why It Fits ForecastLabAI
 
-The registry already stores runs, metrics, artifacts, aliases, hashes, and statuses. Agents already require approval for sensitive actions. This feature makes promotion decisions explicit and auditable.
+The registry already stores runs, metrics, artifacts, aliases, hashes, and
+statuses. Agents already require approval for sensitive actions. This
+feature makes promotion decisions explicit and auditable.
+
+## Comparable-run rule (PRP-36)
+
+A run is comparable to another only when **all three** hold:
+
+1. Same `(store_id, product_id)` grain.
+2. **Overlapping** `data_window_start` / `data_window_end`.
+3. **Same `feature_frame_version`** — read from `runtime_info.feature_frame_version`
+   on the registry row; legacy rows without the key are treated as V1.
+
+The third clause is load-bearing — a V1 run and a V2 run with otherwise
+identical fields are **not** duplicates and **not** comparable. Promoting
+a V1 alias over a V2 challenger (or vice versa) would silently change
+the feature contract the alias points at.
+
+`RegistryService.find_comparable_runs(...)` is the canonical query and
+`OpsService.get_summary` uses the same predicate to classify staleness.
+When an alias's run has `V_a` and a newer comparable SUCCESS run has
+`V_b != V_a`, the alias is marked `is_stale=true` with
+`stale_reason="feature_frame_version_mismatch"` (a distinct value from
+`newer_success_run`) so Slice C can render the mismatch separately.
 
 ## User Value
 

@@ -457,3 +457,74 @@ class TestRunResponseModelFamily:
         response = self._make_response("prophet_like")
         json_str = response.model_dump_json(by_alias=True)
         assert '"model_family":"additive"' in json_str
+
+
+class TestRunResponseFeatureFrameVersion:
+    """PRP-36 — feature_frame_version + feature_groups computed fields on RunResponse.
+
+    Both fields are computed from ``runtime_info`` JSONB at serialization
+    time — no DB column, no migration. Mirrors the model_family precedent.
+    """
+
+    _BASE_FIELDS: ClassVar[dict[str, object]] = {
+        "run_id": "abc123",
+        "status": RunStatus.SUCCESS,
+        "model_type": "regression",
+        "model_config_data": {"model_type": "regression"},
+        "config_hash": "deadbeefdeadbeef",
+        "data_window_start": date(2024, 1, 1),
+        "data_window_end": date(2024, 1, 31),
+        "store_id": 1,
+        "product_id": 1,
+        "created_at": datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC),
+        "updated_at": datetime(2024, 1, 2, 0, 0, 0, tzinfo=UTC),
+    }
+
+    def _make_response(self, runtime_info: dict[str, object] | None) -> RunResponse:
+        fields = {**self._BASE_FIELDS, "runtime_info": runtime_info}
+        return RunResponse.model_validate(fields)
+
+    def test_feature_frame_version_none_when_runtime_info_missing(self) -> None:
+        """A V1-era run with no runtime_info column resolves to None."""
+        response = self._make_response(None)
+        assert response.feature_frame_version is None
+        assert response.feature_groups is None
+
+    def test_feature_frame_version_none_when_key_absent(self) -> None:
+        """An existing runtime_info dict without the V key resolves to None."""
+        response = self._make_response({"python_version": "3.12"})
+        assert response.feature_frame_version is None
+        assert response.feature_groups is None
+
+    def test_feature_frame_version_v2_extracted(self) -> None:
+        """A V2 run surfaces feature_frame_version=2 and feature_groups dict."""
+        response = self._make_response(
+            {
+                "feature_frame_version": 2,
+                "feature_groups": {
+                    "target_history": ["lag_1", "lag_7"],
+                    "calendar": ["dow_sin", "dow_cos"],
+                },
+            }
+        )
+        assert response.feature_frame_version == 2
+        assert response.feature_groups == {
+            "target_history": ["lag_1", "lag_7"],
+            "calendar": ["dow_sin", "dow_cos"],
+        }
+
+    def test_feature_frame_version_v1_extracted(self) -> None:
+        """A V1 run with explicit feature_frame_version=1 round-trips; feature_groups None."""
+        response = self._make_response({"feature_frame_version": 1})
+        assert response.feature_frame_version == 1
+        assert response.feature_groups is None
+
+    def test_feature_frame_version_invalid_value_resolves_to_none(self) -> None:
+        """A non-int feature_frame_version value resolves to None (defensive)."""
+        response = self._make_response({"feature_frame_version": "two"})
+        assert response.feature_frame_version is None
+
+    def test_feature_groups_invalid_type_resolves_to_none(self) -> None:
+        """A non-dict feature_groups value resolves to None (defensive)."""
+        response = self._make_response({"feature_frame_version": 2, "feature_groups": ["lag_1"]})
+        assert response.feature_groups is None

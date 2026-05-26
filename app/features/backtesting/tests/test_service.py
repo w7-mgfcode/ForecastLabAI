@@ -81,6 +81,49 @@ class TestBacktestingServiceRunModelBacktest:
         assert len(result.fold_results) == sample_split_config_expanding.n_splits
         assert "mae" in result.aggregated_metrics
         assert "smape" in result.aggregated_metrics
+        # PRP-36 — RMSE is now part of the aggregate.
+        assert "rmse" in result.aggregated_metrics
+
+    def test_run_model_backtest_emits_horizon_bucket_metrics(
+        self,
+        sample_dates_120: list[date],
+        sample_values_120: np.ndarray,
+        sample_split_config_expanding: SplitConfig,
+    ) -> None:
+        """PRP-36 — every fold carries a horizon_bucket_metrics dict; agg block populated."""
+        service = BacktestingService()
+        series_data = SeriesData(
+            dates=sample_dates_120,
+            values=sample_values_120,
+            store_id=1,
+            product_id=1,
+        )
+        from app.features.backtesting.splitter import TimeSeriesSplitter
+
+        splitter = TimeSeriesSplitter(sample_split_config_expanding)
+        result = service._run_model_backtest(
+            series_data=series_data,
+            splitter=splitter,
+            model_config=NaiveModelConfig(),
+            store_fold_details=True,
+        )
+
+        # The expanding split config defaults to horizon=14, so every fold
+        # spans buckets ``h_1_7`` + ``h_8_14``; ``h_15_28`` and ``h_29_plus``
+        # are absent (empty buckets are dropped).
+        for fold in result.fold_results:
+            assert "h_1_7" in fold.horizon_bucket_metrics
+            assert "h_8_14" in fold.horizon_bucket_metrics
+            assert "h_15_28" not in fold.horizon_bucket_metrics
+            assert "h_29_plus" not in fold.horizon_bucket_metrics
+            # Each bucket carries the same metric names as calculate_all.
+            for bucket in fold.horizon_bucket_metrics.values():
+                assert {"mae", "rmse", "smape", "wape", "bias"} <= set(bucket.keys())
+
+        # Aggregated bucket dict is populated and mirrors the fold shape.
+        assert result.bucketed_aggregated_metrics is not None
+        assert "h_1_7" in result.bucketed_aggregated_metrics
+        assert "h_8_14" in result.bucketed_aggregated_metrics
 
     def test_run_model_backtest_without_fold_details(
         self,

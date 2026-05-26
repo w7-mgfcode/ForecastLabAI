@@ -29,6 +29,7 @@ from app.features.ops.schemas import (
     RetrainingCandidate,
     RetrainingCandidatesResponse,
     RunHealth,
+    StaleReason,
     StatusCount,
     SystemHealth,
     WapePoint,
@@ -134,29 +135,83 @@ def classify_drift(
     return "stable", delta
 
 
+def _run_feature_frame_version(run: ModelRun) -> int:
+    """Read ``feature_frame_version`` from ``run.runtime_info`` JSONB (PRP-36).
+
+    Returns the int when the key is present, else **V=1**. This is the
+    same load-bearing back-compat seam as
+    :meth:`RegistryService._feature_frame_version_filter` — a legacy run
+    that pre-dates PRP-35 is treated as V=1 everywhere in the ops layer
+    so that ``_alias_staleness`` doesn't fabricate a
+    ``feature_frame_version_mismatch`` between a legacy alias and an
+    explicit-V=1 comparable run.
+
+    Notes:
+        The schema-side :attr:`RunResponse.feature_frame_version` deliberately
+        keeps ``None`` for "key absent" — UIs that need to distinguish
+        "no V info" from "V=1" can do so off the response, while internal
+        comparison logic uses this normalized helper.
+    """
+    info = run.runtime_info or {}
+    value = info.get("feature_frame_version")
+    if isinstance(value, int) and value in (1, 2):
+        return value
+    return 1
+
+
 def _alias_staleness(
     run: ModelRun,
     latest_success_by_grain: dict[tuple[int, int], ModelRun],
-) -> tuple[bool, str | None]:
-    """Decide whether an aliased run is stale, and why.
+) -> tuple[bool, str | None, int, int | None]:
+    """Decide whether an aliased run is stale, and why (PRP-36).
 
-    An alias is stale when its run is no longer a successful run, or when a
-    newer successful run exists for the same ``(store, product)`` grain — the
-    industry-standard alias-staleness check (cf. MLflow alias governance).
+    An alias is stale when:
+      1. its run is no longer a successful run, OR
+      2. a newer successful run exists for the same ``(store, product)``
+         grain — the industry-standard alias-staleness check, OR
+      3. a comparable run exists at a DIFFERENT ``feature_frame_version``
+         from the alias's run (PRP-36 — V1 vs V2 mismatch).
+
+    The V-mismatch branch fires whenever an alias's run V_a differs from
+    the latest comparable run V_b — even when timestamps match — because
+    Slice C surfaces it distinctly from "a newer run exists".
 
     Args:
         run: The model run the alias points at.
         latest_success_by_grain: Latest successful run keyed by (store, product).
 
     Returns:
-        A ``(is_stale, reason)`` tuple; ``reason`` is None when not stale.
+        ``(is_stale, reason, alias_v, comparable_v)``. ``reason`` is None
+        when not stale. ``alias_v`` is always an int (legacy runs without
+        the JSONB key are normalized to V=1 — see
+        :func:`_run_feature_frame_version`). ``comparable_v`` is non-None
+        only when the mismatch branch fires.
     """
+    alias_v = _run_feature_frame_version(run)
     if run.status != RunStatus.SUCCESS.value:
-        return True, f"aliased run status is '{run.status}', not 'success'"
+        return True, StaleReason.RUN_NOT_SUCCESS.value, alias_v, None
     latest = latest_success_by_grain.get((run.store_id, run.product_id))
-    if latest is not None and latest.id != run.id and latest.created_at > run.created_at:
-        return True, "a newer successful run exists for this store/product"
-    return False, None
+    if latest is None or latest.id == run.id:
+        return False, None, alias_v, None
+
+    latest_v = _run_feature_frame_version(latest)
+    # PRP-36 — V-mismatch wins over NEWER_SUCCESS_RUN. A V1 alias with a
+    # newer V2 comparable run is classified as a mismatch so Slice C can
+    # surface "this alias's V is now stale" distinctly from "a newer run
+    # exists at the same V". Both sides are normalized via the helper so
+    # a legacy missing-key run never spuriously mismatches an explicit
+    # V=1 comparable run.
+    if alias_v != latest_v:
+        return (
+            True,
+            StaleReason.FEATURE_FRAME_VERSION_MISMATCH.value,
+            alias_v,
+            latest_v,
+        )
+
+    if latest.created_at > run.created_at:
+        return True, StaleReason.NEWER_SUCCESS_RUN.value, alias_v, None
+    return False, None, alias_v, None
 
 
 # =============================================================================
@@ -285,7 +340,9 @@ class OpsService:
             run = runs_by_id.get(alias.run_id)
             if run is None:  # orphan FK — defensive; the FK constraint forbids it
                 continue
-            is_stale, stale_reason = _alias_staleness(run, latest_success_by_grain)
+            is_stale, stale_reason, alias_v, comparable_v = _alias_staleness(
+                run, latest_success_by_grain
+            )
             aliases.append(
                 AliasHealth(
                     alias_name=alias.alias_name,
@@ -297,6 +354,8 @@ class OpsService:
                     is_stale=is_stale,
                     stale_reason=stale_reason,
                     wape=extract_wape(run.metrics),
+                    alias_feature_frame_version=alias_v,
+                    comparable_run_feature_frame_version=comparable_v,
                 )
             )
             if is_stale:
@@ -513,6 +572,16 @@ class OpsService:
             direction, delta = classify_drift([point.wape for point in history])
             numeric = [point.wape for point in history if point.wape is not None]
             latest_run = grain_runs[-1]
+            # PRP-36 — surface the alias (latest-run) V and, when an earlier
+            # run in the chain carries a DIFFERENT V, the comparable V so
+            # Slice C can flag the mismatch on the model-health view too.
+            latest_run_v = _run_feature_frame_version(latest_run)
+            mismatch_v: int | None = None
+            for prior_run in grain_runs[:-1]:
+                prior_v = _run_feature_frame_version(prior_run)
+                if prior_v != latest_run_v:
+                    mismatch_v = prior_v
+                    break
             entries.append(
                 ModelHealthEntry(
                     store_id=store_id,
@@ -527,6 +596,8 @@ class OpsService:
                     last_trained_at=latest_run.created_at,
                     staleness_days=max((today - latest_run.data_window_end).days, 0),
                     wape_history=history,
+                    alias_feature_frame_version=latest_run_v,
+                    comparable_run_feature_frame_version=mismatch_v,
                 )
             )
 

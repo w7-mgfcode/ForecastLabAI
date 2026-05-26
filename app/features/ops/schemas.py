@@ -7,9 +7,26 @@ operational state, never parsed from a request body. They therefore use
 """
 
 from datetime import date, datetime
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class StaleReason(StrEnum):
+    """Canonical reasons surfaced on a stale deployment alias (PRP-36).
+
+    Values are stable JSON strings — the wire payload uses the ``str``
+    form, the service uses the enum for branching. ``stale_reason`` on
+    :class:`AliasHealth` keeps the ``str`` shape for back-compat; new
+    callers should compare to these enum values.
+    """
+
+    NEWER_SUCCESS_RUN = "newer_success_run"
+    ARTIFACT_NOT_VERIFIED = "artifact_not_verified"
+    RUN_NOT_SUCCESS = "run_not_success"
+    FEATURE_FRAME_VERSION_MISMATCH = "feature_frame_version_mismatch"
+
 
 # =============================================================================
 # System & freshness
@@ -131,11 +148,29 @@ class AliasHealth(BaseModel):
     )
     stale_reason: str | None = Field(
         None,
-        description="Human-readable explanation when is_stale is true; null otherwise.",
+        description=(
+            "Human-readable explanation when is_stale is true; null otherwise. "
+            "Values match :class:`StaleReason` (PRP-36): newer_success_run, "
+            "artifact_not_verified, run_not_success, feature_frame_version_mismatch."
+        ),
     )
     wape: float | None = Field(
         None,
         description="WAPE of the aliased run, when present in its metrics; null otherwise.",
+    )
+    alias_feature_frame_version: int | None = Field(
+        None,
+        description=(
+            "PRP-36 — feature_frame_version of the aliased run; null when the run pre-dates PRP-35."
+        ),
+    )
+    comparable_run_feature_frame_version: int | None = Field(
+        None,
+        description=(
+            "PRP-36 — feature_frame_version of the newer comparable run that "
+            "triggered a feature_frame_version_mismatch stale-reason. Null "
+            "when stale_reason != feature_frame_version_mismatch."
+        ),
     )
 
 
@@ -316,6 +351,21 @@ class ModelHealthEntry(BaseModel):
     wape_history: list[WapePoint] = Field(
         ...,
         description="Chronological WAPE observations; may carry null gaps.",
+    )
+    alias_feature_frame_version: int | None = Field(
+        None,
+        description=(
+            "PRP-36 — feature_frame_version of the most recent successful run "
+            "for this grain; null when pre-PRP-35."
+        ),
+    )
+    comparable_run_feature_frame_version: int | None = Field(
+        None,
+        description=(
+            "PRP-36 — feature_frame_version of the run that would replace the "
+            "current alias under a feature_frame_version_mismatch verdict. "
+            "Null when no V-mismatch comparator exists."
+        ),
     )
 
 

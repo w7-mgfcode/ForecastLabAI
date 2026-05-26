@@ -100,6 +100,7 @@ class Settings(BaseSettings):
     forecast_model_artifacts_dir: str = "./artifacts/models"
     forecast_enable_lightgbm: bool = False
     forecast_enable_xgboost: bool = False
+    forecast_enable_random_forest: bool = False
 
     # Backtesting
     backtest_max_splits: int = 20
