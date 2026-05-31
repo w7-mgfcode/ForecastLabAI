@@ -389,6 +389,28 @@ async def _embedding_provider_reachable(client: _Client) -> tuple[bool, str]:
     return (False, provider)
 
 
+# PRP-42 (#329) — the RFC 7807 ``code`` the RAG routes stamp on an
+# embedding-provider auth failure (401/403). The probe only checks key
+# *presence*, so a placeholder/invalid key passes the probe but the indexing
+# call then 502s with this code; the knowledge steps classify it and SKIP
+# gracefully instead of hard-failing. Mirrors EmbeddingProviderAuthError in
+# app/core/exceptions.py (memory anchor: [[rag-runtime-config-and-corpus-state]]).
+_EMBEDDING_AUTH_CODE = "EMBEDDING_AUTH"
+
+
+def _is_embedding_auth_error(exc: _StepError) -> bool:
+    """True when a _StepError is the embedding-provider auth 502 (#329).
+
+    Classifies on the machine-readable RFC 7807 ``code`` / ``type`` from the
+    problem+json body — never on brittle ``detail`` text matching.
+    """
+    problem = exc.problem
+    if problem.get("code") == _EMBEDDING_AUTH_CODE:
+        return True
+    type_uri = problem.get("type")
+    return isinstance(type_uri, str) and type_uri.endswith("/embedding-auth")
+
+
 def _select_winner(
     backtest_results: dict[str, dict[str, float]],
 ) -> tuple[str, float] | None:
@@ -1382,17 +1404,27 @@ async def step_rag_index_subset(ctx: DemoContext, client: _Client) -> StepResult
     if ctx.embedding_unreachable:
         return ("skip", "embedding provider unreachable", {})
 
-    body = await client.request(
-        "rag_index_subset",
-        "POST",
-        "/rag/index/project-docs",
-        json_body={
-            "include_docs": True,
-            "include_prps": False,
-            "include_root": False,
-            "path_prefix": "docs/user-guide",
-        },
-    )
+    try:
+        body = await client.request(
+            "rag_index_subset",
+            "POST",
+            "/rag/index/project-docs",
+            json_body={
+                "include_docs": True,
+                "include_prps": False,
+                "include_root": False,
+                "path_prefix": "docs/user-guide",
+            },
+        )
+    except _StepError as exc:
+        # PRP-42 (#329) — the probe only checks key *presence*; a placeholder /
+        # invalid key passes it but the index call 502s with EMBEDDING_AUTH.
+        # Treat it like an unreachable provider: SKIP (not FAIL) and mark the
+        # context so the retrieve probe skips too, without a second 401 round-trip.
+        if _is_embedding_auth_error(exc):
+            ctx.embedding_unreachable = True
+            return ("skip", "embedding provider rejected credentials", {})
+        raise
     results = body.get("results") or []
     total_chunks = int(body.get("total_chunks", 0))
     failed = int(body.get("failed", 0))
@@ -1428,12 +1460,20 @@ async def step_rag_retrieve_probe(ctx: DemoContext, client: _Client) -> StepResu
     if ctx.embedding_unreachable:
         return ("skip", "embedding provider unreachable", {})
 
-    body = await client.request(
-        "rag_retrieve_probe",
-        "POST",
-        "/rag/retrieve",
-        json_body={"query": "How do I run the demo pipeline?", "top_k": 3},
-    )
+    try:
+        body = await client.request(
+            "rag_retrieve_probe",
+            "POST",
+            "/rag/retrieve",
+            json_body={"query": "How do I run the demo pipeline?", "top_k": 3},
+        )
+    except _StepError as exc:
+        # PRP-42 (#329) — same auth-classified graceful skip as the index step,
+        # in case retrieve is reached with a freshly-rejecting key.
+        if _is_embedding_auth_error(exc):
+            ctx.embedding_unreachable = True
+            return ("skip", "embedding provider rejected credentials", {})
+        raise
     results = body.get("results") or []
     if not results:
         return (
