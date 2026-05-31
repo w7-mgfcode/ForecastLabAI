@@ -175,10 +175,15 @@ class TestIndexEndpoint:
         Mirrors the /rag/index/project-docs assertion so all three RAG routes
         stay aligned on the same RFC 7807 type/code.
         """
-        mock_service = create_mock_embedding_service()
+        # MagicMock var (not the EmbeddingService-typed factory return) so mypy
+        # permits the method assignment — same pattern as
+        # test_embedding_failure_returns_502.
+        mock_service = MagicMock(spec=EmbeddingService)
         mock_service.embed_texts = AsyncMock(
             side_effect=EmbeddingAuthError("OpenAI rejected the embedding credentials")
         )
+        mock_service.count_tokens = MagicMock(side_effect=lambda text: len(text.split()))
+        mock_service.truncate_to_tokens = MagicMock(side_effect=lambda text, max_tokens: text)
 
         with patch(
             "app.features.rag.service.get_embedding_service",
@@ -321,7 +326,10 @@ class TestRetrieveEndpoint:
         Keeps the retrieve handler aligned with the two index handlers on the
         same RFC 7807 type/code.
         """
-        mock_service = create_mock_embedding_service()
+        # MagicMock var (not the EmbeddingService-typed factory return) so mypy
+        # permits the method assignment — same pattern as
+        # test_embedding_failure_returns_502.
+        mock_service = MagicMock(spec=EmbeddingService)
         auth_error = EmbeddingAuthError("OpenAI rejected the embedding credentials")
         mock_service.embed_query = AsyncMock(side_effect=auth_error)
         mock_service.embed_texts = AsyncMock(side_effect=auth_error)
