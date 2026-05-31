@@ -322,6 +322,13 @@ def create_experiment_agent() -> Agent[AgentDeps, ExperimentReport]:
 
         # Check if approval is required
         if requires_approval("create_alias"):
+            # Record a machine-readable approval request so the service layer
+            # can persist pending_action + emit approval_required (#336).
+            ctx.deps.set_pending_action(
+                "create_alias",
+                {"alias_name": alias_name, "run_id": run_id, "description": description},
+                f"Create alias '{alias_name}' pointing at run {run_id}",
+            )
             return {
                 "status": "approval_required",
                 "action": "create_alias",
@@ -366,6 +373,13 @@ def create_experiment_agent() -> Agent[AgentDeps, ExperimentReport]:
 
         # Check if approval is required
         if requires_approval("archive_run"):
+            # Record a machine-readable approval request so the service layer
+            # can persist pending_action + emit approval_required (#336).
+            ctx.deps.set_pending_action(
+                "archive_run",
+                {"run_id": run_id},
+                f"Archive run {run_id}",
+            )
             return {
                 "status": "approval_required",
                 "action": "archive_run",
@@ -466,6 +480,14 @@ def create_experiment_agent() -> Agent[AgentDeps, ExperimentReport]:
 
         # Check if approval is required — mirrors tool_create_alias exactly.
         if requires_approval("save_scenario"):
+            # Record a machine-readable approval request so the service layer
+            # can persist pending_action + emit approval_required (#336). The
+            # arguments dict is exactly what _execute_pending_action replays.
+            ctx.deps.set_pending_action(
+                "save_scenario",
+                arguments,
+                f"Save scenario plan '{name}' for store {store_id} / product {product_id}",
+            )
             return {
                 "status": "approval_required",
                 "action": "save_scenario",

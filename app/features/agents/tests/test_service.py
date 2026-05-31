@@ -777,3 +777,150 @@ class TestAgentDeps:
         assert deps.tool_call_count == 1
         deps.increment_tool_calls()
         assert deps.tool_call_count == 2
+
+    def test_set_pending_action_records_request(self, mock_db_session: AsyncMock) -> None:
+        """set_pending_action should record a machine-readable HITL request (#336)."""
+        deps = AgentDeps(db=mock_db_session, session_id="test-123")
+        assert deps.pending_action is None
+
+        deps.set_pending_action(
+            "save_scenario",
+            {"name": "p", "run_id": "r", "store_id": 1, "product_id": 2},
+            "Save scenario plan 'p'",
+        )
+
+        assert deps.pending_action is not None
+        assert deps.pending_action["action_type"] == "save_scenario"
+        assert deps.pending_action["arguments"]["run_id"] == "r"
+        assert deps.pending_action["description"] == "Save scenario plan 'p'"
+
+
+class TestAgentServiceDepsApproval:
+    """Regression tests for #336 — gated tools propagate approval via deps.
+
+    The experiment agent's structured output (ExperimentReport) carries no
+    pending_action/approval_required field, so a gated tool call (e.g.
+    save_scenario) used to leave the session ``active`` with no pending action
+    and no ``approval_required`` event. These assert the deterministic
+    deps-based path: tool -> deps.pending_action -> awaiting_approval ->
+    approval_required.
+    """
+
+    @staticmethod
+    def _save_scenario_pending(deps: AgentDeps) -> None:
+        """Simulate the gated save_scenario tool short-circuiting for approval."""
+        deps.set_pending_action(
+            "save_scenario",
+            {
+                "name": "plan-a",
+                "run_id": "702c7ce74e9848d3b11f124a71bf7b50",
+                "store_id": 111,
+                "product_id": 339,
+                "horizon": 14,
+                "assumptions": {},
+                "source": "agent",
+                "agent_session_id": deps.session_id,
+            },
+            "Save scenario plan 'plan-a' for store 111 / product 339",
+        )
+
+    @pytest.mark.asyncio
+    async def test_chat_persists_pending_action_from_deps(
+        self,
+        sample_active_session: AgentSession,
+        sample_experiment_report: ExperimentReport,
+    ) -> None:
+        """chat() must persist deps.pending_action even when the output lacks one."""
+        service = AgentService()
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        def _run(message: str, *, deps: AgentDeps, message_history: Any) -> MagicMock:
+            # A gated tool fired during the run and recorded the approval request.
+            self._save_scenario_pending(deps)
+            res = MagicMock()
+            res.output = sample_experiment_report  # no pending_action field
+            usage = MagicMock()
+            usage.total_tokens = 7
+            res.usage.return_value = usage
+            res.all_messages.return_value = []
+            return res
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(side_effect=_run)
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            response = await service.chat(
+                db=mock_db,
+                session_id=sample_active_session.session_id,
+                message="Save a what-if scenario plan for run 702c...",
+            )
+
+        assert response.pending_approval is True
+        assert response.pending_action is not None
+        assert response.pending_action.action_type == "save_scenario"
+        assert response.pending_action.arguments["run_id"] == "702c7ce74e9848d3b11f124a71bf7b50"
+        assert sample_active_session.status == SessionStatus.AWAITING_APPROVAL.value
+        assert sample_active_session.pending_action is not None
+        assert sample_active_session.pending_action["action_type"] == "save_scenario"
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_emits_approval_required_from_deps(
+        self,
+        sample_active_session: AgentSession,
+        sample_experiment_report: ExperimentReport,
+    ) -> None:
+        """stream_chat() must emit approval_required from deps.pending_action."""
+        service = AgentService()
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        report = sample_experiment_report
+
+        class _StubStream:
+            async def __aenter__(self) -> MagicMock:
+                stream = MagicMock()
+
+                async def _stream_text() -> AsyncIterator[str]:
+                    # Structured-output agents cannot stream text deltas; mirror
+                    # that by yielding nothing.
+                    return
+                    yield  # pragma: no cover
+
+                stream.stream_text = _stream_text
+                stream.get_output = AsyncMock(return_value=report)
+                usage = MagicMock()
+                usage.total_tokens = 9
+                stream.usage.return_value = usage
+                stream.all_messages.return_value = []
+                return stream
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        def _run_stream(message: str, *, deps: AgentDeps, message_history: Any) -> _StubStream:
+            self._save_scenario_pending(deps)
+            return _StubStream()
+
+        mock_agent = MagicMock()
+        mock_agent.run_stream = MagicMock(side_effect=_run_stream)
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            events = [
+                event
+                async for event in service.stream_chat(
+                    db=mock_db,
+                    session_id=sample_active_session.session_id,
+                    message="Save a what-if scenario plan for run 702c...",
+                )
+            ]
+
+        approval_events = [e for e in events if e.event_type == "approval_required"]
+        assert len(approval_events) == 1
+        assert approval_events[0].data["action"].action_type == "save_scenario"
+        assert sample_active_session.status == SessionStatus.AWAITING_APPROVAL.value
+        assert sample_active_session.pending_action is not None

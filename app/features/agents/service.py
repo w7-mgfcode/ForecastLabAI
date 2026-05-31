@@ -314,9 +314,26 @@ class AgentService:
         # NOTE: PydanticAI v1.48.0 uses result.output (not result.data)
         result_data: Any = result.output
 
-        # Check for pending_action in result data (primary trigger)
+        # Primary trigger (#336): a gated tool recorded a machine-readable
+        # approval request on deps. Deterministic — does not rely on the model
+        # echoing the request into its structured output (ExperimentReport has
+        # no pending_action field, so the legacy triggers below never fired).
+        if deps.pending_action:
+            pending_approval = True
+            pending_action = self._record_pending_action(
+                session,
+                action_type=str(deps.pending_action.get("action_type", "unknown")),
+                arguments=deps.pending_action.get("arguments") or {},
+                description=str(
+                    deps.pending_action.get("description")
+                    or f"Agent requested approval for "
+                    f"{deps.pending_action.get('action_type', 'unknown')}"
+                ),
+                now=now,
+            )
+        # Legacy trigger: structured output carried a pending_action field.
         # The agent tools should return a pending_action dict with action_type and arguments
-        if hasattr(result_data, "pending_action") and result_data.pending_action:
+        elif hasattr(result_data, "pending_action") and result_data.pending_action:
             pending_approval = True
             pending_action_data = result_data.pending_action
             # Extract action details - support both dict and object with attributes
@@ -335,33 +352,19 @@ class AgentService:
                     f"Agent requested approval for {action_type}",
                 )
 
-            session.pending_action = {
-                "action_id": uuid.uuid4().hex[:16],
-                "action_type": action_type,
-                "description": description,
-                "arguments": arguments,
-                "created_at": now.isoformat(),
-                "expires_at": (
-                    now + timedelta(minutes=self.settings.agent_approval_timeout_minutes)
-                ).isoformat(),
-            }
-            session.status = SessionStatus.AWAITING_APPROVAL.value
-            pending_action = self._format_pending_action(session.pending_action)
+            pending_action = self._record_pending_action(
+                session, action_type, arguments, description, now
+            )
         # Fallback: check approval_required flag (legacy trigger)
         elif hasattr(result_data, "approval_required") and result_data.approval_required:
             pending_approval = True
-            session.pending_action = {
-                "action_id": uuid.uuid4().hex[:16],
-                "action_type": "unknown",
-                "description": "Agent requested approval for an action",
-                "arguments": {},
-                "created_at": now.isoformat(),
-                "expires_at": (
-                    now + timedelta(minutes=self.settings.agent_approval_timeout_minutes)
-                ).isoformat(),
-            }
-            session.status = SessionStatus.AWAITING_APPROVAL.value
-            pending_action = self._format_pending_action(session.pending_action)
+            pending_action = self._record_pending_action(
+                session,
+                "unknown",
+                {},
+                "Agent requested approval for an action",
+                now,
+            )
 
         # Update session
         usage = result.usage()
@@ -502,8 +505,28 @@ class AgentService:
                         pending_approval = False
                         stream_now = datetime.now(UTC)
 
-                        # Check for pending_action in result data (primary trigger)
-                        if hasattr(final_result, "pending_action") and final_result.pending_action:
+                        # Primary trigger (#336): a gated tool recorded a
+                        # machine-readable approval request on deps. Deterministic
+                        # — the experiment agent's ExperimentReport output has no
+                        # pending_action field, so the legacy triggers below never
+                        # fired and the approval_required event was never emitted.
+                        if deps.pending_action:
+                            pending_approval = True
+                            pending_action = self._record_pending_action(
+                                session,
+                                action_type=str(deps.pending_action.get("action_type", "unknown")),
+                                arguments=deps.pending_action.get("arguments") or {},
+                                description=str(
+                                    deps.pending_action.get("description")
+                                    or "Agent requested approval for "
+                                    f"{deps.pending_action.get('action_type', 'unknown')}"
+                                ),
+                                now=stream_now,
+                            )
+                        # Legacy trigger: structured output carried pending_action.
+                        elif (
+                            hasattr(final_result, "pending_action") and final_result.pending_action
+                        ):
                             pending_approval = True
                             pending_action_data = final_result.pending_action
                             # Extract action details - support both dict and object with attributes
@@ -522,42 +545,22 @@ class AgentService:
                                     f"Agent requested approval for {action_type}",
                                 )
 
-                            session.pending_action = {
-                                "action_id": uuid.uuid4().hex[:16],
-                                "action_type": action_type,
-                                "description": description,
-                                "arguments": arguments,
-                                "created_at": stream_now.isoformat(),
-                                "expires_at": (
-                                    stream_now
-                                    + timedelta(
-                                        minutes=self.settings.agent_approval_timeout_minutes
-                                    )
-                                ).isoformat(),
-                            }
-                            session.status = SessionStatus.AWAITING_APPROVAL.value
-                            pending_action = self._format_pending_action(session.pending_action)
+                            pending_action = self._record_pending_action(
+                                session, action_type, arguments, description, stream_now
+                            )
                         # Fallback: check approval_required flag (legacy trigger)
                         elif (
                             hasattr(final_result, "approval_required")
                             and final_result.approval_required
                         ):
                             pending_approval = True
-                            session.pending_action = {
-                                "action_id": uuid.uuid4().hex[:16],
-                                "action_type": "unknown",
-                                "description": "Agent requested approval for an action",
-                                "arguments": {},
-                                "created_at": stream_now.isoformat(),
-                                "expires_at": (
-                                    stream_now
-                                    + timedelta(
-                                        minutes=self.settings.agent_approval_timeout_minutes
-                                    )
-                                ).isoformat(),
-                            }
-                            session.status = SessionStatus.AWAITING_APPROVAL.value
-                            pending_action = self._format_pending_action(session.pending_action)
+                            pending_action = self._record_pending_action(
+                                session,
+                                "unknown",
+                                {},
+                                "Agent requested approval for an action",
+                                stream_now,
+                            )
 
                         await db.flush()
 
@@ -824,6 +827,45 @@ class AgentService:
                 exc_info=True,
             )
             return []
+
+    def _record_pending_action(
+        self,
+        session: AgentSession,
+        action_type: str,
+        arguments: dict[str, Any],
+        description: str,
+        now: datetime,
+    ) -> PendingAction | None:
+        """Persist a HITL approval request on the session and format it.
+
+        Builds the canonical ``session.pending_action`` dict (fresh action_id +
+        expiry), flips the session to ``awaiting_approval``, and returns the
+        ``PendingAction`` schema for the response / stream event. Shared by the
+        deterministic deps-based trigger (#336) and the legacy structured-output
+        triggers so all three paths persist an identical shape.
+
+        Args:
+            session: The agent session to mutate.
+            action_type: Gated action name.
+            arguments: Arguments to replay on approval.
+            description: Human-readable approval-card summary.
+            now: Timestamp used for created_at / expires_at.
+
+        Returns:
+            The formatted PendingAction, or None if formatting fails.
+        """
+        session.pending_action = {
+            "action_id": uuid.uuid4().hex[:16],
+            "action_type": action_type,
+            "description": description,
+            "arguments": arguments,
+            "created_at": now.isoformat(),
+            "expires_at": (
+                now + timedelta(minutes=self.settings.agent_approval_timeout_minutes)
+            ).isoformat(),
+        }
+        session.status = SessionStatus.AWAITING_APPROVAL.value
+        return self._format_pending_action(session.pending_action)
 
     def _format_pending_action(
         self,
