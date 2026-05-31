@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import AsyncClient
 
-from app.features.rag.embeddings import EmbeddingError, EmbeddingService
+from app.features.rag.embeddings import EmbeddingAuthError, EmbeddingError, EmbeddingService
 from app.features.rag.service import RAGService
 
 # =============================================================================
@@ -565,3 +565,41 @@ class TestIndexProjectDocsEndpoint:
             response = await client.post("/rag/index/project-docs", json={})
 
         assert response.status_code == 502
+
+    @pytest.mark.asyncio
+    async def test_embedding_auth_failure_returns_502_with_marker(
+        self, client: AsyncClient, tmp_path
+    ):
+        """#329 — an embedding auth failure stays 502 but carries the
+
+        machine-readable EMBEDDING_AUTH problem marker so the demo pipeline can
+        classify it (vs a generic embedding 502) without brittle text matching.
+        """
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "docs" / "auth-doc.md").write_text(
+            "# Delta\n\nDelta content.", encoding="utf-8"
+        )
+        mock_service = MagicMock(spec=EmbeddingService)
+        mock_service.embed_texts = AsyncMock(
+            side_effect=EmbeddingAuthError("OpenAI rejected the embedding credentials")
+        )
+
+        with (
+            patch(
+                "app.features.rag.routes.RAGService",
+                partial(RAGService, base_dir=str(tmp_path)),
+            ),
+            patch(
+                "app.features.rag.service.get_embedding_service",
+                return_value=mock_service,
+            ),
+        ):
+            response = await client.post("/rag/index/project-docs", json={})
+
+        # Status stays 502 (public contract stable); body is RFC 7807 with a
+        # stable type/code an automated consumer can branch on.
+        assert response.status_code == 502
+        body = response.json()
+        assert body["code"] == "EMBEDDING_AUTH"
+        assert body["type"].endswith("/embedding-auth")
+        assert body["status"] == 502

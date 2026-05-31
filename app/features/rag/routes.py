@@ -6,9 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.core.exceptions import DatabaseError
+from app.core.exceptions import DatabaseError, EmbeddingProviderAuthError
 from app.core.logging import get_logger
-from app.features.rag.embeddings import EmbeddingError
+from app.features.rag.embeddings import EmbeddingAuthError, EmbeddingError
 from app.features.rag.schemas import (
     DeleteResponse,
     IndexProjectDocsRequest,
@@ -110,6 +110,15 @@ async def index_document(
             detail=str(e),
         ) from e
 
+    except EmbeddingAuthError as e:
+        logger.warning(
+            "rag.index_request_auth_failed",
+            error_type=type(e).__name__,
+        )
+        raise EmbeddingProviderAuthError(
+            message=f"Embedding provider rejected the credentials: {e}",
+        ) from e
+
     except EmbeddingError as e:
         logger.error(
             "rag.index_request_failed",
@@ -194,6 +203,15 @@ async def index_project_docs(
         )
 
         return response
+
+    except EmbeddingAuthError as e:
+        logger.warning(
+            "rag.index_project_docs_request_auth_failed",
+            error_type=type(e).__name__,
+        )
+        raise EmbeddingProviderAuthError(
+            message=f"Embedding provider rejected the credentials: {e}",
+        ) from e
 
     except EmbeddingError as e:
         logger.error(
@@ -297,6 +315,15 @@ async def retrieve(
         )
 
         return response
+
+    except EmbeddingAuthError as e:
+        logger.warning(
+            "rag.retrieve_request_auth_failed",
+            error_type=type(e).__name__,
+        )
+        raise EmbeddingProviderAuthError(
+            message=f"Embedding provider rejected the credentials: {e}",
+        ) from e
 
     except EmbeddingError as e:
         logger.error(

@@ -16,7 +16,12 @@ from typing import TYPE_CHECKING
 import httpx
 import structlog
 import tiktoken
-from openai import AsyncOpenAI, RateLimitError
+from openai import (
+    AsyncOpenAI,
+    AuthenticationError,
+    PermissionDeniedError,
+    RateLimitError,
+)
 
 from app.core.config import get_settings
 
@@ -28,6 +33,21 @@ logger = structlog.get_logger()
 
 class EmbeddingError(Exception):
     """Error during embedding generation."""
+
+    pass
+
+
+class EmbeddingAuthError(EmbeddingError):
+    """Embedding provider rejected the credentials (HTTP 401/403).
+
+    A *distinct* subclass of :class:`EmbeddingError` so callers can tell an
+    authentication/authorization failure (invalid or placeholder API key) apart
+    from a transient connection/server failure. The RAG routes map this to a
+    machine-readable ``EMBEDDING_AUTH`` problem so the showcase demo pipeline
+    can SKIP the knowledge phase gracefully instead of hard-failing on a bad
+    key (issue #329). Carries no secret material — only the provider's own
+    error string, which never contains the key value.
+    """
 
     pass
 
@@ -293,6 +313,18 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                     await asyncio.sleep(wait_time)
                 continue
 
+            except (AuthenticationError, PermissionDeniedError) as e:
+                # Invalid / placeholder / unauthorized key (401/403). Not
+                # retryable — surface as a distinct auth failure so callers can
+                # classify it (issue #329). Log the type only, never the key.
+                logger.warning(
+                    "rag.embedding_auth_error",
+                    error_type=type(e).__name__,
+                    batch_size=len(texts),
+                    provider="openai",
+                )
+                raise EmbeddingAuthError(f"OpenAI rejected the embedding credentials: {e}") from e
+
             except Exception as e:
                 last_error = e
                 logger.error(
@@ -417,6 +449,19 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
                     raise EmbeddingError(
                         f"Ollama model '{self.settings.ollama_embedding_model}' not found. "
                         f"Run: ollama pull {self.settings.ollama_embedding_model}"
+                    ) from e
+                if e.response.status_code in (401, 403):
+                    # Auth rejected (e.g. Ollama behind an authenticating proxy
+                    # with a bad/placeholder credential). Not retryable —
+                    # surface as a distinct auth failure (issue #329).
+                    logger.warning(
+                        "rag.embedding_auth_error",
+                        error_type=type(e).__name__,
+                        status_code=e.response.status_code,
+                        provider="ollama",
+                    )
+                    raise EmbeddingAuthError(
+                        f"Ollama embedding endpoint rejected the credentials: {e}"
                     ) from e
                 if e.response.status_code >= 500 and attempt < max_retries:
                     # Server error - retry

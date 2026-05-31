@@ -4,8 +4,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from openai import AuthenticationError
 
 from app.features.rag.embeddings import (
+    EmbeddingAuthError,
     EmbeddingError,
     EmbeddingProvider,
     EmbeddingService,
@@ -152,6 +154,36 @@ class TestOpenAIEmbeddingProvider:
 
             assert len(result) == 4
             assert mock_client.embeddings.create.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_embed_texts_invalid_key_raises_auth_error(self):
+        """#329 — a 401 from OpenAI surfaces as EmbeddingAuthError, not retried."""
+        with patch("app.features.rag.embeddings.get_settings") as mock_settings:
+            mock_settings.return_value.openai_api_key = "sk-placeholder-invalid"
+            mock_settings.return_value.rag_embedding_model = "text-embedding-3-small"
+            mock_settings.return_value.rag_embedding_dimension = 1536
+            mock_settings.return_value.rag_embedding_batch_size = 100
+
+            provider = OpenAIEmbeddingProvider()
+
+            auth_error = AuthenticationError(
+                "Incorrect API key provided",
+                response=httpx.Response(
+                    401,
+                    request=httpx.Request("POST", "https://api.openai.com/v1/embeddings"),
+                ),
+                body=None,
+            )
+            mock_client = MagicMock()
+            mock_client.embeddings.create = AsyncMock(side_effect=auth_error)
+            provider._client = mock_client
+
+            with pytest.raises(EmbeddingAuthError) as exc_info:
+                await provider.embed_texts(["text"])
+            # Subclass of EmbeddingError so existing callers still catch it.
+            assert isinstance(exc_info.value, EmbeddingError)
+            # Not retried: a single create() call, no backoff loop.
+            assert mock_client.embeddings.create.call_count == 1
 
     @pytest.mark.asyncio
     async def test_embed_query_returns_single_embedding(self):
@@ -326,6 +358,32 @@ class TestOllamaEmbeddingProvider:
                 await provider.embed_texts(["test"])
             assert "not found" in str(exc_info.value).lower()
             assert "ollama pull" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_embed_texts_auth_rejected_raises_auth_error(self):
+        """#329 — a 401/403 from the Ollama endpoint surfaces as EmbeddingAuthError."""
+        with patch("app.features.rag.embeddings.get_settings") as mock_settings:
+            mock_settings.return_value.ollama_base_url = "http://localhost:11434"
+            mock_settings.return_value.ollama_embedding_model = "nomic-embed-text"
+            mock_settings.return_value.rag_embedding_dimension = 768
+
+            provider = OllamaEmbeddingProvider()
+
+            mock_response = MagicMock()
+            mock_response.status_code = 401
+            error = httpx.HTTPStatusError(
+                "Unauthorized",
+                request=MagicMock(),
+                response=mock_response,
+            )
+            mock_client = MagicMock(spec=httpx.AsyncClient)
+            mock_client.post = AsyncMock(side_effect=error)
+            provider._client = mock_client
+
+            with pytest.raises(EmbeddingAuthError) as exc_info:
+                await provider.embed_texts(["test"])
+            assert isinstance(exc_info.value, EmbeddingError)
+            assert "rejected the credentials" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_embed_texts_connection_error(self):
