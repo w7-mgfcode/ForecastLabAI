@@ -23,6 +23,12 @@ logger = get_logger(__name__)
 # Base URI for error types (relative URIs for portability)
 ERROR_TYPE_BASE = "/errors"
 
+# Machine-readable code for an embedding-provider auth failure (#329). Single
+# source of truth shared by the producer (EmbeddingProviderAuthError, which
+# stamps this as the problem ``code``/``type``) and the consumer (the showcase
+# demo pipeline's classifier) so the marker never drifts between the two.
+EMBEDDING_AUTH_CODE = "EMBEDDING_AUTH"
+
 ERROR_TYPES = {
     "NOT_FOUND": f"{ERROR_TYPE_BASE}/not-found",
     "VALIDATION_ERROR": f"{ERROR_TYPE_BASE}/validation",
@@ -36,7 +42,7 @@ ERROR_TYPES = {
     "BAD_REQUEST": f"{ERROR_TYPE_BASE}/bad-request",
     "SERVICE_UNAVAILABLE": f"{ERROR_TYPE_BASE}/service-unavailable",
     "GATEWAY_TIMEOUT": f"{ERROR_TYPE_BASE}/gateway-timeout",
-    "EMBEDDING_AUTH": f"{ERROR_TYPE_BASE}/embedding-auth",
+    EMBEDDING_AUTH_CODE: f"{ERROR_TYPE_BASE}/embedding-auth",
 }
 
 

@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 
 from app.core.logging import get_logger
 from app.core.problem_details import (
+    EMBEDDING_AUTH_CODE,
     ERROR_TYPES,
     ProblemDetailResponse,
     problem_response,
@@ -238,7 +239,7 @@ class EmbeddingProviderAuthError(ForecastLabError):
     mirroring the :class:`UnprocessableEntityError` 422 precedent.
     """
 
-    error_type_uri: str = ERROR_TYPES["EMBEDDING_AUTH"]
+    error_type_uri: str = ERROR_TYPES[EMBEDDING_AUTH_CODE]
 
     def __init__(
         self,
@@ -247,7 +248,7 @@ class EmbeddingProviderAuthError(ForecastLabError):
     ) -> None:
         super().__init__(
             message=message,
-            code="EMBEDDING_AUTH",
+            code=EMBEDDING_AUTH_CODE,
             status_code=502,
             details=details,
         )

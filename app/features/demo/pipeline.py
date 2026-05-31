@@ -39,6 +39,7 @@ from fastapi import FastAPI
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.core.problem_details import EMBEDDING_AUTH_CODE, ERROR_TYPES
 from app.features.demo.schemas import DemoRunRequest, StepEvent, StepStatus
 from app.shared.seeder.config import ScenarioPreset
 
@@ -389,26 +390,29 @@ async def _embedding_provider_reachable(client: _Client) -> tuple[bool, str]:
     return (False, provider)
 
 
-# PRP-42 (#329) — the RFC 7807 ``code`` the RAG routes stamp on an
-# embedding-provider auth failure (401/403). The probe only checks key
-# *presence*, so a placeholder/invalid key passes the probe but the indexing
-# call then 502s with this code; the knowledge steps classify it and SKIP
-# gracefully instead of hard-failing. Mirrors EmbeddingProviderAuthError in
-# app/core/exceptions.py (memory anchor: [[rag-runtime-config-and-corpus-state]]).
-_EMBEDDING_AUTH_CODE = "EMBEDDING_AUTH"
+# PRP-42 (#329) — the RAG routes stamp an embedding-provider auth failure
+# (401/403) with the machine-readable EMBEDDING_AUTH code/type. The probe only
+# checks key *presence*, so a placeholder/invalid key passes the probe but the
+# indexing call then 502s with this marker; the knowledge steps classify it and
+# SKIP gracefully instead of hard-failing. Both the code and the type slug come
+# from the single source of truth in app/core/problem_details.py (mirrors
+# EmbeddingProviderAuthError; memory anchor: [[rag-runtime-config-and-corpus-state]]).
+_EMBEDDING_AUTH_TYPE_SLUG = ERROR_TYPES[EMBEDDING_AUTH_CODE].rsplit("/", 1)[-1]
 
 
 def _is_embedding_auth_error(exc: _StepError) -> bool:
     """True when a _StepError is the embedding-provider auth 502 (#329).
 
     Classifies on the machine-readable RFC 7807 ``code`` / ``type`` from the
-    problem+json body — never on brittle ``detail`` text matching.
+    problem+json body — never on brittle ``detail`` text matching. The ``type``
+    match is lenient (final path segment) so a fully-qualified problem URI
+    classifies the same as the canonical relative one.
     """
     problem = exc.problem
-    if problem.get("code") == _EMBEDDING_AUTH_CODE:
+    if problem.get("code") == EMBEDDING_AUTH_CODE:
         return True
     type_uri = problem.get("type")
-    return isinstance(type_uri, str) and type_uri.endswith("/embedding-auth")
+    return isinstance(type_uri, str) and type_uri.rsplit("/", 1)[-1] == _EMBEDDING_AUTH_TYPE_SLUG
 
 
 def _select_winner(
