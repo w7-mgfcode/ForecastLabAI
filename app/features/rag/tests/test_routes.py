@@ -168,6 +168,37 @@ class TestIndexEndpoint:
         )
         assert response.status_code == 404
 
+    @pytest.mark.asyncio
+    async def test_index_embedding_auth_failure_returns_502_with_marker(self, client: AsyncClient):
+        """#329 — /rag/index maps an embedding auth failure to the marked 502.
+
+        Mirrors the /rag/index/project-docs assertion so all three RAG routes
+        stay aligned on the same RFC 7807 type/code.
+        """
+        mock_service = create_mock_embedding_service()
+        mock_service.embed_texts = AsyncMock(
+            side_effect=EmbeddingAuthError("OpenAI rejected the embedding credentials")
+        )
+
+        with patch(
+            "app.features.rag.service.get_embedding_service",
+            return_value=mock_service,
+        ):
+            response = await client.post(
+                "/rag/index",
+                json={
+                    "source_type": "markdown",
+                    "source_path": "test-index-auth-001",
+                    "content": "# Auth\n\nContent that needs embedding.",
+                },
+            )
+
+        assert response.status_code == 502
+        body = response.json()
+        assert body["code"] == "EMBEDDING_AUTH"
+        assert body["type"].endswith("/embedding-auth")
+        assert body["status"] == 502
+
 
 # =============================================================================
 # Retrieve Endpoint Tests
@@ -280,6 +311,35 @@ class TestRetrieveEndpoint:
             },
         )
         assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_retrieve_embedding_auth_failure_returns_502_with_marker(
+        self, client: AsyncClient
+    ):
+        """#329 — /rag/retrieve maps an embedding auth failure to the marked 502.
+
+        Keeps the retrieve handler aligned with the two index handlers on the
+        same RFC 7807 type/code.
+        """
+        mock_service = create_mock_embedding_service()
+        auth_error = EmbeddingAuthError("OpenAI rejected the embedding credentials")
+        mock_service.embed_query = AsyncMock(side_effect=auth_error)
+        mock_service.embed_texts = AsyncMock(side_effect=auth_error)
+
+        with patch(
+            "app.features.rag.service.get_embedding_service",
+            return_value=mock_service,
+        ):
+            response = await client.post(
+                "/rag/retrieve",
+                json={"query": "anything", "top_k": 5, "similarity_threshold": 0.0},
+            )
+
+        assert response.status_code == 502
+        body = response.json()
+        assert body["code"] == "EMBEDDING_AUTH"
+        assert body["type"].endswith("/embedding-auth")
+        assert body["status"] == 502
 
 
 # =============================================================================

@@ -1502,6 +1502,39 @@ async def test_rag_index_subset_skips_on_embedding_auth_502():
     assert ctx.embedding_unreachable is True
 
 
+async def test_rag_index_subset_skips_on_embedding_auth_type_only():
+    """#329 — classification by `type` alone (no `code`) still SKIPs gracefully.
+
+    The classifier accepts a problem whose `type` URI's final path segment is
+    `embedding-auth` even when there is no `code` field — and even when the
+    `type` is a fully-qualified absolute URI rather than the canonical relative
+    one. The step must still skip and flag the context.
+    """
+    ctx = _make_showcase_ctx()
+    assert ctx.embedding_unreachable is False
+    client = _RecordingClient(
+        None,
+        errors={
+            ("POST", "/rag/index/project-docs"): pipeline._StepError(
+                "rag_index_subset",
+                502,
+                {
+                    # No "code" key — only an absolute "type" ending in the slug.
+                    "type": "https://errors.example.com/rag/embedding-auth",
+                    "title": "Embedding Auth",
+                    "status": 502,
+                    "detail": "Embedding provider rejected the credentials",
+                },
+            ),
+        },
+    )
+    status, detail, _ = await pipeline.step_rag_index_subset(ctx, _as_client(client))
+    assert status == "skip"
+    assert "rejected credentials" in detail
+    assert len(client.calls) == 1
+    assert ctx.embedding_unreachable is True
+
+
 async def test_rag_index_subset_reraises_non_auth_502():
     """#329 — a non-auth 502 (e.g. connection failure) still propagates as FAIL."""
     import pytest
