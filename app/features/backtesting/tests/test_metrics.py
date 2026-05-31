@@ -5,7 +5,11 @@ import math
 import numpy as np
 import pytest
 
-from app.features.backtesting.metrics import MetricsCalculator
+from app.features.backtesting.metrics import (
+    HORIZON_BUCKETS,
+    MetricsCalculator,
+    compute_bucket_metrics,
+)
 
 
 class TestMAE:
@@ -209,6 +213,7 @@ class TestCalculateAll:
         result = calc.calculate_all(actuals, predictions)
 
         assert "mae" in result
+        assert "rmse" in result  # PRP-36 — RMSE added alongside MAE/sMAPE/WAPE/bias.
         assert "smape" in result
         assert "wape" in result
         assert "bias" in result
@@ -222,6 +227,7 @@ class TestCalculateAll:
         all_metrics = calc.calculate_all(actuals, predictions)
 
         assert all_metrics["mae"] == calc.mae(actuals, predictions).value
+        assert all_metrics["rmse"] == calc.rmse(actuals, predictions).value
         assert all_metrics["smape"] == calc.smape(actuals, predictions).value
         assert all_metrics["wape"] == calc.wape(actuals, predictions).value
         assert all_metrics["bias"] == calc.bias(actuals, predictions).value
@@ -376,3 +382,143 @@ class TestEdgeCases:
         # MAE should still work
         mae_result = calc.mae(actuals, predictions)
         assert mae_result.value == pytest.approx(2.0)  # mean of |2|, |2|, |2|
+
+
+class TestRMSE:
+    """Tests for Root Mean Squared Error (PRP-36)."""
+
+    def test_rmse_perfect_predictions(self) -> None:
+        """Perfect predictions yield RMSE == 0."""
+        calc = MetricsCalculator()
+        actuals = np.array([10.0, 20.0, 30.0])
+        predictions = np.array([10.0, 20.0, 30.0])
+        assert calc.rmse(actuals, predictions).value == 0.0
+
+    def test_rmse_known_values(self) -> None:
+        """RMSE matches the closed-form formula."""
+        calc = MetricsCalculator()
+        actuals = np.array([10.0, 20.0, 30.0])
+        predictions = np.array([12.0, 18.0, 33.0])
+        # errors: [-2, 2, -3] → sq: [4, 4, 9] → mean=17/3 → sqrt≈2.380
+        assert calc.rmse(actuals, predictions).value == pytest.approx(np.sqrt(17.0 / 3.0))
+
+    def test_rmse_penalises_large_errors_more_than_mae(self) -> None:
+        """A single big miss surfaces in RMSE more strongly than in MAE."""
+        calc = MetricsCalculator()
+        actuals = np.array([10.0, 10.0, 10.0])
+        even = np.array([8.0, 8.0, 8.0])  # MAE=2, RMSE=2 (uniform error)
+        spiky = np.array([10.0, 10.0, 4.0])  # MAE=2, RMSE=sqrt(12)≈3.46
+        assert calc.rmse(actuals, even).value == pytest.approx(calc.mae(actuals, even).value)
+        assert calc.rmse(actuals, spiky).value > calc.mae(actuals, spiky).value
+
+    def test_rmse_empty_array_returns_nan(self) -> None:
+        """Empty inputs return NaN with a warning."""
+        calc = MetricsCalculator()
+        result = calc.rmse(np.array([]), np.array([]))
+        assert math.isnan(result.value)
+        assert result.n_samples == 0
+        assert "Empty array" in result.warnings
+
+    def test_rmse_length_mismatch_raises(self) -> None:
+        """Different-length arrays surface as ValueError."""
+        calc = MetricsCalculator()
+        with pytest.raises(ValueError, match="Length mismatch"):
+            calc.rmse(np.array([1.0, 2.0]), np.array([1.0]))
+
+
+class TestComputeBucketMetrics:
+    """Tests for the per-horizon-bucket helper (PRP-36)."""
+
+    def test_horizon_buckets_constant_shape(self) -> None:
+        """HORIZON_BUCKETS exposes four buckets with the documented boundaries."""
+        ids = [b[0] for b in HORIZON_BUCKETS]
+        assert ids == ["h_1_7", "h_8_14", "h_15_28", "h_29_plus"]
+        assert HORIZON_BUCKETS[-1][2] is None  # h_29_plus is unbounded.
+
+    def test_compute_buckets_full_horizon_emits_all_present(self) -> None:
+        """A 30-day horizon spans all four buckets — they should all appear."""
+        actuals = np.arange(1.0, 31.0)  # 30 days
+        predictions = actuals + 1.0  # uniform +1 error
+        horizon_offsets = list(range(1, 31))
+        result = compute_bucket_metrics(actuals, predictions, horizon_offsets)
+        assert set(result.keys()) == {"h_1_7", "h_8_14", "h_15_28", "h_29_plus"}
+        # Each bucket carries the same metric names as calculate_all.
+        for bucket in result.values():
+            assert {"mae", "rmse", "smape", "wape", "bias"} <= set(bucket.keys())
+            assert bucket["mae"] == pytest.approx(1.0)
+
+    def test_compute_buckets_drops_empty_h29_for_14day_horizon(self) -> None:
+        """A 14-day horizon must NOT emit ``h_29_plus`` — empty buckets drop."""
+        actuals = np.arange(1.0, 15.0)
+        predictions = actuals.copy()
+        horizon_offsets = list(range(1, 15))
+        result = compute_bucket_metrics(actuals, predictions, horizon_offsets)
+        assert "h_1_7" in result
+        assert "h_8_14" in result
+        assert "h_15_28" not in result
+        assert "h_29_plus" not in result
+
+    def test_compute_buckets_handles_unaligned_offsets(self) -> None:
+        """A non-contiguous offset list still slices into the right buckets."""
+        actuals = np.array([1.0, 2.0, 3.0, 4.0])
+        predictions = np.array([1.5, 2.5, 3.5, 4.5])
+        horizon_offsets = [1, 14, 15, 50]  # h_1_7, h_8_14, h_15_28, h_29_plus
+        result = compute_bucket_metrics(actuals, predictions, horizon_offsets)
+        assert set(result.keys()) == {"h_1_7", "h_8_14", "h_15_28", "h_29_plus"}
+
+    def test_compute_buckets_length_mismatch_raises(self) -> None:
+        """Mismatched array lengths surface as ValueError."""
+        with pytest.raises(ValueError, match="length mismatch"):
+            compute_bucket_metrics(
+                np.array([1.0, 2.0]),
+                np.array([1.0, 2.0, 3.0]),
+                [1, 2, 3],
+            )
+
+    def test_compute_buckets_empty_arrays_returns_empty_dict(self) -> None:
+        """Empty inputs return an empty dict (no buckets to emit)."""
+        result = compute_bucket_metrics(np.array([]), np.array([]), [])
+        assert result == {}
+
+
+class TestAggregateBucketMetrics:
+    """Tests for cross-fold aggregation of per-horizon-bucket metrics."""
+
+    def test_aggregate_means_per_bucket(self) -> None:
+        """aggregate_bucket_metrics returns per-bucket means across folds."""
+        calc = MetricsCalculator()
+        fold_buckets = [
+            {"h_1_7": {"mae": 2.0, "rmse": 3.0}, "h_8_14": {"mae": 4.0}},
+            {"h_1_7": {"mae": 6.0, "rmse": 7.0}, "h_8_14": {"mae": 8.0}},
+        ]
+        aggregated = calc.aggregate_bucket_metrics(fold_buckets)
+        assert aggregated["h_1_7"]["mae"] == pytest.approx(4.0)
+        assert aggregated["h_1_7"]["rmse"] == pytest.approx(5.0)
+        assert aggregated["h_8_14"]["mae"] == pytest.approx(6.0)
+
+    def test_aggregate_skips_buckets_absent_in_some_folds(self) -> None:
+        """A bucket present in only some folds aggregates over the present folds only."""
+        calc = MetricsCalculator()
+        fold_buckets = [
+            {"h_1_7": {"mae": 10.0}},
+            {"h_1_7": {"mae": 20.0}, "h_29_plus": {"mae": 5.0}},
+        ]
+        aggregated = calc.aggregate_bucket_metrics(fold_buckets)
+        assert aggregated["h_1_7"]["mae"] == pytest.approx(15.0)
+        assert aggregated["h_29_plus"]["mae"] == pytest.approx(5.0)
+
+    def test_aggregate_empty_input_returns_empty_dict(self) -> None:
+        """No folds → no buckets."""
+        calc = MetricsCalculator()
+        assert calc.aggregate_bucket_metrics([]) == {}
+
+    def test_aggregate_skips_nan_values(self) -> None:
+        """NaN per-fold values do not contribute to the mean."""
+        calc = MetricsCalculator()
+        fold_buckets = [
+            {"h_1_7": {"mae": 2.0}},
+            {"h_1_7": {"mae": float("nan")}},
+            {"h_1_7": {"mae": 4.0}},
+        ]
+        aggregated = calc.aggregate_bucket_metrics(fold_buckets)
+        assert aggregated["h_1_7"]["mae"] == pytest.approx(3.0)

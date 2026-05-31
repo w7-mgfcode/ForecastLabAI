@@ -52,14 +52,17 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 
 from app.core.logging import get_logger
-from app.features.data_platform.models import Calendar
+from app.features.data_platform.models import Calendar, Product
 from app.shared.feature_frames import (
     CALENDAR_COLUMNS,
     EXOGENOUS_COLUMNS,
     EXOGENOUS_LAGS,
     HISTORY_TAIL_DAYS,
+    FeatureGroup,
     FutureFeatureFrame,
+    V2FutureSidecar,
     build_calendar_columns,
+    build_future_feature_rows_v2,
     build_long_lag_columns,
     canonical_feature_columns,
 )
@@ -240,13 +243,20 @@ async def build_future_frame(
     history_tail: list[float],
     assumptions: ScenarioAssumptions,
     launch_date: date | None = None,
+    feature_frame_version: int = 1,
+    history_tail_dates: list[date] | None = None,
+    feature_groups: dict[str, list[str]] | None = None,
 ) -> FutureFeatureFrame:
     """Build the future feature frame for one ``(store, product)`` series.
 
-    The only database read is the ``calendar`` holiday lookup for the horizon
-    window — a ``calendar`` row is a timeless attribute, so reading it is not
-    leakage. Everything else is derived from ``history_tail`` (observed,
-    ``<= T``), the dates, or the assumptions.
+    Dispatches on ``feature_frame_version``:
+
+    * V1 (default) — unchanged byte-for-byte. Reads calendar holidays for
+      the horizon window and delegates to :func:`assemble_future_frame`.
+    * V2 (PRP-35) — when the bundle was trained with the richer V2 contract.
+      Reads holidays + product discontinue date, assembles a
+      :class:`~app.shared.feature_frames.V2FutureSidecar` from the
+      assumptions, and delegates to ``build_future_feature_rows_v2``.
 
     Args:
         db: Async database session (used only for the calendar lookup).
@@ -259,6 +269,13 @@ async def build_future_frame(
         history_tail: Observed target values ending at ``T``.
         assumptions: The scenario assumptions.
         launch_date: The product's launch date, or ``None``.
+        feature_frame_version: 1 (default) or 2. V1 bundles MAY omit this and
+            the legacy path is preserved.
+        history_tail_dates: V2 only — observed dates aligned with
+            ``history_tail``. Required for V2 same-DOW lookups and exogenous
+            sidecar lookups (omit → empty list / NaN cells).
+        feature_groups: V2 only — bundle's ``feature_groups`` metadata. When
+            provided, drives which V2 columns the future builder emits.
 
     Returns:
         The assembled future feature frame.
@@ -280,6 +297,31 @@ async def build_future_frame(
     )
     holiday_dates: set[date] = set(result.scalars().all())
 
+    if feature_frame_version == 2:
+        frame = await _build_future_frame_v2(
+            db,
+            store_id=store_id,
+            product_id=product_id,
+            dates=dates,
+            feature_columns=feature_columns,
+            history_tail=history_tail,
+            history_tail_dates=history_tail_dates or [],
+            assumptions=assumptions,
+            holiday_dates=holiday_dates,
+            launch_date=launch_date,
+            feature_groups=feature_groups,
+        )
+        logger.info(
+            "scenarios.future_frame_built",
+            store_id=store_id,
+            product_id=product_id,
+            horizon=horizon,
+            n_features=len(feature_columns),
+            n_calendar_holidays=len(holiday_dates),
+            feature_frame_version=2,
+        )
+        return frame
+
     frame = assemble_future_frame(
         dates=dates,
         feature_columns=feature_columns,
@@ -297,3 +339,144 @@ async def build_future_frame(
         n_calendar_holidays=len(holiday_dates),
     )
     return frame
+
+
+async def _build_future_frame_v2(
+    db: AsyncSession,
+    *,
+    store_id: int,
+    product_id: int,
+    dates: list[date],
+    feature_columns: list[str],
+    history_tail: list[float],
+    history_tail_dates: list[date],
+    assumptions: ScenarioAssumptions,
+    holiday_dates: set[date],
+    launch_date: date | None,
+    feature_groups: dict[str, list[str]] | None,
+) -> FutureFeatureFrame:
+    """V2 future-frame assembly.
+
+    Loads discontinue_date (a timeless attribute) inline — same-slice
+    data_platform.models read, mirroring the ``Calendar`` import already used
+    in the V1 path. Then builds a :class:`V2FutureSidecar` from the
+    assumptions and delegates to ``build_future_feature_rows_v2``.
+
+    Note: ``store_id`` is unused by V2 sidecar assembly (the future frame is
+    driven by the assumptions); kept on the signature for parity with V1.
+    """
+    _ = store_id  # parameter parity with V1; not read by the V2 assembly
+    horizon = len(dates)
+    # Load discontinue_date inline (same-slice data_platform.models read, like
+    # the V1 path's Calendar lookup).
+    discontinue_date: date | None = await db.scalar(
+        select(Product.discontinue_date).where(Product.id == product_id)
+    )
+
+    # Build per-day assumption-driven inputs.
+    price = assumptions.price
+    promotion = assumptions.promotion
+    assumption_holidays: set[date] = (
+        set(assumptions.holiday.dates) if assumptions.holiday is not None else set()
+    )
+    horizon_holidays = holiday_dates | assumption_holidays
+
+    price_factor_per_day: list[float | None] = []
+    promo_active_per_day: list[bool] = []
+    promo_kinds_per_day: list[frozenset[str]] = []
+    promo_discount_per_day: list[float] = []
+    for point in dates:
+        # price_factor — 1.0 baseline, (1 + change_pct) inside an assumption window
+        if price is not None and _in_window(point, price.start_date, price.end_date):
+            price_factor_per_day.append(1.0 + float(price.change_pct))
+        else:
+            price_factor_per_day.append(1.0)
+        in_promo = promotion is not None and _in_window(
+            point, promotion.start_date, promotion.end_date
+        )
+        promo_active_per_day.append(bool(in_promo))
+        # Default V2 MVP: scenario PromotionAssumption has no kind / discount
+        # plumbing yet — assume an empty kind set and 0.0 discount when active.
+        # A future PRP can widen ScenarioAssumptions.promotion to carry these.
+        promo_kinds_per_day.append(frozenset())
+        promo_discount_per_day.append(0.0)
+
+    sidecar = V2FutureSidecar(
+        holiday_dates=frozenset(horizon_holidays),
+        launch_date=launch_date,
+        discontinue_date=discontinue_date,
+        price_factor_per_day=tuple(price_factor_per_day),
+        promo_active_per_day=tuple(promo_active_per_day),
+        promo_kinds_per_day=tuple(promo_kinds_per_day),
+        promo_discount_pct_per_day=tuple(promo_discount_per_day),
+    )
+
+    # Resolve groups from the bundle's persisted feature_groups dict; default
+    # to all groups present in feature_columns (best-effort) when the bundle
+    # didn't record one.
+    if feature_groups:
+        group_names = list(feature_groups.keys())
+        valid: dict[str, FeatureGroup] = {g.value: g for g in FeatureGroup}
+        resolved_groups: tuple[FeatureGroup, ...] = tuple(
+            valid[name] for name in group_names if name in valid
+        )
+    else:
+        resolved_groups = ()
+    if not resolved_groups:
+        # Fallback: infer from columns present in feature_columns. The future
+        # builder will silently NaN-fill any column not produced (defensive,
+        # mirrors V1 assemble_future_frame).
+        from app.shared.feature_frames import canonical_feature_columns_v2
+
+        # Try all groups; the builder will emit ALL columns the manifest
+        # contains for those groups, which may differ from ``feature_columns``.
+        # We let the caller's ``feature_columns`` be the authoritative output
+        # column order — any extras are dropped below.
+        try:
+            _ = canonical_feature_columns_v2()
+            resolved_groups = tuple(g for g in FeatureGroup)
+        except ValueError:  # pragma: no cover — defensive
+            resolved_groups = ()
+
+    # Build the V2 future matrix (full groups), then project to the bundle's
+    # ``feature_columns`` order — any column the bundle didn't expect is
+    # dropped; any column the bundle expected but the V2 builder doesn't
+    # produce is NaN-filled (defensive shape, mirrors V1).
+    import math
+
+    full_rows = build_future_feature_rows_v2(
+        test_dates=dates,
+        history_tail=history_tail,
+        history_tail_dates=history_tail_dates,
+        gap=0,
+        baseline_price=1.0,  # price_factor is already the ratio; baseline is unitary
+        sidecar=sidecar,
+        groups=resolved_groups,
+    )
+    full_columns = list(_columns_for_resolved_groups(resolved_groups))
+    full_index = {name: i for i, name in enumerate(full_columns)}
+    matrix: list[list[float]] = []
+    for j in range(horizon):
+        row: list[float] = []
+        for column in feature_columns:
+            if column in full_index:
+                row.append(full_rows[j][full_index[column]])
+            else:
+                row.append(math.nan)
+        matrix.append(row)
+    return FutureFeatureFrame(
+        dates=list(dates),
+        feature_columns=list(feature_columns),
+        matrix=matrix,
+    )
+
+
+def _columns_for_resolved_groups(
+    groups: tuple[FeatureGroup, ...],
+) -> list[str]:
+    """Resolve the full V2 column list for the supplied groups (best-effort)."""
+    from app.shared.feature_frames import canonical_feature_columns_v2
+
+    if not groups:
+        return []
+    return canonical_feature_columns_v2(groups=groups)

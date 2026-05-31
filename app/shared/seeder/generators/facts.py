@@ -615,25 +615,27 @@ class PriceHistoryGenerator:
             while current <= end_date:
                 # Check for price change (monthly probability)
                 if self.rng.random() < self.price_change_probability / 30:
-                    # End previous price window
-                    records.append(
-                        {
-                            "product_id": product_id,
-                            "store_id": store_id,
-                            "price": current_price,
-                            "valid_from": current_valid_from,
-                            "valid_to": current - timedelta(days=1),
-                        }
-                    )
-
-                    # Generate new price
-                    change_pct = self.rng.uniform(
-                        -self.max_price_change_pct, self.max_price_change_pct
-                    )
-                    current_price = (current_price * Decimal(str(1 + change_pct))).quantize(
-                        Decimal("0.01")
-                    )
-                    current_valid_from = current
+                    valid_to = current - timedelta(days=1)
+                    # Skip degenerate window when a change fires on start_date
+                    # itself: valid_to would precede valid_from and violate
+                    # ck_price_history_valid_dates.
+                    if valid_to >= current_valid_from:
+                        records.append(
+                            {
+                                "product_id": product_id,
+                                "store_id": store_id,
+                                "price": current_price,
+                                "valid_from": current_valid_from,
+                                "valid_to": valid_to,
+                            }
+                        )
+                        change_pct = self.rng.uniform(
+                            -self.max_price_change_pct, self.max_price_change_pct
+                        )
+                        current_price = (current_price * Decimal(str(1 + change_pct))).quantize(
+                            Decimal("0.01")
+                        )
+                        current_valid_from = current
 
                 current += timedelta(days=1)
 

@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 import {
   applyEvent,
   createInitialSteps,
+  derivePhases,
   initialState,
   useDemoPipeline,
 } from './use-demo-pipeline'
+import type { DemoStep } from './use-demo-pipeline'
 import type { StepEvent } from '@/types/api'
 
 /** Build a StepEvent with sensible defaults for the fields not under test. */
@@ -104,6 +106,7 @@ describe('applyEvent', () => {
       winningRunId: 'run-abc',
       alias: 'demo-production',
       wallClockS: 42,
+      v2RunId: null,
     })
   })
 
@@ -163,11 +166,161 @@ describe('applyEvent', () => {
 })
 
 describe('useDemoPipeline', () => {
-  it('initializes with 11 idle steps and the idle phase', () => {
+  it('initializes with 11 idle steps and the idle phase (demo_minimal default)', () => {
     const { result } = renderHook(() => useDemoPipeline())
     expect(result.current.steps).toHaveLength(11)
     expect(result.current.phase).toBe('idle')
     expect(result.current.isRunning).toBe(false)
     expect(result.current.summary).toBeNull()
+    // PRP-38 — every idle step carries a phase tag (no real wire events yet).
+    expect(result.current.steps.every((s) => !!s.phaseName)).toBe(true)
+    expect(result.current.phases.length).toBe(6)
+    // PRP-41 — design Z renamed the legacy `agent` phase to the unified `agents`.
+    expect(result.current.phases.map((p) => p.id)).toEqual([
+      'data',
+      'modeling',
+      'decision',
+      'verify',
+      'agents',
+      'cleanup',
+    ])
+  })
+
+  it('PRP-41 — stop() resets phase to idle and surfaces a cancellation banner', () => {
+    const { result, rerender } = renderHook(() => useDemoPipeline())
+    // Drive into running state via start().
+    act(() => {
+      result.current.start({ seed: 42, skip_seed: true, reset: false, scenario: 'demo_minimal' })
+    })
+    expect(result.current.phase).toBe('running')
+    act(() => {
+      result.current.stop()
+    })
+    rerender()
+    expect(result.current.phase).toBe('idle')
+    expect(result.current.errorMessage).toBe('Pipeline cancelled by user.')
+  })
+})
+
+
+// =============================================================================
+// PRP-38 — derivePhases + phase-aware applyEvent + showcase_rich layout
+// =============================================================================
+
+
+describe('PRP-38 derivePhases', () => {
+  it('groups steps by phaseName preserving first-seen order', () => {
+    const steps: DemoStep[] = [
+      {
+        name: 'precheck',
+        label: 'Health check',
+        status: 'pass',
+        detail: '',
+        durationMs: 0,
+        data: {},
+        phaseName: 'data',
+      },
+      {
+        name: 'train',
+        label: 'Train models',
+        status: 'pass',
+        detail: '',
+        durationMs: 0,
+        data: {},
+        phaseName: 'modeling',
+      },
+      {
+        name: 'reset',
+        label: 'Reset',
+        status: 'skip',
+        detail: '',
+        durationMs: 0,
+        data: {},
+        phaseName: 'data',
+      },
+    ]
+    const groups = derivePhases(steps)
+    expect(groups.map((g) => g.id)).toEqual(['data', 'modeling'])
+    expect(groups[0]?.steps.map((s) => s.name)).toEqual(['precheck', 'reset'])
+    expect(groups[1]?.steps.map((s) => s.name)).toEqual(['train'])
+  })
+
+  it("falls back to a 'pipeline' bucket when no step carries a phase (legacy)", () => {
+    const steps: DemoStep[] = [
+      {
+        name: 'precheck',
+        label: 'Health check',
+        status: 'pass',
+        detail: '',
+        durationMs: 0,
+        data: {},
+      },
+    ]
+    const groups = derivePhases(steps)
+    expect(groups.length).toBe(1)
+    expect(groups[0]?.id).toBe('pipeline')
+  })
+})
+
+
+describe('PRP-38 applyEvent phase propagation', () => {
+  it('captures phase_name from a step_start event', () => {
+    const next = applyEvent(
+      initialState(),
+      makeEvent({ event_type: 'step_start', step_name: 'train', phase_name: 'modeling' })
+    )
+    const step = next.steps.find((s) => s.name === 'train')
+    expect(step?.phaseName).toBe('modeling')
+  })
+
+  it('captures phase_name from a step_complete event', () => {
+    const next = applyEvent(
+      initialState(),
+      makeEvent({
+        event_type: 'step_complete',
+        step_name: 'backtest',
+        status: 'pass',
+        phase_name: 'decision',
+      })
+    )
+    expect(next.steps.find((s) => s.name === 'backtest')?.phaseName).toBe('decision')
+  })
+})
+
+
+describe('PRP-38/39/40/41 createInitialSteps(showcase_rich)', () => {
+  it('returns 24 idle steps in the showcase_rich layout (PRP-41 adds agent_hitl_flow + ops_snapshot)', () => {
+    const steps = createInitialSteps('showcase_rich')
+    expect(steps.length).toBe(24)
+    expect(steps.map((s) => s.name)).toEqual([
+      'precheck',
+      'reset',
+      'seed',
+      'status',
+      'features',
+      'phase2_enrichment',
+      'historical_backfill',
+      'train',
+      'v2_train',
+      'backtest',
+      'register',
+      // PRP-39 — decision-phase extensions.
+      'champion_compat_compare',
+      'stale_alias_trigger',
+      'safer_promote_flow',
+      // PRP-39 — portfolio phase (between decision and verify).
+      'batch_preset',
+      // PRP-40 — planning + knowledge phases (after portfolio, before verify).
+      'scenario_simulate_and_save',
+      'multi_plan_compare',
+      'embedding_provider_probe',
+      'rag_index_subset',
+      'rag_retrieve_probe',
+      'verify',
+      // PRP-41 — HITL approval + ops snapshot (replaces legacy `agent`).
+      'agent_hitl_flow',
+      'ops_snapshot',
+      'cleanup',
+    ])
   })
 })

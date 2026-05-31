@@ -515,12 +515,30 @@ export default function WhatIfPlannerPage() {
         <>
           <Card>
             <CardHeader>
-              <CardTitle>Scenario impact</CardTitle>
-              <CardDescription>
-                {comparison.model_type} model · store {comparison.store_id} · product{' '}
-                {comparison.product_id} · {comparison.horizon}-day horizon ·{' '}
-                {methodLabel(comparison.method)} estimate
-              </CardDescription>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle>Scenario impact</CardTitle>
+                  <CardDescription>
+                    {comparison.model_type} model · store {comparison.store_id} ·
+                    product {comparison.product_id} · {comparison.horizon}-day
+                    horizon · {methodLabel(comparison.method)} estimate
+                  </CardDescription>
+                </div>
+                {/* PRP-37 — surface the scenario method as a chip. The
+                    `model_exogenous` method genuinely re-forecasts the
+                    regression baseline through a leakage-safe future X;
+                    `heuristic` applies a deterministic post-forecast factor. */}
+                <StatusBadge
+                  variant={
+                    comparison.method === 'model_exogenous' ? 'info' : 'warning'
+                  }
+                  data-testid="planner-method-badge"
+                >
+                  {comparison.method === 'model_exogenous'
+                    ? 'model-driven re-forecast'
+                    : 'heuristic adjustment'}
+                </StatusBadge>
+              </div>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">

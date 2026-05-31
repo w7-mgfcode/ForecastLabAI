@@ -43,9 +43,13 @@ row opens a detail page.
   and (for non-baseline runs) the canonical feature columns plus a feature
   importance panel — see
   [Advanced Model Metadata](./feature-reference.md#advanced-model-metadata) in the
-  Feature Reference for the data model and error semantics. Two runs can be
-  compared side by side (config diff, metrics diff with deltas, and same-family
-  feature importance side-by-side).
+  Feature Reference for the data model and error semantics. The detail page also
+  hosts a **Feature frame** panel that renders V1/V2 + per-group columns +
+  per-column safety classes when the run carries that metadata (PRP-35/36).
+  Two runs can be compared side by side: a **Champion compatibility** badge
+  surfaces the comparable-run verdict (same grain + overlapping data windows +
+  same feature_frame_version), and the metrics-diff table now includes a
+  **Feature frame version** row.
 - **Jobs** (`/explorer/jobs`) — submitted train/predict/backtest jobs. A job
   **detail page** shows parameters, result JSON, error details, the linked run, a
   cancel action, and live status polling.
@@ -59,8 +63,25 @@ The Visualize menu holds the analytical, chart-heavy pages.
   inventory required to cover it. Includes a lead-time selector and a single-SKU
   drill-in. Answers "how much will this SKU sell, and do I have enough stock?"
 - **Forecast** (`/visualize/forecast`) — visualizes a model's horizon predictions.
+  The top of the page now also hosts a **Train a new model** card: a segmented
+  family picker (Baseline / Tree / Additive), a model-type Select filtered by the
+  picked family, a Feature frame V1/V2 Select, and (when V2 is picked) a feature-
+  pack toggle group. See [Advanced Forecasting Guide](./advanced-forecasting-guide.md).
 - **Backtest Results** (`/visualize/backtest`) — charts backtest folds and the
-  accuracy metrics (MAE, sMAPE, WAPE, bias, stability) for a model run.
+  accuracy metrics (MAE, sMAPE, WAPE, bias, stability) for a model run. When the
+  backtest response carries per-horizon-bucket metrics, a separate **Per-horizon-
+  bucket** card surfaces those (`Days 1-7 / 8-14 / 15-28 / 29+`) and a metric
+  switcher (MAE / sMAPE / WAPE / Bias / RMSE). When the response carries
+  baseline competitors, a **Baseline vs feature-aware** comparison table renders.
+- **What-If Planner** (`/visualize/planner`) — the existing scenario simulation
+  view; impact card now carries a **method badge**
+  (`model-driven re-forecast` vs `heuristic adjustment`) so the planner
+  always sees how the scenario was produced.
+- **Batch Runner** (`/visualize/batch`) — the existing batch runner now hosts a
+  **Sweep preset** Select (5 presets — quick baseline sweep, feature-aware
+  comparison, champion/challenger refresh, stockout-sensitive products, high-WAPE
+  recovery) and a **Sweep matrix** picker (multi-model × V1/V2). Picking a preset
+  prefills the matrix; rows can still be hand-edited.
 
 ## Knowledge (`/knowledge`)
 

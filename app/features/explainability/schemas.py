@@ -33,7 +33,14 @@ ReasonCodeId = Literal[
 
 # Baseline model types this slice can explain. ``lightgbm``/``regression`` are
 # rejected with a clean 400 (MVP scope guard).
-ExplainableModelType = Literal["naive", "seasonal_naive", "moving_average"]
+ExplainableModelType = Literal[
+    "naive",
+    "seasonal_naive",
+    "moving_average",
+    # PRP-36 — new target-only baselines (always-on).
+    "weighted_moving_average",
+    "seasonal_average",
+]
 
 
 class ConfidenceLevel(str, Enum):
@@ -140,8 +147,31 @@ class ExplainForecastRequest(BaseModel):
         description="Series cutoff date (the explainer reads only <= this date)",
     )
     season_length: int | None = Field(
-        None, ge=1, le=365, description="Seasonal period for seasonal_naive (default 7)"
+        None, ge=1, le=365, description="Seasonal period for seasonal_naive / seasonal_average"
     )
     window_size: int | None = Field(
-        None, ge=1, le=90, description="Averaging window for moving_average (default 7)"
+        None,
+        ge=1,
+        le=90,
+        description="Averaging window for moving_average / weighted_moving_average",
+    )
+    # PRP-36 — weighted_moving_average + seasonal_average extras.
+    weight_strategy: Literal["linear", "exponential"] | None = Field(
+        None, description="Weighting scheme for weighted_moving_average (default 'linear')"
+    )
+    decay: float | None = Field(
+        None,
+        gt=0.0,
+        lt=1.0,
+        description="Geometric decay for weighted_moving_average exponential (default 0.7)",
+    )
+    lookback_cycles: int | None = Field(
+        None,
+        ge=2,
+        le=12,
+        description="Cycles to draw from for seasonal_average (default 4)",
+    )
+    trim_outliers: bool | None = Field(
+        None,
+        description="Drop min + max samples before averaging (seasonal_average only)",
     )

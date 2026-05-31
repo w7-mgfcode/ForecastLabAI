@@ -27,7 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.features.backtesting.metrics import MetricsCalculator
+from app.features.backtesting.metrics import MetricsCalculator, compute_bucket_metrics
 from app.features.backtesting.schemas import (
     BacktestConfig,
     BacktestResponse,
@@ -377,6 +377,7 @@ class BacktestingService:
         """
         fold_results: list[FoldResult] = []
         fold_metrics: list[dict[str, float]] = []
+        fold_bucket_metrics: list[dict[str, dict[str, float]]] = []
 
         # Probe the capability flag, then build the historical matrix once for
         # the whole run (feature-aware path only) — sliced, never rebuilt, for
@@ -415,6 +416,17 @@ class BacktestingService:
             )
             fold_metrics.append(metrics)
 
+            # PRP-36 — per-horizon-bucket metrics. ``test_dates[0]`` anchors
+            # horizon day 1 so ``(d - test_dates[0]).days + 1`` lands in
+            # bucket ``h_1_7`` for the first 7 days and walks outward.
+            horizon_offsets = [(d - split.test_dates[0]).days + 1 for d in split.test_dates]
+            bucket_metrics = compute_bucket_metrics(
+                actuals=y_test,
+                predictions=predictions,
+                horizon_offsets=horizon_offsets,
+            )
+            fold_bucket_metrics.append(bucket_metrics)
+
             # Create fold result
             split_boundary = SplitBoundary(
                 fold_index=split.fold_index,
@@ -434,6 +446,7 @@ class BacktestingService:
                     actuals=[float(v) for v in y_test],
                     predictions=[float(v) for v in predictions],
                     metrics=metrics,
+                    horizon_bucket_metrics=bucket_metrics,
                 )
             else:
                 # Store minimal fold result without detailed arrays
@@ -444,14 +457,23 @@ class BacktestingService:
                     actuals=[],
                     predictions=[],
                     metrics=metrics,
+                    horizon_bucket_metrics=bucket_metrics,
                 )
 
             fold_results.append(fold_result)
+
+            logger.debug(
+                "backtest.fold_complete",
+                fold_index=split.fold_index,
+                bucket_count=len(bucket_metrics),
+                model_type=model_config.model_type,
+            )
 
         # Aggregate metrics
         aggregated_metrics, metric_std = self.metrics_calculator.aggregate_fold_metrics(
             fold_metrics
         )
+        bucketed_aggregated = self.metrics_calculator.aggregate_bucket_metrics(fold_bucket_metrics)
 
         return ModelBacktestResult(
             model_type=model_config.model_type,
@@ -459,6 +481,7 @@ class BacktestingService:
             fold_results=fold_results,
             aggregated_metrics=aggregated_metrics,
             metric_std=metric_std,
+            bucketed_aggregated_metrics=bucketed_aggregated if bucketed_aggregated else None,
             feature_aware=feature_aware,
             exogenous_policy="observed" if feature_aware else None,
         )

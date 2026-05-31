@@ -19,9 +19,9 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 | analytics | GET | `/analytics/inventory-status` | Latest `inventory_snapshot_daily` row per `(store, product)` grain (Postgres `DISTINCT ON`); optional `store_id`/`product_id` filters; `200` + empty list on an empty table (never `404`) |
 | featuresets | POST | `/featuresets/compute` | Compute time-safe features (lag/rolling/calendar, leakage-prevented) |
 | featuresets | POST | `/featuresets/preview` | Preview features with sample rows |
-| forecasting | POST | `/forecasting/train` | Train a model (naive / seasonal_naive / moving_average / lightgbm / regression). `regression` wraps `HistGradientBoostingRegressor` on lag + calendar + exogenous features — the baseline a `model_exogenous` scenario re-forecasts through |
+| forecasting | POST | `/forecasting/train` | Train a model. PRP-36 expands the model set: target-only `naive`/`seasonal_naive`/`moving_average`/`weighted_moving_average`/`seasonal_average`/`trend_regression_baseline`; feature-aware `regression`/`prophet_like` (always-on); opt-in `lightgbm`/`xgboost`/`random_forest` behind the matching `forecast_enable_*` flag. `regression` wraps `HistGradientBoostingRegressor` on lag + calendar + exogenous features — the baseline a `model_exogenous` scenario re-forecasts through |
 | forecasting | POST | `/forecasting/predict` | Generate horizon predictions from a trained model |
-| backtesting | POST | `/backtesting/run` | Time-series CV (rolling/expanding splits, MAE/sMAPE/WAPE/bias/stability) |
+| backtesting | POST | `/backtesting/run` | Time-series CV. PRP-36 — `aggregated_metrics` now carries `rmse` alongside MAE/sMAPE/WAPE/bias; every `fold_results[i].horizon_bucket_metrics` is a per-bucket metric dict keyed by `h_1_7`/`h_8_14`/`h_15_28`/`h_29_plus` (empty buckets dropped); `main_model_results.bucketed_aggregated_metrics` (and same on each `baseline_results[i]`) carries per-bucket means across folds, or `null` when no fold emitted a bucket dict |
 | explainability | POST | `/explain/forecast` | Rule-based explanation of the h=1 forecast a named baseline model (`naive`/`seasonal_naive`/`moving_average`) produces on the series ending at `as_of_date`; returns a `ForecastExplanation` — driver contributions, advisory retail reason codes (correlation, not causation), confidence band, caveats, agent summary. Time-safe (`<= as_of_date`); a non-baseline `model_type` or a too-short series → RFC 7807 400 |
 | explainability | GET | `/explain/runs/{run_id}` | Explain a registry `model_run` — config reconstructed from `model_run.model_config`, cutoff `data_window_end`. Missing run → 404; a non-baseline (`lightgbm`/`regression`) run → 400 |
 | explainability | GET | `/explain/jobs/{job_id}` | Explain a completed `predict` job — store/product/model read from `job.result`, cutoff = day before the first forecast date. Missing job → 404; a job that is not a completed predict job → 400 |
@@ -33,7 +33,7 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 | scenarios | DELETE | `/scenarios/{scenario_id}` | Delete a saved plan; `404` when missing |
 | registry | POST | `/registry/runs` | Create model run (pending) |
 | registry | GET | `/registry/runs` | List with filters + pagination + optional allow-listed `sort_by`/`sort_order` (created_at/model_type/status/store_id/product_id; unknown → default `created_at desc`) |
-| registry | GET | `/registry/runs/{run_id}` | Run details + JSONB metrics + runtime_info |
+| registry | GET | `/registry/runs/{run_id}` | Run details + JSONB metrics + runtime_info. PRP-36 — response gains Optional computed fields `feature_frame_version: int \| null` and `feature_groups: dict[str, list[str]] \| null` (both read from `runtime_info`; `null` for V1 / pre-PRP-35 runs) |
 | registry | PATCH | `/registry/runs/{run_id}` | Update status / metrics / artifact_uri |
 | registry | GET | `/registry/runs/{run_id}/verify` | SHA-256 artifact integrity check |
 | registry | POST | `/registry/aliases` | Create/update alias (only on `success` runs) |
@@ -46,7 +46,7 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 | jobs | GET | `/jobs/{job_id}` | Status + result JSON |
 | jobs | DELETE | `/jobs/{job_id}` | Cancel pending |
 | rag | POST | `/rag/index` | Index a markdown/openapi document; idempotent via content hash |
-| rag | POST | `/rag/index/project-docs` | Bulk-index bundled `docs/`, `PRPs/`, and root markdown; per-file + aggregate summary; idempotent via content hash; `502` if the embedding provider fails |
+| rag | POST | `/rag/index/project-docs` | Bulk-index bundled `docs/`, `PRPs/`, and root markdown; per-file + aggregate summary; idempotent via content hash; `502` if the embedding provider fails. **PRP-40** — body accepts an additive Optional `path_prefix: str \| None` (default `None`) that restricts the docs/ root scan to a sub-path (e.g. `docs/user-guide`); a path-traversal-escaping prefix returns `422 application/problem+json`. |
 | rag | POST | `/rag/retrieve` | Semantic search (HNSW), top-k with similarity threshold |
 | rag | GET | `/rag/sources` | List indexed sources |
 | rag | DELETE | `/rag/sources/{source_id}` | Delete source + cascaded chunks |
@@ -57,7 +57,8 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 | agents | DELETE | `/agents/sessions/{session_id}` | Close session |
 | agents | WS | `/agents/stream` | Token-by-token streaming + tool-call events |
 | seeder | (see `app/features/seeder/routes.py`) | `/seeder/*` | Trigger scenarios, status, customization |
-| demo | POST | `/demo/run` | Run the end-to-end demo pipeline in-process; returns a `DemoRunResult`. `409 application/problem+json` if a run is already active |
+| seeder | POST | `/seeder/phase2-enrichment` | PRP-38 — run Phase 2 generators (lifecycle, replenishment, exogenous, returns) against the existing seeded data. `422 application/problem+json` on an empty database. |
+| demo | POST | `/demo/run` | Run the end-to-end demo pipeline in-process; returns a `DemoRunResult`. `409 application/problem+json` if a run is already active. **PRP-38** — body accepts an Optional `scenario: 'demo_minimal' \| 'showcase_rich' \| 'sparse'` field; default `'demo_minimal'` (back-compat). |
 | demo | WS | `/demo/stream` | Stream one `StepEvent` per pipeline step for the live Showcase page |
 | config | GET | `/config/ai` | Effective AI-model config (agent LLM + RAG embeddings); API keys masked, never raw |
 | config | PATCH | `/config/ai` | Persist + apply AI-model changes live (no restart). `409` if an embedding-dimension change would orphan indexed RAG chunks (resend with `force=true`) |
@@ -82,14 +83,16 @@ Verified against `app/features/agents/websocket.py` and `app/features/agents/sch
 
 Drives the end-to-end demo pipeline for the dashboard Showcase page. Verified against `app/features/demo/routes.py` and `app/features/demo/schemas.py` (`StepEvent`).
 
-- **Client → server (one start frame):** `{"seed": int, "reset": bool, "skip_seed": bool}` — all fields optional (`DemoRunRequest` supplies defaults `seed=42`, `reset=false`, `skip_seed=true`). The pipeline runs once, then the server closes.
-- **Server → client (every frame):** Pydantic-serialized `StepEvent` — `{"event_type", "step_name", "step_index", "total_steps", "status", "detail", "duration_ms", "data", "timestamp"}`.
+- **Client → server (one start frame):** `{"seed": int, "reset": bool, "skip_seed": bool, "scenario"?: "demo_minimal" | "showcase_rich" | "sparse"}` — all fields optional (`DemoRunRequest` supplies defaults `seed=42`, `reset=false`, `skip_seed=true`, `scenario="demo_minimal"`). The pipeline runs once, then the server closes.
+- **Server → client (every frame):** Pydantic-serialized `StepEvent` — `{"event_type", "step_name", "step_index", "total_steps", "status", "detail", "duration_ms", "data", "timestamp", "phase_name"?, "phase_index"?, "phase_total"?}`. PRP-38 — the three `phase_*` fields are Optional + Nullable so legacy clients that don't render phases keep working.
 - **`event_type` values (Literal in `StepEvent`):**
   - `step_start` — a step began; `status` is `null`.
-  - `step_complete` — a step finished; `status ∈ {pass, fail, skip, warn}`, `data` carries structured payload (backtest `per_model` WAPE + `winner`; register `run_id` + `alias`).
-  - `pipeline_complete` — final event; `data` carries `winner_model_type`, `winner_wape`, `winning_run_id`, `alias`, `wall_clock_s`.
+  - `step_complete` — a step finished; `status ∈ {pass, fail, skip, warn}`, `data` carries structured payload (backtest `per_model` WAPE + `winner` + `bucketed_aggregated_metrics` on PRP-36/38 feature-aware runs; register `run_id` + `alias`; PRP-38 `v2_train` → `v2_run_id` + `feature_frame_version` + `feature_columns_count` + `feature_groups` + `artifact_uri_full`).
+  - `pipeline_complete` — final event; `data` carries `winner_model_type`, `winner_wape`, `winning_run_id`, `alias`, `wall_clock_s`, `v2_run_id` (PRP-38; null when no V2 run was registered).
   - `error` — bad start frame or a concurrent run already in progress; one event, then the server closes.
 - Concurrency: a module-level `asyncio.Lock` allows one pipeline at a time. A second `POST /demo/run` returns `409`; a second `WS /demo/stream` receives one `error` event.
+- PRP-38 — `scenario="showcase_rich"` extends the data phase with `phase2_enrichment` + `historical_backfill` steps and the modeling phase with `v2_train` (one V2 `prophet_like` run). Phase ids are `data` / `modeling` / `decision` / `verify` / `agent` / `cleanup` (6 phases).
+- PRP-40 — `scenario="showcase_rich"` ALSO adds two phases inserted BEFORE `verify`: `planning` (2 steps — `scenario_simulate_and_save`, `multi_plan_compare`) and `knowledge` (3 steps — `embedding_provider_probe`, `rag_index_subset`, `rag_retrieve_probe`). Total step count: 19 for `showcase_rich`, 11 for `demo_minimal` and `sparse`. Phase ids on `showcase_rich` are `data` / `modeling` / `decision` / `planning` / `knowledge` / `verify` / `agent` / `cleanup` (8 phases). The knowledge steps SKIP gracefully when the embedding provider is unreachable; the pipeline still goes green.
 
 ## Async Events / Queues
 

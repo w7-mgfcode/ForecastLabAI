@@ -176,6 +176,43 @@ export type RunStatus = 'pending' | 'running' | 'success' | 'failed' | 'archived
 // pages can render a consistent Family badge.
 export type ModelFamily = 'baseline' | 'tree' | 'additive'
 
+// PRP-37 Slice C — Forecast Intelligence A (PRP-35).
+// Mirrors `app/shared/feature_frames/contract_v2.py:FeatureGroup`. Lowercase
+// wire form is canonical; the StrEnum on the backend matches these values.
+export type FeatureFrameVersion = 1 | 2
+
+export type FeatureGroup =
+  | 'target_history'
+  | 'rolling'
+  | 'trend'
+  | 'calendar'
+  | 'price_promo'
+  | 'inventory'
+  | 'lifecycle'
+  | 'replenishment'
+  | 'returns'
+  | 'exogenous_weather'
+  | 'exogenous_macro'
+
+export const FEATURE_GROUP_VALUES = [
+  'target_history',
+  'rolling',
+  'trend',
+  'calendar',
+  'price_promo',
+  'inventory',
+  'lifecycle',
+  'replenishment',
+  'returns',
+  'exogenous_weather',
+  'exogenous_macro',
+] as const satisfies readonly FeatureGroup[]
+
+export type FeatureSafetyClass =
+  | 'safe'
+  | 'conditionally_safe'
+  | 'unsafe_unless_supplied'
+
 export interface ModelRun {
   run_id: string
   status: RunStatus
@@ -200,6 +237,10 @@ export interface ModelRun {
   completed_at: string | null
   created_at: string
   updated_at: string
+  /** PRP-36 computed_field — `null` for legacy / V1 runs. */
+  feature_frame_version?: FeatureFrameVersion | null
+  /** PRP-36 computed_field — per-group feature lists, `null` for V1 runs. */
+  feature_groups?: Partial<Record<FeatureGroup, string[]>> | null
 }
 
 // MLZOO-D / PRP-31: response shape for the two feature-metadata endpoints
@@ -220,6 +261,12 @@ export interface FeatureMetadataResponse {
   feature_columns: string[]
   features: FeatureImportanceItem[]
   importance_type: string | null
+  /** PRP-35 — present on every response; defaults to 1 server-side. */
+  feature_frame_version?: FeatureFrameVersion
+  /** PRP-35 — per-group feature lists; V1 returns null. */
+  feature_groups?: Partial<Record<FeatureGroup, string[]>> | null
+  /** PRP-35 — column → safety class map; V1 returns null. */
+  feature_safety_classes?: Record<string, FeatureSafetyClass> | null
 }
 
 export interface RunListResponse extends PaginatedResponse<ModelRun> {
@@ -252,6 +299,35 @@ export interface ArtifactVerifyResponse {
   stored_hash?: string
   computed_hash?: string
   error?: string
+}
+
+// === Backtesting (PRP-36) ===
+//
+// `aggregated_metrics` is a flat `dict[str, float]` on the wire (NOT a Pydantic
+// class) — RMSE rides inside it under the key `"rmse"`. Per-horizon-bucket
+// metrics use the same dict-of-dict shape.
+
+export interface FoldResult {
+  fold: number
+  /** PRP-36 — per-bucket metrics; empty when no horizon-bucket split fired. */
+  horizon_bucket_metrics?: Record<string, Record<string, number>>
+  [key: string]: unknown
+}
+
+export interface ModelBacktestResult {
+  model_type: string
+  aggregated_metrics: Record<string, number>
+  fold_results: FoldResult[]
+  /** PRP-36 — per-bucket aggregates across folds; null when no fold emitted a bucket dict. */
+  bucketed_aggregated_metrics?: Record<string, Record<string, number>> | null
+  [key: string]: unknown
+}
+
+export interface BacktestResponse {
+  main_model_results: ModelBacktestResult
+  baseline_results?: ModelBacktestResult[]
+  comparison_summary?: Record<string, unknown> | null
+  [key: string]: unknown
 }
 
 // === Jobs ===
@@ -332,16 +408,43 @@ export interface BatchScope {
   top_n?: number | null
 }
 
+// PRP-37 Slice C — Forecast-train control inputs. `feature_frame_version` +
+// `feature_groups` MUST be omitted (undefined) when V1 is selected — the
+// backend rejects `feature_groups` on a V1 train.
+export interface TrainRequest {
+  store_id: number
+  product_id: number
+  start_date: string
+  end_date: string
+  model_type: string
+  config?: Record<string, unknown>
+  /** PRP-35 — defaults to 1 server-side; omit to keep that default. */
+  feature_frame_version?: FeatureFrameVersion
+  /** PRP-35 — V2 only; rejected by the backend when version=1. */
+  feature_groups?: FeatureGroup[]
+}
+
 export interface BatchModelConfig {
+  // PRP-36 expanded the model zoo (weighted_moving_average,
+  // seasonal_average, trend_regression_baseline, random_forest). Kept as a
+  // literal union so a typo at call-site is caught at compile time.
   model_type:
     | 'naive'
     | 'seasonal_naive'
     | 'moving_average'
+    | 'weighted_moving_average'
+    | 'seasonal_average'
+    | 'trend_regression_baseline'
     | 'regression'
     | 'lightgbm'
     | 'xgboost'
+    | 'random_forest'
     | 'prophet_like'
   params?: Record<string, unknown>
+  /** PRP-37 — propagated into the per-item train; V1 default when omitted. */
+  feature_frame_version?: FeatureFrameVersion
+  /** PRP-37 — only valid when feature_frame_version=2. */
+  feature_groups?: FeatureGroup[]
 }
 
 export interface BatchSubmitRequest {
@@ -630,6 +733,10 @@ export interface VerifyResult {
 export type DemoStepStatus = 'running' | 'pass' | 'fail' | 'skip' | 'warn'
 export type DemoEventType = 'step_start' | 'step_complete' | 'pipeline_complete' | 'error'
 
+// PRP-38 — seeder scenario presets the picker offers. Mirrors the backend
+// app/shared/seeder/config.py:ScenarioPreset enum's string values.
+export type ScenarioPreset = 'demo_minimal' | 'showcase_rich' | 'sparse'
+
 // One streamed pipeline event from WS /demo/stream (matches the backend
 // StepEvent Pydantic model; snake_case on the wire).
 export interface StepEvent {
@@ -642,6 +749,11 @@ export interface StepEvent {
   duration_ms: number
   data: Record<string, unknown>
   timestamp: string
+  // PRP-38 — additive phase grouping; Optional + Nullable for back-compat
+  // with legacy demo_minimal clients that don't see phase fields.
+  phase_name?: string | null
+  phase_index?: number | null
+  phase_total?: number | null
 }
 
 // Start frame for WS /demo/stream and request body for POST /demo/run.
@@ -649,6 +761,8 @@ export interface DemoRunRequest {
   seed?: number
   reset?: boolean
   skip_seed?: boolean
+  // PRP-38 — optional scenario picker; default is 'demo_minimal' (back-compat).
+  scenario?: ScenarioPreset
 }
 
 // Aggregate result returned by the synchronous POST /demo/run.
@@ -757,6 +871,16 @@ export interface RunHealth {
   failed_total: number
 }
 
+// PRP-36 — enum literal values mirror app/features/ops/schemas.py:StaleReason.
+// 'feature_frame_version_mismatch' is the new value PRP-36 adds; surfaces as a
+// distinct chip on the Ops page so operators can see a V-drift apart from a
+// generic newer-run finding.
+export type StaleReason =
+  | 'newer_success_run'
+  | 'artifact_not_verified'
+  | 'run_not_success'
+  | 'feature_frame_version_mismatch'
+
 // Deployment-alias health with a staleness verdict.
 export interface AliasHealth {
   alias_name: string
@@ -766,8 +890,12 @@ export interface AliasHealth {
   store_id: number
   product_id: number
   is_stale: boolean
-  stale_reason: string | null
+  stale_reason: StaleReason | string | null
   wape: number | null
+  /** PRP-36 — version of the alias's current run. */
+  alias_feature_frame_version?: FeatureFrameVersion | null
+  /** PRP-36 — version of the newest comparable run, when one exists. */
+  comparable_run_feature_frame_version?: FeatureFrameVersion | null
 }
 
 // How current the underlying data and model state are.
@@ -840,6 +968,10 @@ export interface ModelHealthEntry {
   last_trained_at: string | null
   staleness_days: number
   wape_history: WapePoint[]
+  /** PRP-36 — version of the alias's current run. */
+  alias_feature_frame_version?: FeatureFrameVersion | null
+  /** PRP-36 — version of the newest comparable run. */
+  comparable_run_feature_frame_version?: FeatureFrameVersion | null
 }
 
 // Per-grain forecast-error health — GET /ops/model-health.

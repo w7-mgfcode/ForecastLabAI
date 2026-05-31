@@ -310,6 +310,37 @@ async def query_exogenous(
 
 
 @router.post(
+    "/phase2-enrichment",
+    response_model=schemas.Phase2EnrichmentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Run Phase 2 additive enrichment (PRP-38)",
+    description=(
+        "Runs Phase 2 generators (lifecycle, replenishment, exogenous, returns) "
+        "against the existing seeded data. Requires a seeded database — call "
+        "/seeder/generate first."
+    ),
+)
+async def phase2_enrichment(
+    params: schemas.Phase2EnrichmentRequest,
+    db: AsyncSession = Depends(get_db),
+) -> schemas.Phase2EnrichmentResponse:
+    """Run Phase 2 additive enrichment on the existing seeded dataset.
+
+    Returns RFC 7807 problem details on an empty database
+    (``UnprocessableEntityError`` from the service layer is caught and
+    converted by the global handler).
+
+    Args:
+        params: Seed + probability knobs.
+
+    Returns:
+        Phase2EnrichmentResponse with per-table record counts.
+    """
+    _check_seeder_enabled()
+    return await service.phase2_enrichment(db, params)
+
+
+@router.post(
     "/verify",
     response_model=schemas.VerifyResult,
     summary="Verify data integrity",

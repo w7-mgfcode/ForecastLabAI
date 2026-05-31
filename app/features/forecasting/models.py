@@ -89,6 +89,87 @@ class FitResult:
     metrics: dict[str, float] = field(default_factory=lambda: {})
 
 
+# ---------------------------------------------------------------------------
+# Shared PRP-36 helpers (reused by the forecasters AND the explainers).
+#
+# Centralising these here means the explainer's h=1 math always matches the
+# forecaster's predict() math byte-for-byte — no two-place drift when a
+# default changes.  These are pure functions: no I/O, no state.
+# ---------------------------------------------------------------------------
+
+
+def compute_weighted_average_weights(
+    window_size: int,
+    weight_strategy: Literal["linear", "exponential"],
+    decay: float,
+) -> np.ndarray[Any, np.dtype[np.floating[Any]]]:
+    """Build the weight vector :class:`WeightedMovingAverageForecaster` applies.
+
+    ``'linear'`` → ``np.arange(1, window_size+1)`` (newest = ``window_size``).
+    ``'exponential'`` → ``decay ** np.arange(window_size-1, -1, -1)`` (newest = 1.0).
+    """
+    if weight_strategy == "linear":
+        return np.arange(1, window_size + 1, dtype=np.float64)
+    return np.power(decay, np.arange(window_size - 1, -1, -1, dtype=np.float64))
+
+
+def compute_seasonal_average_for_offset(
+    history: np.ndarray[Any, np.dtype[np.floating[Any]]],
+    season_length: int,
+    lookback_cycles: int,
+    target_offset: int,
+    trim_outliers: bool,
+) -> tuple[float, list[float], np.ndarray[Any, np.dtype[np.floating[Any]]]]:
+    """Compute the seasonal-average forecast for one ``target_offset``.
+
+    Mirrors :meth:`SeasonalAverageForecaster.predict` exactly for a single
+    horizon step. Returns ``(forecast, samples_used, samples_after_trim)``
+    so callers can report whichever array they need:
+
+    - ``forecast`` — the mean reported by the forecaster.
+    - ``samples_used`` — the raw samples drawn from ``history``.
+    - ``samples_after_trim`` — the array the mean was actually computed
+      from (equal to ``samples_used`` when ``trim_outliers`` is off or
+      ``len(samples) < 4``).
+    """
+    samples: list[float] = []
+    for k in range(1, lookback_cycles + 1):
+        idx_from_end = k * season_length - target_offset
+        if 0 <= idx_from_end < history.size:
+            samples.append(float(history[history.size - 1 - idx_from_end]))
+    if not samples:
+        fallback = float(history[-1])
+        fallback_arr = np.asarray([fallback], dtype=np.float64)
+        return fallback, [fallback], fallback_arr
+    arr = np.asarray(samples, dtype=np.float64)
+    if trim_outliers and arr.size >= 4:
+        arr = np.sort(arr)[1:-1]
+    return float(arr.mean()), samples, arr
+
+
+def build_trend_baseline_design_row(
+    elapsed_day: int,
+    include_dow: bool,
+    include_month: bool,
+) -> np.ndarray[Any, np.dtype[np.floating[Any]]]:
+    """Build one design row matching :class:`TrendRegressionBaselineForecaster`.
+
+    Layout: ``[elapsed_day, (dow_one_hot x7)?, (month_one_hot x12)?]``.
+
+    Synthetic encodings: ``elapsed_day % 7`` for dow, ``(elapsed_day // 30) % 12``
+    for month. Calendar-agnostic and deterministic — see the forecaster's
+    docstring for the rationale.
+    """
+    cols: list[float] = [float(elapsed_day)]
+    if include_dow:
+        dow = elapsed_day % 7
+        cols.extend(1.0 if i == dow else 0.0 for i in range(7))
+    if include_month:
+        month = (elapsed_day // 30) % 12
+        cols.extend(1.0 if i == month else 0.0 for i in range(12))
+    return np.asarray(cols, dtype=np.float64)
+
+
 class BaseForecaster(ABC):
     """Abstract base class for all forecasting models.
 
@@ -475,6 +556,462 @@ class MovingAverageForecaster(BaseForecaster):
         Returns:
             self (for method chaining).
         """
+        for key, value in params.items():
+            setattr(self, key, value)
+        return self
+
+
+class WeightedMovingAverageForecaster(BaseForecaster):
+    """Target-only baseline: weighted average of the last ``window_size`` observations.
+
+    Formula (constant for every horizon step):
+        ``y_hat[t+h] = np.average(y[-W:], weights=W_strategy)`` for all h.
+
+    Two weight strategies are exposed via ``weight_strategy``:
+
+    - ``'linear'`` → ``weights = np.arange(1, W+1)`` — newest observation
+      weighted highest (= ``W``), oldest weighted lowest (= ``1``).
+    - ``'exponential'`` → ``weights = decay ** np.arange(W-1, -1, -1)`` —
+      geometric decay; newest observation weighted ``decay**0 = 1.0``.
+
+    CRITICAL: like :class:`MovingAverageForecaster`, this baseline does NOT
+    update recursively — every horizon step gets the same weighted mean.
+    """
+
+    requires_features: ClassVar[bool] = False
+
+    def __init__(
+        self,
+        *,
+        window_size: int = 7,
+        weight_strategy: Literal["linear", "exponential"] = "linear",
+        decay: float = 0.7,
+        random_state: int = 42,
+    ) -> None:
+        """Initialize the weighted moving average forecaster.
+
+        Args:
+            window_size: Number of trailing observations to average (>=2).
+            weight_strategy: Either ``'linear'`` or ``'exponential'``.
+            decay: Geometric decay factor for ``'exponential'``; must lie in
+                ``(0.0, 1.0)``. Ignored for ``'linear'``.
+            random_state: Random seed for reproducibility (unused but kept
+                for interface consistency).
+
+        Raises:
+            ValueError: If ``window_size < 2``, if ``weight_strategy`` is
+                unknown, or if ``decay`` is outside ``(0.0, 1.0)``.
+        """
+        super().__init__(random_state)
+        if window_size < 2:
+            raise ValueError(
+                f"window_size must be >= 2, got {window_size}. "
+                "A weighted moving average needs at least two observations."
+            )
+        if weight_strategy not in ("linear", "exponential"):
+            raise ValueError(
+                f"weight_strategy must be 'linear' or 'exponential', got {weight_strategy!r}."
+            )
+        if not 0.0 < decay < 1.0:
+            raise ValueError(f"decay must lie in (0.0, 1.0), got {decay}.")
+        self.window_size = window_size
+        self.weight_strategy: Literal["linear", "exponential"] = weight_strategy
+        self.decay = decay
+        self._weights: np.ndarray[Any, np.dtype[np.floating[Any]]] | None = None
+        self._forecast_value: float = 0.0
+
+    def fit(
+        self,
+        y: np.ndarray[Any, np.dtype[np.floating[Any]]],
+        X: np.ndarray[Any, np.dtype[np.floating[Any]]] | None = None,  # noqa: ARG002
+    ) -> WeightedMovingAverageForecaster:
+        """Fit by computing the weighted mean of the last ``window_size`` values.
+
+        Args:
+            y: Target values (1D array).
+            X: Ignored for the weighted moving average baseline.
+
+        Returns:
+            self (for method chaining).
+
+        Raises:
+            ValueError: If ``len(y) < window_size``.
+        """
+        y_arr = np.asarray(y, dtype=np.float64)
+        if y_arr.size < self.window_size:
+            raise ValueError(f"Need at least {self.window_size} observations, got {y_arr.size}")
+        tail = y_arr[-self.window_size :]
+        # PRP-36 — weight vector built via the shared helper so the
+        # explainer reuses the identical formula.
+        self._weights = compute_weighted_average_weights(
+            window_size=self.window_size,
+            weight_strategy=self.weight_strategy,
+            decay=self.decay,
+        )
+        self._last_values = tail
+        self._forecast_value = float(np.average(tail, weights=self._weights))
+        self._is_fitted = True
+        return self
+
+    def predict(
+        self,
+        horizon: int,
+        X: np.ndarray[Any, np.dtype[np.floating[Any]]] | None = None,  # noqa: ARG002
+    ) -> np.ndarray[Any, np.dtype[np.floating[Any]]]:
+        """Predict the constant weighted mean for every horizon step."""
+        if not self._is_fitted:
+            raise RuntimeError("Model must be fitted before predict")
+        return np.full(horizon, self._forecast_value, dtype=np.float64)
+
+    def get_params(self) -> dict[str, Any]:
+        """Return constructor parameters (sklearn convention)."""
+        return {
+            "window_size": self.window_size,
+            "weight_strategy": self.weight_strategy,
+            "decay": self.decay,
+            "random_state": self.random_state,
+        }
+
+    def set_params(self, **params: Any) -> WeightedMovingAverageForecaster:  # noqa: ANN401
+        """Set constructor parameters (sklearn convention)."""
+        for key, value in params.items():
+            setattr(self, key, value)
+        return self
+
+
+class SeasonalAverageForecaster(BaseForecaster):
+    """Target-only baseline: average of prior matching seasonal positions.
+
+    For horizon day ``j`` (1-based) with season length ``S``, the forecaster
+    averages the historical values at offsets ``{j - k*S}`` for ``k`` in
+    ``[1..lookback_cycles]`` that fall inside the stored history. With
+    ``trim_outliers=True`` and ≥4 samples, the per-bucket sample drops its
+    min and max before averaging.
+
+    Compared to :class:`SeasonalNaiveForecaster` (which copies the value
+    from a single prior cycle position), this baseline averages across
+    multiple prior cycles — more robust on noisy series.
+    """
+
+    requires_features: ClassVar[bool] = False
+
+    def __init__(
+        self,
+        *,
+        season_length: int = 7,
+        lookback_cycles: int = 4,
+        trim_outliers: bool = False,
+        random_state: int = 42,
+    ) -> None:
+        """Initialize the seasonal-average forecaster.
+
+        Args:
+            season_length: Seasonality period in days (must be >= 2).
+            lookback_cycles: Number of trailing cycles to draw samples from
+                (must be >= 2).
+            trim_outliers: If True, drop the min + max sample per bucket
+                before averaging. Requires ≥4 samples to apply.
+            random_state: Random seed (unused, kept for interface parity).
+
+        Raises:
+            ValueError: If ``season_length < 2`` or ``lookback_cycles < 2``.
+        """
+        super().__init__(random_state)
+        if season_length < 2:
+            raise ValueError(f"season_length must be >= 2, got {season_length}.")
+        if lookback_cycles < 2:
+            raise ValueError(f"lookback_cycles must be >= 2, got {lookback_cycles}.")
+        self.season_length = season_length
+        self.lookback_cycles = lookback_cycles
+        self.trim_outliers = trim_outliers
+        self._history: np.ndarray[Any, np.dtype[np.floating[Any]]] | None = None
+
+    def fit(
+        self,
+        y: np.ndarray[Any, np.dtype[np.floating[Any]]],
+        X: np.ndarray[Any, np.dtype[np.floating[Any]]] | None = None,  # noqa: ARG002
+    ) -> SeasonalAverageForecaster:
+        """Store the last ``season_length * lookback_cycles`` observations."""
+        y_arr = np.asarray(y, dtype=np.float64)
+        min_required = self.season_length * 2
+        if y_arr.size < min_required:
+            raise ValueError(
+                f"Need at least {min_required} observations "
+                f"(season_length={self.season_length} * 2), got {y_arr.size}"
+            )
+        window = self.season_length * self.lookback_cycles
+        # Keep only the trailing cycles relevant for sampling; if fewer
+        # observations exist, retain what's available so predict() still
+        # produces a sensible mean.
+        self._history = y_arr[-window:] if y_arr.size > window else y_arr.copy()
+        self._is_fitted = True
+        return self
+
+    def predict(
+        self,
+        horizon: int,
+        X: np.ndarray[Any, np.dtype[np.floating[Any]]] | None = None,  # noqa: ARG002
+    ) -> np.ndarray[Any, np.dtype[np.floating[Any]]]:
+        """Average matching seasonal positions for every horizon step."""
+        if not self._is_fitted or self._history is None:
+            raise RuntimeError("Model must be fitted before predict")
+        out = np.zeros(horizon, dtype=np.float64)
+        for j in range(horizon):
+            # PRP-36 — single source of truth for the h=j+1 math. The
+            # explainer reuses ``compute_seasonal_average_for_offset`` so
+            # the two paths never drift.
+            forecast_value, _samples_used, _samples_after_trim = (
+                compute_seasonal_average_for_offset(
+                    history=self._history,
+                    season_length=self.season_length,
+                    lookback_cycles=self.lookback_cycles,
+                    target_offset=j + 1,  # 1-based horizon day index
+                    trim_outliers=self.trim_outliers,
+                )
+            )
+            out[j] = forecast_value
+        return out
+
+    def get_params(self) -> dict[str, Any]:
+        """Return constructor parameters (sklearn convention)."""
+        return {
+            "season_length": self.season_length,
+            "lookback_cycles": self.lookback_cycles,
+            "trim_outliers": self.trim_outliers,
+            "random_state": self.random_state,
+        }
+
+    def set_params(self, **params: Any) -> SeasonalAverageForecaster:  # noqa: ANN401
+        """Set constructor parameters (sklearn convention)."""
+        for key, value in params.items():
+            setattr(self, key, value)
+        return self
+
+
+class TrendRegressionBaselineForecaster(BaseForecaster):
+    """Target-only Ridge baseline: elapsed-day index + optional calendar one-hots.
+
+    Builds its own design matrix from a synthetic elapsed-day index (and,
+    optionally, day-of-week / month one-hot columns). Unlike
+    :class:`RegressionForecaster`, this forecaster does NOT consume the V1
+    or V2 feature frame — its features are purely calendar-derived inside
+    ``fit``/``predict``. ``requires_features`` stays ``False``.
+
+    Ridge is deterministic by construction (closed-form solver); a fixed
+    ``random_state`` is kept for interface parity but never sampled.
+    """
+
+    requires_features: ClassVar[bool] = False
+
+    def __init__(
+        self,
+        *,
+        alpha: float = 1.0,
+        include_dow: bool = True,
+        include_month: bool = True,
+        random_state: int = 42,
+    ) -> None:
+        """Initialize the trend regression baseline."""
+        super().__init__(random_state)
+        if alpha < 0.0:
+            raise ValueError(f"alpha must be >= 0, got {alpha}.")
+        self.alpha = alpha
+        self.include_dow = include_dow
+        self.include_month = include_month
+        self._ridge: Ridge | None = None
+        self._n_train: int = 0
+
+    # ---------------------------------------------------------------- design
+
+    def _design_row(self, elapsed_day: int) -> np.ndarray[Any, np.dtype[np.floating[Any]]]:
+        """Build a single design row.
+
+        Thin wrapper over :func:`build_trend_baseline_design_row` — the
+        explainer calls the module-level helper directly so the training
+        and explanation paths share one source of truth for the encoding.
+        """
+        return build_trend_baseline_design_row(
+            elapsed_day=elapsed_day,
+            include_dow=self.include_dow,
+            include_month=self.include_month,
+        )
+
+    def _design_matrix(
+        self,
+        start_day: int,
+        n_rows: int,
+    ) -> np.ndarray[Any, np.dtype[np.floating[Any]]]:
+        rows = [self._design_row(start_day + i) for i in range(n_rows)]
+        return np.vstack(rows)
+
+    # --------------------------------------------------------------- fit/pred
+
+    def fit(
+        self,
+        y: np.ndarray[Any, np.dtype[np.floating[Any]]],
+        X: np.ndarray[Any, np.dtype[np.floating[Any]]] | None = None,  # noqa: ARG002
+    ) -> TrendRegressionBaselineForecaster:
+        """Fit Ridge on a synthetic elapsed-day design matrix."""
+        y_arr = np.asarray(y, dtype=np.float64)
+        if y_arr.size < 2:
+            raise ValueError(f"Need at least 2 observations to fit a trend, got {y_arr.size}.")
+        # Synthetic elapsed-day index aligned to the historical positions.
+        X_train = self._design_matrix(start_day=0, n_rows=y_arr.size)
+        self._ridge = Ridge(alpha=self.alpha, random_state=self.random_state)
+        self._ridge.fit(X_train, y_arr)
+        self._n_train = int(y_arr.size)
+        self._is_fitted = True
+        return self
+
+    def predict(
+        self,
+        horizon: int,
+        X: np.ndarray[Any, np.dtype[np.floating[Any]]] | None = None,  # noqa: ARG002
+    ) -> np.ndarray[Any, np.dtype[np.floating[Any]]]:
+        """Predict horizon steps using the elapsed-day continuation."""
+        if not self._is_fitted or self._ridge is None:
+            raise RuntimeError("Model must be fitted before predict")
+        X_future = self._design_matrix(start_day=self._n_train, n_rows=horizon)
+        result = self._ridge.predict(X_future)
+        return np.asarray(result, dtype=np.float64)
+
+    def get_params(self) -> dict[str, Any]:
+        """Return constructor parameters (sklearn convention)."""
+        return {
+            "alpha": self.alpha,
+            "include_dow": self.include_dow,
+            "include_month": self.include_month,
+            "random_state": self.random_state,
+        }
+
+    def set_params(self, **params: Any) -> TrendRegressionBaselineForecaster:  # noqa: ANN401
+        """Set constructor parameters (sklearn convention)."""
+        for key, value in params.items():
+            setattr(self, key, value)
+        return self
+
+
+class RandomForestForecaster(BaseForecaster):
+    """Feature-aware forecaster wrapping ``sklearn.ensemble.RandomForestRegressor``.
+
+    Optional, gated by ``forecast_enable_random_forest`` in settings (the
+    factory enforces the gate). Unlike :class:`RegressionForecaster`, the
+    wrapped estimator DOES expose ``feature_importances_`` — verified at
+    PRP-create time (sklearn 1.8.0) — so the
+    :func:`extract_feature_importance` tree branch handles it without a
+    new special case.
+
+    Determinism recipe (verified): ``random_state`` is fixed AND ``n_jobs=1``.
+    Never set ``n_jobs > 1``; thread-parallel tree fitting introduces
+    nondeterminism. ``predict`` accepts the future feature matrix the
+    forecasting service builds via the V1 (or, once #299 lands, V2) row
+    builders — identical contract to :class:`RegressionForecaster`.
+    """
+
+    requires_features: ClassVar[bool] = True
+
+    def __init__(
+        self,
+        *,
+        n_estimators: int = 100,
+        max_depth: int | None = 10,
+        min_samples_leaf: int = 2,
+        random_state: int = 42,
+    ) -> None:
+        """Initialize the RandomForest forecaster.
+
+        Args:
+            n_estimators: Number of trees in the forest.
+            max_depth: Maximum depth per tree (``None`` = unlimited).
+            min_samples_leaf: Minimum samples required at a leaf.
+            random_state: Random seed (REQUIRED for determinism; combined
+                with ``n_jobs=1`` it gives byte-identical fits).
+        """
+        super().__init__(random_state)
+        if n_estimators < 1:
+            raise ValueError(f"n_estimators must be >= 1, got {n_estimators}.")
+        if max_depth is not None and max_depth < 1:
+            raise ValueError(f"max_depth must be >= 1 or None, got {max_depth}.")
+        if min_samples_leaf < 1:
+            raise ValueError(f"min_samples_leaf must be >= 1, got {min_samples_leaf}.")
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.min_samples_leaf = min_samples_leaf
+        # Lazy import — RandomForestRegressor is a top-level sklearn class but
+        # we still mirror the existing pattern of constructing the estimator
+        # at ``fit`` time so unit tests can patch the import surface cleanly.
+        self._estimator: Any = None
+        self._feature_columns: list[str] | None = None
+        self._n_features_in: int = 0
+
+    def fit(
+        self,
+        y: np.ndarray[Any, np.dtype[np.floating[Any]]],
+        X: np.ndarray[Any, np.dtype[np.floating[Any]]] | None = None,
+    ) -> RandomForestForecaster:
+        """Fit on a feature matrix ``X`` and target vector ``y``."""
+        if X is None:
+            raise ValueError(
+                "RandomForestForecaster requires a non-None X feature matrix; "
+                "this is a feature-aware model."
+            )
+        y_arr = np.asarray(y, dtype=np.float64)
+        X_arr = np.asarray(X, dtype=np.float64)
+        if X_arr.ndim != 2:
+            raise ValueError(f"X must be a 2-D feature matrix, got shape {X_arr.shape}.")
+        if X_arr.shape[0] != y_arr.size:
+            raise ValueError(
+                f"X / y row count mismatch: X has {X_arr.shape[0]}, y has {y_arr.size}."
+            )
+        # Lazy import keeps the module-load surface stable.
+        from sklearn.ensemble import (  # pyright: ignore[reportMissingTypeStubs]
+            RandomForestRegressor,
+        )
+
+        self._estimator = RandomForestRegressor(
+            n_estimators=self.n_estimators,
+            max_depth=self.max_depth,
+            min_samples_leaf=self.min_samples_leaf,
+            random_state=self.random_state,
+            n_jobs=1,  # REQUIRED for determinism; never widen this.
+        )
+        self._estimator.fit(X_arr, y_arr)
+        self._n_features_in = int(X_arr.shape[1])
+        self._is_fitted = True
+        return self
+
+    def predict(
+        self,
+        horizon: int,  # noqa: ARG002 — horizon is implied by X.shape[0]
+        X: np.ndarray[Any, np.dtype[np.floating[Any]]] | None = None,
+    ) -> np.ndarray[Any, np.dtype[np.floating[Any]]]:
+        """Predict using the supplied future feature matrix."""
+        if not self._is_fitted or self._estimator is None:
+            raise RuntimeError("Model must be fitted before predict")
+        if X is None:
+            raise ValueError("RandomForestForecaster.predict requires a non-None X feature matrix.")
+        X_arr = np.asarray(X, dtype=np.float64)
+        if X_arr.ndim != 2:
+            raise ValueError(f"X must be a 2-D feature matrix, got shape {X_arr.shape}.")
+        if X_arr.shape[1] != self._n_features_in:
+            raise ValueError(
+                f"X column count mismatch: trained on {self._n_features_in} "
+                f"columns, predict received {X_arr.shape[1]}."
+            )
+        result = self._estimator.predict(X_arr)
+        return np.asarray(result, dtype=np.float64)
+
+    def get_params(self) -> dict[str, Any]:
+        """Return constructor parameters (sklearn convention)."""
+        return {
+            "n_estimators": self.n_estimators,
+            "max_depth": self.max_depth,
+            "min_samples_leaf": self.min_samples_leaf,
+            "random_state": self.random_state,
+        }
+
+    def set_params(self, **params: Any) -> RandomForestForecaster:  # noqa: ANN401
+        """Set constructor parameters (sklearn convention)."""
         for key, value in params.items():
             setattr(self, key, value)
         return self
@@ -1129,9 +1666,22 @@ class ProphetLikeForecaster(BaseForecaster):
         return self
 
 
-# Type alias for model type literals
+# Type alias for model type literals — keep in sync with ``_MODEL_FAMILY_MAP``
+# and the ``ModelConfig`` discriminated union. The
+# ``test_model_family_map_covers_every_known_model_type`` test walks
+# ``get_args(ModelType)`` to catch drift.
 ModelType = Literal[
-    "naive", "seasonal_naive", "moving_average", "xgboost", "lightgbm", "regression", "prophet_like"
+    "naive",
+    "seasonal_naive",
+    "moving_average",
+    "weighted_moving_average",  # PRP-36
+    "seasonal_average",  # PRP-36
+    "trend_regression_baseline",  # PRP-36
+    "random_forest",  # PRP-36 (optional)
+    "xgboost",
+    "lightgbm",
+    "regression",
+    "prophet_like",
 ]
 
 
@@ -1174,6 +1724,55 @@ def model_factory(config: ModelConfig, random_state: int = 42) -> BaseForecaster
                 random_state=random_state,
             )
         raise ValueError("Invalid config type for moving_average")
+    elif model_type == "weighted_moving_average":
+        from app.features.forecasting.schemas import WeightedMovingAverageModelConfig
+
+        if isinstance(config, WeightedMovingAverageModelConfig):
+            return WeightedMovingAverageForecaster(
+                window_size=config.window_size,
+                weight_strategy=config.weight_strategy,
+                decay=config.decay,
+                random_state=random_state,
+            )
+        raise ValueError("Invalid config type for weighted_moving_average")
+    elif model_type == "seasonal_average":
+        from app.features.forecasting.schemas import SeasonalAverageModelConfig
+
+        if isinstance(config, SeasonalAverageModelConfig):
+            return SeasonalAverageForecaster(
+                season_length=config.season_length,
+                lookback_cycles=config.lookback_cycles,
+                trim_outliers=config.trim_outliers,
+                random_state=random_state,
+            )
+        raise ValueError("Invalid config type for seasonal_average")
+    elif model_type == "trend_regression_baseline":
+        from app.features.forecasting.schemas import TrendRegressionBaselineModelConfig
+
+        if isinstance(config, TrendRegressionBaselineModelConfig):
+            return TrendRegressionBaselineForecaster(
+                alpha=config.alpha,
+                include_dow=config.include_dow,
+                include_month=config.include_month,
+                random_state=random_state,
+            )
+        raise ValueError("Invalid config type for trend_regression_baseline")
+    elif model_type == "random_forest":
+        if not settings.forecast_enable_random_forest:
+            raise ValueError(
+                "random_forest is not enabled. Set forecast_enable_random_forest=True "
+                "in settings (PRP-36 — optional feature-aware model)."
+            )
+        from app.features.forecasting.schemas import RandomForestModelConfig
+
+        if isinstance(config, RandomForestModelConfig):
+            return RandomForestForecaster(
+                n_estimators=config.n_estimators,
+                max_depth=config.max_depth,
+                min_samples_leaf=config.min_samples_leaf,
+                random_state=random_state,
+            )
+        raise ValueError("Invalid config type for random_forest")
     elif model_type == "lightgbm":
         if not settings.forecast_enable_lightgbm:
             raise ValueError(

@@ -13,7 +13,9 @@ from datetime import date as date_type
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.shared.feature_frames import FeatureGroup
 
 # =============================================================================
 # Model Configuration Schemas
@@ -102,6 +104,153 @@ class MovingAverageModelConfig(ModelConfigBase):
         ge=1,
         le=90,
         description="Window size for averaging",
+    )
+
+
+class WeightedMovingAverageModelConfig(ModelConfigBase):
+    """Configuration for the weighted moving average baseline (PRP-36).
+
+    Always-on target-only baseline. The fitted forecaster computes a
+    weighted mean of the last ``window_size`` observations and emits it
+    for every horizon step (no recursive update).
+
+    Two weight strategies are supported:
+
+    - ``'linear'`` → ``weights = np.arange(1, window_size+1)`` — most recent
+      observation weighted highest, oldest weighted lowest.
+    - ``'exponential'`` → ``weights = np.power(decay, np.arange(window_size-1, -1, -1))``
+      — geometric decay from the most recent observation.
+
+    Attributes:
+        window_size: Number of trailing observations included in the average.
+        weight_strategy: Either ``'linear'`` or ``'exponential'``.
+        decay: Geometric decay factor for the ``'exponential'`` strategy
+            (ignored when ``weight_strategy='linear'``).
+    """
+
+    model_type: Literal["weighted_moving_average"] = "weighted_moving_average"
+    window_size: int = Field(
+        default=7,
+        ge=2,
+        le=90,
+        description="Number of trailing observations to average",
+    )
+    weight_strategy: Literal["linear", "exponential"] = Field(
+        default="linear",
+        description="Weighting scheme: 'linear' or 'exponential'",
+    )
+    decay: float = Field(
+        default=0.7,
+        gt=0.0,
+        lt=1.0,
+        description="Geometric decay factor (used only for weight_strategy='exponential')",
+    )
+
+
+class SeasonalAverageModelConfig(ModelConfigBase):
+    """Configuration for the seasonal-average baseline (PRP-36).
+
+    Always-on target-only baseline. For horizon day ``j`` with season
+    length ``S``, the fitted forecaster averages the values at offsets
+    ``{j - k*S}`` for ``k`` in ``[1..lookback_cycles]`` that fall inside
+    the stored history. With ``trim_outliers=True`` the per-bucket sample
+    drops its min and max before averaging (requires ≥4 samples to apply).
+
+    Attributes:
+        season_length: Seasonality period in days (default 7 = weekly).
+        lookback_cycles: Number of trailing cycles to draw samples from.
+        trim_outliers: If True, drop the min + max sample before averaging.
+    """
+
+    model_type: Literal["seasonal_average"] = "seasonal_average"
+    season_length: int = Field(
+        default=7,
+        ge=2,
+        le=365,
+        description="Seasonality period in days",
+    )
+    lookback_cycles: int = Field(
+        default=4,
+        ge=2,
+        le=12,
+        description="Number of trailing cycles to draw samples from",
+    )
+    trim_outliers: bool = Field(
+        default=False,
+        description="If True, drop the min + max sample before averaging (requires ≥4 samples)",
+    )
+
+
+class TrendRegressionBaselineModelConfig(ModelConfigBase):
+    """Configuration for the Ridge trend baseline (PRP-36).
+
+    Target-only Ridge regressor over an elapsed-day index plus optional
+    calendar one-hots (day-of-week, month). Does NOT consume the V1 or
+    V2 feature frame — its features are purely calendar-derived inside
+    the forecaster. ``requires_features`` stays ``False``.
+
+    Attributes:
+        alpha: Ridge L2 regularization strength.
+        include_dow: If True, include a 7-column day-of-week one-hot.
+        include_month: If True, include a 12-column month-of-year one-hot.
+    """
+
+    model_type: Literal["trend_regression_baseline"] = "trend_regression_baseline"
+    alpha: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1000.0,
+        description="Ridge L2 regularization strength",
+    )
+    include_dow: bool = Field(
+        default=True,
+        description="If True, include a day-of-week one-hot in the design matrix",
+    )
+    include_month: bool = Field(
+        default=True,
+        description="If True, include a month-of-year one-hot in the design matrix",
+    )
+
+
+class RandomForestModelConfig(ModelConfigBase):
+    """Configuration for the sklearn RandomForest feature-aware forecaster (PRP-36).
+
+    Optional, gated by ``forecast_enable_random_forest`` in settings. Wraps
+    ``sklearn.ensemble.RandomForestRegressor`` with ``n_jobs=1`` (required
+    for determinism) and a fixed ``random_state``. Unlike
+    ``HistGradientBoostingRegressor``, ``RandomForestRegressor`` DOES expose
+    ``feature_importances_`` — so ``extract_feature_importance`` returns a
+    1-D importance vector matching ``feature_columns``.
+
+    Attributes:
+        n_estimators: Number of trees in the forest.
+        max_depth: Maximum depth per tree (``None`` = unlimited).
+        min_samples_leaf: Minimum samples required to be at a leaf node.
+        feature_config_hash: Optional hash of the feature contract used.
+    """
+
+    model_type: Literal["random_forest"] = "random_forest"
+    n_estimators: int = Field(
+        default=100,
+        ge=10,
+        le=500,
+        description="Number of trees in the forest",
+    )
+    max_depth: int | None = Field(
+        default=10,
+        ge=2,
+        le=64,
+        description="Maximum depth per tree (None = unlimited)",
+    )
+    min_samples_leaf: int = Field(
+        default=2,
+        ge=1,
+        le=50,
+        description="Minimum samples required to be at a leaf node",
+    )
+    feature_config_hash: str | None = Field(
+        default=None,
+        description="Hash of the feature contract used for training",
     )
 
 
@@ -269,6 +418,10 @@ ModelConfig = (
     NaiveModelConfig
     | SeasonalNaiveModelConfig
     | MovingAverageModelConfig
+    | WeightedMovingAverageModelConfig
+    | SeasonalAverageModelConfig
+    | TrendRegressionBaselineModelConfig
+    | RandomForestModelConfig
     | LightGBMModelConfig
     | XGBoostModelConfig
     | RegressionModelConfig
@@ -312,6 +465,30 @@ class TrainRequest(BaseModel):
         description="End date of training period (inclusive)",
     )
     config: ModelConfig
+    # PRP-35: opt-in to the V2 feature contract (richer, leakage-safe). V1
+    # remains the default and the back-compat path; V2 callers also set
+    # ``feature_groups`` to pick the enabled :class:`FeatureGroup` subset.
+    # NOTE: these fields live on ``TrainRequest``, NOT on ``ModelConfigBase`` —
+    # adding them to the config would mutate every existing ``config_hash()``
+    # value, orphaning every registry row and alias. The resolved version is
+    # persisted into bundle metadata instead.
+    feature_frame_version: int = Field(
+        default=1,
+        ge=1,
+        le=2,
+        description=(
+            "Feature contract version. 1 = V1 (default, 14 columns, back-compat); "
+            "2 = V2 (richer manifest, opt-in)."
+        ),
+    )
+    feature_groups: list[str] | None = Field(
+        default=None,
+        description=(
+            "V2 only: optional list of FeatureGroup names to enable "
+            "(None → DEFAULT_V2_GROUPS). MUST be None / omitted when "
+            "feature_frame_version=1 (422 otherwise)."
+        ),
+    )
 
     @field_validator("train_end_date")
     @classmethod
@@ -322,6 +499,24 @@ class TrainRequest(BaseModel):
         if "train_start_date" in data and v <= data["train_start_date"]:
             raise ValueError("train_end_date must be after train_start_date")
         return v
+
+    @model_validator(mode="after")
+    def validate_feature_frame_version_and_groups(self) -> TrainRequest:
+        """Reject ``feature_groups`` when V1 and unknown group names when V2."""
+        if self.feature_frame_version == 1 and self.feature_groups is not None:
+            raise ValueError(
+                "feature_groups is only valid when feature_frame_version=2; "
+                "omit it for V1 training."
+            )
+        if self.feature_frame_version == 2 and self.feature_groups is not None:
+            valid_names = {g.value for g in FeatureGroup}
+            unknown = [name for name in self.feature_groups if name not in valid_names]
+            if unknown:
+                raise ValueError(
+                    f"Unknown FeatureGroup name(s): {unknown!r}. "
+                    f"Valid names: {sorted(valid_names)}."
+                )
+        return self
 
 
 class TrainResponse(BaseModel):
@@ -501,5 +696,29 @@ class FeatureMetadataResponse(BaseModel):
             "For HistGBR-based RegressionForecaster: 'permutation'. "
             "For prophet_like: 'ridge_coef'. Always populated so consumers "
             "know what the numbers mean."
+        ),
+    )
+    # PRP-35 — purely additive V2 metadata. ``feature_frame_version`` defaults
+    # to 1 for legacy bundles (``bundle.metadata.get("feature_frame_version", 1)``).
+    # ``feature_groups`` / ``feature_safety_classes`` are populated for V2
+    # bundles only and absent (None) for V1.
+    feature_frame_version: int = Field(
+        default=1,
+        ge=1,
+        le=2,
+        description="Feature contract version recorded in the bundle metadata.",
+    )
+    feature_groups: dict[str, list[str]] | None = Field(
+        default=None,
+        description=(
+            "V2 only: ``{group_name: [columns]}`` mapping from "
+            "``v2_feature_groups_dict``. None for V1 bundles."
+        ),
+    )
+    feature_safety_classes: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "V2 only: ``{column: safety.value}`` mapping from "
+            "``v2_feature_safety_classes``. None for V1 bundles."
         ),
     )

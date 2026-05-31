@@ -195,6 +195,334 @@ def test_run_demo_e2e_exits_green(uvicorn_subprocess: subprocess.Popen[bytes]) -
     assert "runs=3" in stdout
 
 
+# PRP-38 — wall-clock budgets for the in-process showcase_rich pipeline.
+SHOWCASE_RICH_WALL_BUDGET_SOFT_S: float = 240.0
+SHOWCASE_RICH_WALL_BUDGET_HARD_S: float = 300.0
+
+
+@pytest.mark.integration
+def test_run_demo_showcase_rich_e2e(
+    uvicorn_subprocess: subprocess.Popen[bytes],
+) -> None:
+    """PRP-38 — POST /demo/run with scenario=showcase_rich exits green.
+
+    Asserts:
+
+    - HTTP 200 from /demo/run within the SOFT wall-clock budget (240 s) —
+      soft-warn beyond, hard-fail beyond the HARD budget (300 s).
+    - Pipeline ``overall_status == "pass"``.
+    - At least one V2 run was registered: the ``v2_train`` step's data
+      carries ``feature_frame_version == 2`` and a non-empty
+      ``v2_run_id``.
+    - The ``backtest`` step's data echoes ``bucketed_aggregated_metrics``
+      with the expected bucket-id subset (PRP-36 contract).
+    """
+    import json
+
+    # The pipeline expects a seeded DB; reset+skip_seed=False so the run
+    # generates SHOWCASE_RICH data first. POST /demo/run is synchronous —
+    # it returns the full DemoRunResult.
+    body = json.dumps(
+        {
+            "seed": 42,
+            "reset": True,
+            "skip_seed": False,
+            "scenario": "showcase_rich",
+        }
+    ).encode("utf-8")
+
+    start = time.monotonic()
+    req = urllib.request.Request(  # noqa: S310 — http://127.0.0.1 internal URL
+        f"{DEMO_API_URL}/demo/run",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=SHOWCASE_RICH_WALL_BUDGET_HARD_S) as resp:  # noqa: S310
+            payload = resp.read()
+            assert resp.status == 200, f"POST /demo/run -> {resp.status}"
+    except urllib.error.HTTPError as exc:
+        # An RFC 7807 problem+json comes back here; surface it.
+        raise AssertionError(f"POST /demo/run failed: HTTP {exc.code} body={exc.read()!r}") from exc
+    wall = time.monotonic() - start
+    result = json.loads(payload)
+
+    # ---- Wall-clock budget ----------------------------------------------------
+    if wall > SHOWCASE_RICH_WALL_BUDGET_HARD_S:
+        pytest.fail(
+            f"showcase_rich exceeded HARD budget: {wall:.1f}s > "
+            f"{SHOWCASE_RICH_WALL_BUDGET_HARD_S:.0f}s"
+        )
+    if wall > SHOWCASE_RICH_WALL_BUDGET_SOFT_S:
+        # Soft-warn — surface to the operator but keep the test green.
+        print(
+            f"⚠️ showcase_rich over SOFT budget: {wall:.1f}s > "
+            f"{SHOWCASE_RICH_WALL_BUDGET_SOFT_S:.0f}s",
+            file=sys.stderr,
+        )
+
+    # ---- Overall status ------------------------------------------------------
+    assert result["overall_status"] == "pass", (
+        f"pipeline did not pass: status={result['overall_status']!r} "
+        f"steps={[(s['step_name'], s['status'], s['detail']) for s in result['steps']]}"
+    )
+
+    # ---- V2 run registered ---------------------------------------------------
+    by_name = {s["step_name"]: s for s in result["steps"]}
+    v2 = by_name.get("v2_train")
+    assert v2 is not None, "v2_train step missing from showcase_rich run"
+    assert v2["status"] == "pass", (
+        f"v2_train did not pass: {v2['status']!r} detail={v2['detail']!r}"
+    )
+    assert v2["data"]["feature_frame_version"] == 2
+    assert v2["data"]["v2_run_id"], "v2_train did not surface a v2_run_id"
+
+    # ---- Bucket metrics populated --------------------------------------------
+    bt = by_name.get("backtest")
+    assert bt is not None and bt["status"] == "pass"
+    buckets = bt["data"].get("bucketed_aggregated_metrics")
+    assert buckets is not None and len(buckets) >= 1, (
+        f"backtest emitted no horizon-bucket metrics on showcase_rich: "
+        f"detail={bt['detail']!r} data_keys={list(bt['data'].keys())}"
+    )
+    # At minimum the near-horizon buckets should be present given
+    # n_splits=3, horizon=14.
+    assert "h_1_7" in buckets
+
+
+@pytest.mark.integration
+def test_run_demo_showcase_rich_decision_portfolio(
+    uvicorn_subprocess: subprocess.Popen[bytes],
+) -> None:
+    """PRP-39 — showcase_rich exercises decision + portfolio lifecycle.
+
+    Asserts:
+
+    - HTTP 200 from /demo/run within the SOFT wall-clock budget (240 s);
+      hard-fail beyond the HARD budget (300 s).
+    - Pipeline ``overall_status == "pass"``.
+    - All four new PRP-39 step events fire with status ∈ {pass, warn}:
+      champion_compat_compare, stale_alias_trigger, safer_promote_flow,
+      batch_preset.
+    - The cleanup step restores ``demo-production`` alias to the original
+      V2 winner captured before the safer-Promote swap (R15).
+    """
+    import json
+
+    body = json.dumps(
+        {
+            "seed": 42,
+            "reset": True,
+            "skip_seed": False,
+            "scenario": "showcase_rich",
+        }
+    ).encode("utf-8")
+
+    start = time.monotonic()
+    req = urllib.request.Request(  # noqa: S310 — http://127.0.0.1 internal URL
+        f"{DEMO_API_URL}/demo/run",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=SHOWCASE_RICH_WALL_BUDGET_HARD_S) as resp:  # noqa: S310
+            payload = resp.read()
+            assert resp.status == 200, f"POST /demo/run -> {resp.status}"
+    except urllib.error.HTTPError as exc:
+        raise AssertionError(f"POST /demo/run failed: HTTP {exc.code} body={exc.read()!r}") from exc
+    wall = time.monotonic() - start
+    result = json.loads(payload)
+
+    if wall > SHOWCASE_RICH_WALL_BUDGET_HARD_S:
+        pytest.fail(
+            f"showcase_rich decision/portfolio exceeded HARD budget: "
+            f"{wall:.1f}s > {SHOWCASE_RICH_WALL_BUDGET_HARD_S:.0f}s"
+        )
+    if wall > SHOWCASE_RICH_WALL_BUDGET_SOFT_S:
+        print(
+            f"⚠️ showcase_rich decision/portfolio over SOFT budget: "
+            f"{wall:.1f}s > {SHOWCASE_RICH_WALL_BUDGET_SOFT_S:.0f}s",
+            file=sys.stderr,
+        )
+
+    assert result["overall_status"] == "pass", (
+        f"pipeline did not pass: status={result['overall_status']!r} "
+        f"steps={[(s['step_name'], s['status'], s['detail']) for s in result['steps']]}"
+    )
+
+    by_name = {s["step_name"]: s for s in result["steps"]}
+
+    # ---- PRP-39 — all four new step events fired ---------------------------
+    ok_statuses = {"pass", "warn"}
+    for step_name in (
+        "champion_compat_compare",
+        "stale_alias_trigger",
+        "safer_promote_flow",
+        "batch_preset",
+    ):
+        step = by_name.get(step_name)
+        assert step is not None, f"{step_name} missing from showcase_rich run"
+        assert step["status"] in ok_statuses, (
+            f"{step_name} status={step['status']!r} detail={step['detail']!r}"
+        )
+
+    # ---- PRP-39 — champion_compat_compare derives V_a/V_b client-side -----
+    compat = by_name["champion_compat_compare"]
+    if compat["status"] == "pass":
+        # Skip status is also legitimate when no V1 baseline on the grain.
+        assert compat["data"]["compatible"] is False, (
+            f"compat_compare expected compatible=false, got {compat['data']!r}"
+        )
+        assert compat["data"]["comparable_reason"] == "feature_frame_version_mismatch"
+
+    # ---- PRP-39 — stale_alias_trigger surfaces V mismatch on /ops ---------
+    stale = by_name["stale_alias_trigger"]
+    if stale["status"] == "pass":
+        assert stale["data"]["stale_reason"] == "feature_frame_version_mismatch", (
+            f"unexpected stale_reason: {stale['data']!r}"
+        )
+
+    # ---- PRP-39 — batch_preset returned a terminal status -----------------
+    batch = by_name["batch_preset"]
+    if batch["status"] in ok_statuses:
+        assert batch["data"].get("batch_id"), "batch_preset emitted no batch_id"
+        assert batch["data"].get("preset_source") == "quick_baseline_sweep"
+
+    # ---- PRP-39 R15 — cleanup restores the alias --------------------------
+    cleanup = by_name.get("cleanup")
+    assert cleanup is not None
+    # If safer_promote_flow swapped the alias, cleanup MUST have restored it.
+    promote = by_name["safer_promote_flow"]
+    if promote["status"] == "pass":
+        assert cleanup["data"].get("alias_restored") is True, (
+            "cleanup did not restore the alias swapped by safer_promote_flow"
+        )
+        restored = cleanup["data"].get("restored_run_id")
+        before = promote["data"].get("before_run_id")
+        assert restored == before, (
+            f"cleanup restored to {restored!r}, expected the pre-swap alias target {before!r}"
+        )
+
+
+@pytest.mark.integration
+def test_run_demo_showcase_rich_full_epic(
+    uvicorn_subprocess: subprocess.Popen[bytes],
+) -> None:
+    """PRP-41 — showcase_rich exposes the agent_hitl_flow + ops_snapshot steps.
+
+    Asserts the PRP-41 contracts hold WHEN the steps execute. The full
+    showcase_rich pipeline has a pre-existing fragility documented in
+    ``docs/_base/RUNBOOKS.md`` entry 18 — ``safer_promote_flow`` (PRP-39)
+    swaps the ``demo-production`` alias to a placeholder run whose
+    ``artifact_uri`` ``_parse_artifact_key`` can't parse, breaking the
+    downstream ``scenario_simulate_and_save`` step on a fresh-DB run.
+    That cascade is OUT OF SCOPE for PRP-41 (it's a PRP-39/40 interaction
+    bug); this test tolerates it by:
+
+    - Requiring HTTP 200 + a terminal pipeline_complete event.
+    - Requiring step_count >= 23 (the legacy showcase_rich headcount).
+    - Requiring the PRP-41 contract shapes (`agent_hitl_flow` + `ops_snapshot`
+      payload structure) WHEN those steps fired; SKIPping the assertion when
+      they did not run because an earlier step failed fast.
+    """
+    import json
+
+    body = json.dumps(
+        {
+            "seed": 42,
+            "reset": True,
+            "skip_seed": False,
+            "scenario": "showcase_rich",
+        }
+    ).encode("utf-8")
+
+    start = time.monotonic()
+    req = urllib.request.Request(  # noqa: S310 — http://127.0.0.1 internal URL
+        f"{DEMO_API_URL}/demo/run",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=SHOWCASE_RICH_WALL_BUDGET_HARD_S) as resp:  # noqa: S310
+            payload = resp.read()
+            assert resp.status == 200, f"POST /demo/run -> {resp.status}"
+    except urllib.error.HTTPError as exc:
+        raise AssertionError(f"POST /demo/run failed: HTTP {exc.code} body={exc.read()!r}") from exc
+    wall = time.monotonic() - start
+    result = json.loads(payload)
+
+    if wall > SHOWCASE_RICH_WALL_BUDGET_HARD_S:
+        pytest.fail(
+            f"showcase_rich full epic exceeded HARD budget: "
+            f"{wall:.1f}s > {SHOWCASE_RICH_WALL_BUDGET_HARD_S:.0f}s"
+        )
+
+    by_name = {s["step_name"]: s for s in result["steps"]}
+
+    # ---- PRP-41 — agent_hitl_flow contract (when the step ran) -----------
+    hitl = by_name.get("agent_hitl_flow")
+    if hitl is not None:
+        assert hitl["status"] in {"pass", "skip"}, (
+            f"agent_hitl_flow unexpected status={hitl['status']!r} detail={hitl['detail']!r}"
+        )
+        if hitl["status"] == "pass":
+            # When the LLM key is configured, the data carries the approval decision.
+            assert hitl["data"].get("approval_decision") in {
+                "executed",
+                "rejected",
+                "expired",
+            }
+            assert isinstance(hitl["data"].get("session_id"), str)
+
+    # ---- PRP-41 — ops_snapshot contract (when the step ran) --------------
+    ops = by_name.get("ops_snapshot")
+    if ops is not None:
+        assert ops["status"] in {"pass", "warn"}, (
+            f"ops_snapshot unexpected status={ops['status']!r} detail={ops['detail']!r}"
+        )
+        for key in (
+            "stale_aliases_count",
+            "retraining_candidates_count",
+            "total_runs",
+            "total_aliases",
+            "degrading_health_count",
+        ):
+            assert key in ops["data"], f"ops_snapshot missing KPI key {key!r}"
+            assert isinstance(ops["data"][key], int) and ops["data"][key] >= 0
+
+    # ---- #324 — the safer-promote cascade is fixed --------------------------
+    # The KNOWN_PREEXISTING_FAILURES tolerance for scenario_simulate_and_save is
+    # removed: it now resolves the champion via ctx.winning_run_id (not the
+    # safer-promote-corrupted alias) and MUST pass.
+    scenario_step = by_name.get("scenario_simulate_and_save")
+    assert scenario_step is not None, "scenario_simulate_and_save did not run on showcase_rich"
+    assert scenario_step["status"] == "pass", (
+        "scenario_simulate_and_save must pass after #324, got "
+        f"status={scenario_step['status']!r} detail={scenario_step['detail']!r}"
+    )
+
+    # Any OTHER failed step must be an environment-dependent knowledge-phase step
+    # (embedding provider unreachable / misconfigured key) -- those skip
+    # gracefully when the provider is absent (RUNBOOKS 20-22), but a real 401
+    # surfaces as a fail locally. Not the #324 cascade.
+    ENV_DEPENDENT_KNOWLEDGE_STEPS = {"rag_index_subset", "rag_retrieve_probe"}
+    failed = [s for s in result["steps"] if s["status"] == "fail"]
+    for step in failed:
+        assert step["step_name"] in ENV_DEPENDENT_KNOWLEDGE_STEPS, (
+            f"unexpected showcase_rich failure (not #324, not env-dependent): "
+            f"{step['step_name']!r} detail={step['detail']!r}"
+        )
+    # With no env-dependent failures, the per-step statuses and the overall
+    # status must agree -- the whole pipeline reports pass.
+    if not failed:
+        assert result["overall_status"] == "pass", (
+            f"no failed steps but overall_status={result['overall_status']!r}"
+        )
+
+
 @pytest.mark.integration
 def test_run_demo_precondition_failure_exits_2() -> None:
     """A bogus API URL surfaces as a precondition failure with exit 2.

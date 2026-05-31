@@ -4,7 +4,7 @@ import datetime as _datetime_module
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.shared.seeder.config import default_seed_end_date, default_seed_start_date
 
@@ -425,3 +425,61 @@ class ChannelsResponse(BaseModel):
         ),
     )
     total: int = Field(description="Number of valid channels")
+
+
+# ============================================================================
+# PRP-38 — Phase 2 additive enrichment endpoint
+# ============================================================================
+
+
+class Phase2EnrichmentRequest(BaseModel):
+    """Request body for POST /seeder/phase2-enrichment (PRP-38).
+
+    Runs Phase 2 generators (lifecycle, replenishment, exogenous, returns)
+    against the existing seeded dimensions + calendar. Every field is
+    JSON-native, so ``ConfigDict(strict=True)`` is safe without
+    ``Field(strict=False)`` overrides.
+    """
+
+    model_config = ConfigDict(strict=True)
+
+    seed: int = Field(
+        default=42,
+        ge=0,
+        description="Random seed for reproducible enrichment.",
+    )
+    returns_probability: float = Field(
+        default=0.02,
+        ge=0.0,
+        le=1.0,
+        description="Per-sale return probability (default ~2% of sales).",
+    )
+    discontinue_probability: float = Field(
+        default=0.10,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Probability a product gets a discontinue_date within the seeded "
+            "range (lifecycle generator)."
+        ),
+    )
+
+
+class Phase2EnrichmentResponse(BaseModel):
+    """Response body for POST /seeder/phase2-enrichment (PRP-38)."""
+
+    success: bool = Field(description="Whether the operation succeeded.")
+    records_created: dict[str, int] = Field(
+        description=(
+            "Count of rows written/updated per table "
+            "(product, replenishment_event, exogenous_signal, sales_returns)."
+        ),
+    )
+    records_skipped: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Count of rows skipped per table on an idempotent re-run "
+            "(populated when prior phase-2 data is already present in scope)."
+        ),
+    )
+    duration_ms: float = Field(description="Wall-clock duration in milliseconds.")

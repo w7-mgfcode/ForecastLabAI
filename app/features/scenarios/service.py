@@ -228,6 +228,25 @@ class ScenarioService:
         launch_raw = bundle.metadata.get("launch_date")
         launch_date = date.fromisoformat(launch_raw) if isinstance(launch_raw, str) else None
 
+        # PRP-35 — read feature_frame_version from bundle metadata; V1 bundles
+        # (no such key) default to 1, preserving the V1 byte-stable path.
+        version_raw = bundle.metadata.get("feature_frame_version", 1)
+        feature_frame_version = int(version_raw) if isinstance(version_raw, int | str) else 1
+        history_tail_dates_raw = bundle.metadata.get("history_tail_dates")
+        history_tail_dates: list[date] = []
+        if isinstance(history_tail_dates_raw, list):
+            for value in cast("list[object]", history_tail_dates_raw):
+                if isinstance(value, str):
+                    history_tail_dates.append(date.fromisoformat(value))
+        feature_groups_raw = bundle.metadata.get("feature_groups")
+        feature_groups: dict[str, list[str]] | None = None
+        if isinstance(feature_groups_raw, dict):
+            feature_groups = {
+                str(k): [str(c) for c in cast(list[object], v)]
+                for k, v in cast(dict[object, object], feature_groups_raw).items()
+                if isinstance(v, list)
+            }
+
         scenario_frame = await build_future_frame(
             db,
             store_id=store_id,
@@ -238,6 +257,9 @@ class ScenarioService:
             history_tail=history_tail,
             assumptions=request.assumptions,
             launch_date=launch_date,
+            feature_frame_version=feature_frame_version,
+            history_tail_dates=history_tail_dates,
+            feature_groups=feature_groups,
         )
         # The baseline is the SAME frame with the assumptions stripped.
         baseline_frame = await build_future_frame(
@@ -250,6 +272,9 @@ class ScenarioService:
             history_tail=history_tail,
             assumptions=ScenarioAssumptions(),
             launch_date=launch_date,
+            feature_frame_version=feature_frame_version,
+            history_tail_dates=history_tail_dates,
+            feature_groups=feature_groups,
         )
 
         scenario_x = np.array(scenario_frame.matrix, dtype=np.float64)

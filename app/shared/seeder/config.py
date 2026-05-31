@@ -17,6 +17,12 @@ DEMO_MINIMAL_SPAN_DAYS = 91
 >= 72 so an expanding backtest with n_splits=3 + horizon=14 +
 min_train_size=30 produces a non-NaN WAPE."""
 
+SHOWCASE_RICH_SPAN_DAYS = 180
+"""Span of the ``showcase_rich`` window (181 calendar days inclusive). Larger
+than ``demo_minimal`` to power the V2 prophet_like training and feature-aware
+backtest's full bucket coverage; must stay >= 72 so the expanding backtest
+with n_splits=3 + horizon=14 + min_train_size=30 produces a non-NaN WAPE."""
+
 
 def default_seed_end_date() -> date:
     """End of the default seeded window — anchored to the current (UTC) date."""
@@ -38,6 +44,7 @@ class ScenarioPreset(str, Enum):
     NEW_LAUNCHES = "new_launches"
     SPARSE = "sparse"
     DEMO_MINIMAL = "demo_minimal"
+    SHOWCASE_RICH = "showcase_rich"
 
 
 @dataclass
@@ -626,6 +633,31 @@ class SeederConfig:
                     random_gaps_per_series=3,
                     gap_min_days=2,
                     gap_max_days=10,
+                ),
+            )
+
+        if scenario == ScenarioPreset.SHOWCASE_RICH:
+            # PRP-38: foundation preset for the rich `/showcase` demo.
+            # Larger than ``demo_minimal`` (5 stores x 15 products x 180 days)
+            # so the V2 ``prophet_like`` run has enough history for full
+            # horizon-bucket coverage in the feature-aware backtest, while
+            # mirroring DEMO_MINIMAL's deterministic-noise tuning to avoid
+            # the NaN-WAPE trap. Window anchored to *today* like DEMO_MINIMAL.
+            rich_end = default_seed_end_date()
+            return cls(
+                seed=seed,
+                start_date=rich_end - timedelta(days=SHOWCASE_RICH_SPAN_DAYS),
+                end_date=rich_end,
+                dimensions=DimensionConfig(stores=5, products=15),
+                time_series=TimeSeriesConfig(
+                    base_demand=100,
+                    trend="linear",
+                    trend_slope=0.0005,
+                    noise_sigma=0.10,
+                ),
+                retail=RetailPatternConfig(
+                    promotion_probability=0.15,
+                    stockout_probability=0.05,
                 ),
             )
 

@@ -146,6 +146,31 @@ class TestRegistryServiceConfigHashDuplicate:
         assert run1.compute_config_hash() == run2.compute_config_hash()
 
 
+class TestRegistryServiceFeatureFrameVersion:
+    """PRP-36 — V1 / V2 distinction helpers for duplicate + comparable runs."""
+
+    def test_extract_feature_frame_version_default_v1(self) -> None:
+        """A None extras dict resolves to V1 (legacy back-compat)."""
+        assert RegistryService._extract_feature_frame_version(None) == 1
+
+    def test_extract_feature_frame_version_empty_dict_defaults_v1(self) -> None:
+        """An extras dict without the key resolves to V1."""
+        assert RegistryService._extract_feature_frame_version({}) == 1
+
+    def test_extract_feature_frame_version_explicit_v1(self) -> None:
+        """Explicit feature_frame_version=1 round-trips."""
+        assert RegistryService._extract_feature_frame_version({"feature_frame_version": 1}) == 1
+
+    def test_extract_feature_frame_version_explicit_v2(self) -> None:
+        """Explicit feature_frame_version=2 round-trips."""
+        assert RegistryService._extract_feature_frame_version({"feature_frame_version": 2}) == 2
+
+    def test_extract_feature_frame_version_rejects_unsupported_value(self) -> None:
+        """Unknown int (e.g. 3) and non-int (e.g. '2') fall back to V1."""
+        assert RegistryService._extract_feature_frame_version({"feature_frame_version": 3}) == 1
+        assert RegistryService._extract_feature_frame_version({"feature_frame_version": "2"}) == 1
+
+
 class TestRegistryServiceConfigDiff:
     """Tests for configuration diffing."""
 

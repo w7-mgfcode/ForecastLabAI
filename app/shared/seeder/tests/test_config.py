@@ -4,6 +4,7 @@ from datetime import date, timedelta
 
 from app.shared.seeder.config import (
     DEMO_MINIMAL_SPAN_DAYS,
+    SHOWCASE_RICH_SPAN_DAYS,
     ScenarioPreset,
     SeederConfig,
     TimeSeriesConfig,
@@ -120,6 +121,29 @@ class TestSeederConfig:
         days = (config.end_date - config.start_date).days + 1
         assert days >= 72
 
+    def test_from_scenario_showcase_rich(self):
+        """Test showcase_rich scenario preset (PRP-38).
+
+        Foundation preset for the rich ``/showcase`` demo. Larger than
+        ``demo_minimal`` so the V2 ``prophet_like`` run has enough history
+        for full horizon-bucket coverage; mirrors DEMO_MINIMAL's noise
+        tuning to keep the backtest WAPE non-NaN.
+        """
+        config = SeederConfig.from_scenario(ScenarioPreset.SHOWCASE_RICH, seed=42)
+
+        assert config.seed == 42
+        assert config.end_date == default_seed_end_date()
+        assert config.start_date == default_seed_end_date() - timedelta(
+            days=SHOWCASE_RICH_SPAN_DAYS
+        )
+        assert (config.end_date - config.start_date).days >= 72
+        assert config.dimensions.stores == 5
+        assert config.dimensions.products == 15
+        assert config.time_series.trend == "linear"
+        assert config.time_series.noise_sigma == 0.10
+        assert config.retail.promotion_probability == 0.15
+        assert config.retail.stockout_probability == 0.05
+
 
 class TestScenarioPreset:
     """Tests for ScenarioPreset enum."""
@@ -134,6 +158,7 @@ class TestScenarioPreset:
             "new_launches",
             "sparse",
             "demo_minimal",
+            "showcase_rich",
         }
         actual = {s.value for s in ScenarioPreset}
         assert actual == expected

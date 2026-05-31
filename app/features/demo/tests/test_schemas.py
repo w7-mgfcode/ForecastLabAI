@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.features.demo.schemas import DemoRunRequest, DemoRunResult, StepEvent
+from app.shared.seeder.config import ScenarioPreset
 
 
 def test_demo_run_request_defaults():
@@ -11,6 +12,8 @@ def test_demo_run_request_defaults():
     assert req.seed == 42
     assert req.reset is False
     assert req.skip_seed is True
+    # PRP-38 — default scenario preserves legacy demo_minimal behaviour.
+    assert req.scenario is ScenarioPreset.DEMO_MINIMAL
 
 
 def test_demo_run_request_negative_seed_rejected():
@@ -30,6 +33,18 @@ def test_demo_run_request_accepts_overrides():
     assert req.seed == 7
     assert req.reset is True
     assert req.skip_seed is False
+
+
+def test_demo_run_request_scenario_showcase_rich():
+    """PRP-38 — the JSON wire form accepts the new SHOWCASE_RICH preset."""
+    req = DemoRunRequest.model_validate({"scenario": "showcase_rich"})
+    assert req.scenario is ScenarioPreset.SHOWCASE_RICH
+
+
+def test_demo_run_request_scenario_rejects_unknown():
+    """PRP-38 — unknown scenarios are rejected by Pydantic (strict + enum)."""
+    with pytest.raises(ValidationError):
+        DemoRunRequest.model_validate({"scenario": "not_a_preset"})
 
 
 def test_step_event_json_round_trip():
@@ -64,6 +79,53 @@ def test_step_event_status_optional_on_start():
     assert event.status is None
     assert event.detail == ""
     assert event.data == {}
+    # PRP-38 — new Optional phase fields default to None (legacy back-compat).
+    assert event.phase_name is None
+    assert event.phase_index is None
+    assert event.phase_total is None
+
+
+def test_step_event_phase_fields_round_trip():
+    """PRP-38 — phase fields ride alongside existing event fields on the wire."""
+    event = StepEvent(
+        event_type="step_complete",
+        step_name="v2_train",
+        step_index=9,
+        total_steps=14,
+        status="pass",
+        phase_name="modeling",
+        phase_index=2,
+        phase_total=6,
+    )
+    dumped = event.model_dump(mode="json")
+    assert dumped["phase_name"] == "modeling"
+    assert dumped["phase_index"] == 2
+    assert dumped["phase_total"] == 6
+
+    restored = StepEvent.model_validate(dumped)
+    assert restored.phase_name == "modeling"
+    assert restored.phase_index == 2
+    assert restored.phase_total == 6
+
+
+def test_step_event_legacy_payload_validates_without_phase_fields():
+    """PRP-38 — a legacy wire payload without phase_* still validates (back-compat)."""
+    restored = StepEvent.model_validate(
+        {
+            "event_type": "step_complete",
+            "step_name": "train",
+            "step_index": 6,
+            "total_steps": 11,
+            "status": "pass",
+            "detail": "",
+            "duration_ms": 0.0,
+            "data": {},
+            "timestamp": "2026-05-26T12:00:00+00:00",
+        }
+    )
+    assert restored.phase_name is None
+    assert restored.phase_index is None
+    assert restored.phase_total is None
 
 
 def test_demo_run_result_defaults():

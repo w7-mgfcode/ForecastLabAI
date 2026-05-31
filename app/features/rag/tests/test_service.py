@@ -156,6 +156,62 @@ class TestRAGServiceDiscoverProjectDocFiles:
         names = {p.name for p, _ in found}
         assert names == {"README.md"}
 
+    # --- PRP-40 — additive path_prefix sub-path filter ---
+
+    def test_path_prefix_scopes_docs_discovery(self, tmp_path):
+        """PRP-40 — path_prefix='docs/user-guide' restricts docs scan to that subtree."""
+        (tmp_path / "docs" / "user-guide").mkdir(parents=True)
+        (tmp_path / "docs" / "other").mkdir()
+        (tmp_path / "docs" / "user-guide" / "intro.md").write_text("# A", encoding="utf-8")
+        (tmp_path / "docs" / "other" / "internal.md").write_text("# B", encoding="utf-8")
+        service = RAGService(base_dir=str(tmp_path))
+
+        found = service._discover_project_doc_files(
+            IndexProjectDocsRequest(
+                include_docs=True,
+                include_prps=False,
+                include_root=False,
+                path_prefix="docs/user-guide",
+            )
+        )
+
+        rels = {p.relative_to(tmp_path).as_posix() for p, _ in found}
+        assert rels == {"docs/user-guide/intro.md"}
+
+    def test_path_prefix_none_preserves_wholesale_scan(self, tmp_path):
+        """PRP-40 — path_prefix=None (default) keeps the existing wholesale rglob behaviour."""
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "docs" / "a.md").write_text("# A", encoding="utf-8")
+        (tmp_path / "docs" / "deep").mkdir()
+        (tmp_path / "docs" / "deep" / "b.md").write_text("# B", encoding="utf-8")
+        service = RAGService(base_dir=str(tmp_path))
+
+        found = service._discover_project_doc_files(
+            IndexProjectDocsRequest(include_docs=True, include_prps=False, include_root=False)
+        )
+
+        rels = {p.relative_to(tmp_path).as_posix() for p, _ in found}
+        assert rels == {"docs/a.md", "docs/deep/b.md"}
+
+    def test_index_project_docs_rejects_path_traversal(self, tmp_path):
+        """PRP-40 — path_prefix that escapes base_dir raises ValueError.
+
+        Load-bearing security surface — `path_prefix` lands in an `rglob` call,
+        so a traversal-prefix MUST be rejected at the discovery layer
+        (security-patterns.md path-traversal rule).
+        """
+        service = RAGService(base_dir=str(tmp_path))
+
+        with pytest.raises(ValueError, match="escapes the project root"):
+            service._discover_project_doc_files(
+                IndexProjectDocsRequest(
+                    include_docs=True,
+                    include_prps=False,
+                    include_root=False,
+                    path_prefix="../../etc",
+                )
+            )
+
 
 class TestRAGServiceIndexDocument:
     """Tests for index_document method."""
