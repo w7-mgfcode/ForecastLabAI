@@ -36,6 +36,7 @@ ERROR_TYPES = {
     "BAD_REQUEST": f"{ERROR_TYPE_BASE}/bad-request",
     "SERVICE_UNAVAILABLE": f"{ERROR_TYPE_BASE}/service-unavailable",
     "GATEWAY_TIMEOUT": f"{ERROR_TYPE_BASE}/gateway-timeout",
+    "EMBEDDING_AUTH": f"{ERROR_TYPE_BASE}/embedding-auth",
 }
 
 
