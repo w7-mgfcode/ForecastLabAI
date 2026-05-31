@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.2.20](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.19...v0.2.20) (2026-05-31)
+
+
+### Features
+
+* **api,ui:** PRP-40 showcase planning + knowledge lifecycle ([#315](https://github.com/w7-mgfcode/ForecastLabAI/issues/315)) ([015b47b](https://github.com/w7-mgfcode/ForecastLabAI/commit/015b47b453fb46f7073c2c1ab3e1234b0af7c646))
+* **api,ui:** showcase pipeline — decision + portfolio lifecycle ([#316](https://github.com/w7-mgfcode/ForecastLabAI/issues/316)) ([14041ca](https://github.com/w7-mgfcode/ForecastLabAI/commit/14041cad2efb66a350afce6c3461a711416812dc))
+* **api,ui:** showcase pipeline agent ops final polish ([#321](https://github.com/w7-mgfcode/ForecastLabAI/issues/321)) ([b6f3e4d](https://github.com/w7-mgfcode/ForecastLabAI/commit/b6f3e4db698d68f037a15d8468fd719620eb855f))
+* **api,ui:** showcase pipeline agent ops final polish (PRP-41) ([511ff41](https://github.com/w7-mgfcode/ForecastLabAI/commit/511ff41063a37ad85b5c194374cb9b61f5ff308d))
+* **api,ui:** showcase pipeline decision + portfolio lifecycle ([#316](https://github.com/w7-mgfcode/ForecastLabAI/issues/316)) ([babb6b3](https://github.com/w7-mgfcode/ForecastLabAI/commit/babb6b33863322815fa83332e383fe4d60c4f1e1))
+* **api,ui:** showcase pipeline richer data and v2 foundation ([#309](https://github.com/w7-mgfcode/ForecastLabAI/issues/309)) ([3e771c9](https://github.com/w7-mgfcode/ForecastLabAI/commit/3e771c94ec8df49c0ee7db3e51a6c21b078cb704))
+* **api,ui:** showcase pipeline richer data and v2 foundation ([#309](https://github.com/w7-mgfcode/ForecastLabAI/issues/309)) ([9c4bb91](https://github.com/w7-mgfcode/ForecastLabAI/commit/9c4bb914a696ec62057bce853f0dbc5140acd4f6))
+* **api,ui:** showcase planning + knowledge lifecycle ([#315](https://github.com/w7-mgfcode/ForecastLabAI/issues/315)) ([39a7f21](https://github.com/w7-mgfcode/ForecastLabAI/commit/39a7f213a64c24d129ffdfab3267edcf3c48ec04))
+* **data,repo:** add local demo tooling + seeder window fix ([#297](https://github.com/w7-mgfcode/ForecastLabAI/issues/297)) ([40d536c](https://github.com/w7-mgfcode/ForecastLabAI/commit/40d536cce628c3a70127ee2763cb65d3e6ce5ef9))
+* **data,repo:** local demo tooling + seeder price-history fix ([26a105a](https://github.com/w7-mgfcode/ForecastLabAI/commit/26a105a1204c7fbc874d6287ea64da40c60c6c1f))
+* **forecast:** add feature frame v2 ([f2bf7c8](https://github.com/w7-mgfcode/ForecastLabAI/commit/f2bf7c88c2e342e358f620f2001bcd41d13e8418))
+* **forecast:** add feature frame v2 ([#299](https://github.com/w7-mgfcode/ForecastLabAI/issues/299)) ([4cbcdf4](https://github.com/w7-mgfcode/ForecastLabAI/commit/4cbcdf453d161af4fb1575303f4c11a424136a6b))
+* **forecast:** add model zoo and backtesting comparison ([0e2ad9e](https://github.com/w7-mgfcode/ForecastLabAI/commit/0e2ad9e0cba4abd7f93b98c1b7aaa25171ecac11))
+* **forecast:** add model zoo and backtesting comparison ([#302](https://github.com/w7-mgfcode/ForecastLabAI/issues/302)) ([a12c374](https://github.com/w7-mgfcode/ForecastLabAI/commit/a12c3741db1f7fe283093002337994ec8da6da21))
+* **ui:** add interactive forecast intelligence UI ([#305](https://github.com/w7-mgfcode/ForecastLabAI/issues/305)) ([d92e2ca](https://github.com/w7-mgfcode/ForecastLabAI/commit/d92e2cad039cec88e83984615086b495c4345768))
+* **ui:** add interactive forecast intelligence UI (PRP-37) ([#305](https://github.com/w7-mgfcode/ForecastLabAI/issues/305)) ([5e86b6f](https://github.com/w7-mgfcode/ForecastLabAI/commit/5e86b6f2cc8af7c65e10049d193796fe33803ad0))
+
+
+### Bug Fixes
+
+* **api:** address review feedback on showcase safer promote cascade ([#324](https://github.com/w7-mgfcode/ForecastLabAI/issues/324)) ([fc70571](https://github.com/w7-mgfcode/ForecastLabAI/commit/fc7057109db50604497760367bc61ea41caffe62))
+* **api:** repair showcase safer promote cascade ([6dd1708](https://github.com/w7-mgfcode/ForecastLabAI/commit/6dd1708783a428b1139f295bbcdc08c1c795e9f2))
+* **api:** repair showcase safer promote cascade ([#324](https://github.com/w7-mgfcode/ForecastLabAI/issues/324)) ([b2caef9](https://github.com/w7-mgfcode/ForecastLabAI/commit/b2caef973d194eb12a2d41c169422fe578a57e5c))
+* **data:** address review feedback on seed_registry_from_jobs ([#297](https://github.com/w7-mgfcode/ForecastLabAI/issues/297)) ([1f36c74](https://github.com/w7-mgfcode/ForecastLabAI/commit/1f36c7489801e4efe547468bcacc132101b1425b))
+* **data:** make phase2 enrichment idempotent ([#312](https://github.com/w7-mgfcode/ForecastLabAI/issues/312)) ([b3ba1f4](https://github.com/w7-mgfcode/ForecastLabAI/commit/b3ba1f48a1bfdde3c3aca6101d0a36476f6a4639))
+* **data:** make phase2 enrichment idempotent ([#312](https://github.com/w7-mgfcode/ForecastLabAI/issues/312)) ([72a954e](https://github.com/w7-mgfcode/ForecastLabAI/commit/72a954e527ee49a9054289ede78a77ba86c9be1f))
+* **forecast:** address PR [#303](https://github.com/w7-mgfcode/ForecastLabAI/issues/303) review feedback ([#302](https://github.com/w7-mgfcode/ForecastLabAI/issues/302)) ([d9bd3ae](https://github.com/w7-mgfcode/ForecastLabAI/commit/d9bd3aee81e20c3e833e90c478656e48248a0743))
+* **ui:** rename duplicate trainFamily binding in forecast page ([48cddf3](https://github.com/w7-mgfcode/ForecastLabAI/commit/48cddf35aceed9aa4add2da9035cfefbb2c3edbc))
+* **ui:** rename duplicate trainFamily binding in forecast page ([#307](https://github.com/w7-mgfcode/ForecastLabAI/issues/307)) ([f6f2613](https://github.com/w7-mgfcode/ForecastLabAI/commit/f6f26130b99acf1ee66e8e418e7869ed9397c44b))
+
+
+### Documentation
+
+* **docs:** add forecast intelligence planning docs ([#295](https://github.com/w7-mgfcode/ForecastLabAI/issues/295)) ([97c13f8](https://github.com/w7-mgfcode/ForecastLabAI/commit/97c13f878c5c7234bfe125b4b65b0c1468d21bd6))
+* **docs:** add prp 41 showcase agent ops polish ([58d593a](https://github.com/w7-mgfcode/ForecastLabAI/commit/58d593a9ba2292c4b7dc63b32ceb0f4cee2659b6))
+* **docs:** add prp 41 showcase agent ops polish ([#321](https://github.com/w7-mgfcode/ForecastLabAI/issues/321)) ([e5349af](https://github.com/w7-mgfcode/ForecastLabAI/commit/e5349af23b3c19ab42772eaaef4b5f73419714b1))
+* **docs:** add rich showcase planning artifacts ([90a2c36](https://github.com/w7-mgfcode/ForecastLabAI/commit/90a2c367978003bd3f4fc0c2546ba0a4fb86fbb2))
+* **docs:** add rich showcase planning artifacts ([#313](https://github.com/w7-mgfcode/ForecastLabAI/issues/313)) ([72823a9](https://github.com/w7-mgfcode/ForecastLabAI/commit/72823a9d53ef5712715b5ae05d21673491db5769))
+* **docs:** add showcase manual demo guide ([#324](https://github.com/w7-mgfcode/ForecastLabAI/issues/324)) ([a838b20](https://github.com/w7-mgfcode/ForecastLabAI/commit/a838b2051ec65088d43073f6dae832f32d34de97))
+* **docs:** refresh initial 41 after prp 39 40 ([#313](https://github.com/w7-mgfcode/ForecastLabAI/issues/313)) ([2615176](https://github.com/w7-mgfcode/ForecastLabAI/commit/2615176b32c3f9d9c5f143f74e2d6b68c56516b5))
+* **docs:** refresh initial 41 after prp 39 40 ([#313](https://github.com/w7-mgfcode/ForecastLabAI/issues/313)) ([9a610e2](https://github.com/w7-mgfcode/ForecastLabAI/commit/9a610e21e6a0a3a57450da15c3965acfd04268f9))
+* **forecast:** refresh prp37 after model zoo contracts ([#295](https://github.com/w7-mgfcode/ForecastLabAI/issues/295)) ([6b5292d](https://github.com/w7-mgfcode/ForecastLabAI/commit/6b5292d47dba3b3f18a6be878008339d13c497bd))
+* **prp:** add forecast intelligence planning docs ([8ca0831](https://github.com/w7-mgfcode/ForecastLabAI/commit/8ca0831eef6913fa45c2ec6017c94276b3424da4))
+* **prp:** refresh PRP-36 after Feature Frame V2 ([1437bc6](https://github.com/w7-mgfcode/ForecastLabAI/commit/1437bc6fe7df051994c93a76008c02ab7b45dbbb))
+* **prp:** refresh prp36 after feature frame v2 ([#295](https://github.com/w7-mgfcode/ForecastLabAI/issues/295)) ([0e091c7](https://github.com/w7-mgfcode/ForecastLabAI/commit/0e091c7f1bea7b6942a230d06724c1dd4a237b45))
+* **prp:** refresh prp37 after model zoo contracts ([c0aea20](https://github.com/w7-mgfcode/ForecastLabAI/commit/c0aea2001e187a52b81b7d721bcb6f6d2db95eb9))
+
 ## [0.2.19](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.18...v0.2.19) (2026-05-25)
 
 
