@@ -327,6 +327,22 @@ def _parse_artifact_key(artifact_uri: str) -> str:
     return match.group(1)
 
 
+# Demo artifact keys are 12 hex chars -- the trained-model file stem
+# (``model_{KEY}.joblib``) that ``register`` copies into the registry root.
+# Kept next to ``_parse_artifact_key`` so the producer and parser stay in sync.
+_DEMO_ARTIFACT_KEY_LEN = 12
+
+
+def _format_demo_artifact_key(run_id_raw: str) -> str:
+    """Build a parseable demo artifact key from a registry run id.
+
+    Strips dashes (registry ids may be hyphenated UUIDs) and truncates to
+    ``_DEMO_ARTIFACT_KEY_LEN`` so the result is hex-only and matches the
+    ``_ARTIFACT_KEY_RE`` (``model_([0-9a-f]+)``) parser.
+    """
+    return run_id_raw.replace("-", "")[:_DEMO_ARTIFACT_KEY_LEN]
+
+
 # PRP-40 — curated 5-file user-guide corpus indexed by the knowledge phase.
 # The path_prefix RAG indexing additive contract scopes discovery to this
 # subset (memory anchor: [[rag-runtime-config-and-corpus-state]] — keep the
@@ -1159,14 +1175,11 @@ async def step_scenario_simulate_and_save(ctx: DemoContext, client: _Client) -> 
     if ctx.date_end is None:
         return ("fail", "no date_end on ctx (status step did not populate it)", {})
 
-    # (1) Resolve the champion run id. Prefer ctx.winning_run_id (recorded by
-    # step_register) over the live demo-production alias: safer_promote_flow
-    # (PRP-39) deliberately swaps that alias to a placeholder worse-WAPE run
-    # whose artifact_uri is not a loadable model bundle, which broke the
-    # downstream scenario replay here (#324). The champion run itself is
-    # untouched by the swap, so it keeps its real, parseable artifact_uri.
-    # Fall back to the alias only when no champion was recorded (defensive —
-    # the real showcase_rich flow always records one in step_register).
+    # (1) Resolve the champion via ctx.winning_run_id (set by step_register), not
+    # the live demo-production alias -- safer_promote_flow swaps that alias to a
+    # worse-WAPE run, which broke replay here (#324). The champion run keeps its
+    # real, parseable artifact_uri. Fall back to the alias only when no champion
+    # was recorded.
     winner_run_id = ctx.winning_run_id
     if winner_run_id is None:
         alias_body = await client.request(
@@ -1779,13 +1792,10 @@ async def step_safer_promote_flow(ctx: DemoContext, client: _Client) -> StepResu
         json_body={
             "status": "success",
             "metrics": {"wape": 99.0},
-            # issue #324 — write a real-shape, parseable artifact_uri (V1 demo
-            # shape ``demo/{model_type}-model_{KEY}.joblib``) so any downstream
-            # consumer that parses it via ``_parse_artifact_key`` does not choke
-            # on a placeholder. KEY is hex-only (dashes stripped) to satisfy the
-            # ``model_([0-9a-f]+)`` parser regex.
+            # #324 — real-shape, parseable artifact_uri (not a placeholder) so a
+            # downstream ``_parse_artifact_key`` consumer can resolve it.
             "artifact_uri": (
-                f"demo/seasonal_naive-model_{worse_run_id_raw.replace('-', '')[:12]}.joblib"
+                f"demo/seasonal_naive-model_{_format_demo_artifact_key(worse_run_id_raw)}.joblib"
             ),
             "artifact_hash": "0" * 64,
             "artifact_size_bytes": 1,
@@ -1973,10 +1983,12 @@ async def _restore_demo_alias_after_failure(ctx: DemoContext, client: _Client) -
             },
         )
     except (_StepError, httpx.HTTPError, OSError):
-        # Best-effort — a restore failure must never mask the original failure.
+        # Best-effort — a restore failure must never mask the original failure,
+        # but capture the exception so intermittent restore issues stay debuggable.
         logger.warning(
             "demo.cleanup.alias_restore_safeguard_failed",
             run_id=ctx.original_demo_alias_run_id,
+            exc_info=True,
         )
 
 

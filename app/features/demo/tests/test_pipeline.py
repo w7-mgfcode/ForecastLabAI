@@ -1186,6 +1186,16 @@ def test_parse_artifact_key_rejects_safer_promote_placeholder():
     )
 
 
+def test_format_demo_artifact_key_round_trips_through_parser():
+    """#324 — _format_demo_artifact_key strips dashes + truncates to a hex-only
+    key that round-trips through _parse_artifact_key (producer/parser in sync)."""
+    key = pipeline._format_demo_artifact_key("1234abcd-5678-90ef-dead-beef00112233")
+    assert key == "1234abcd5678"
+    assert len(key) == pipeline._DEMO_ARTIFACT_KEY_LEN
+    uri = f"demo/seasonal_naive-model_{key}.joblib"
+    assert pipeline._parse_artifact_key(uri) == key
+
+
 class _AliasRestoreSpyClient:
     """Minimal _Client stand-in recording alias-restore POSTs (#324 safeguard)."""
 
