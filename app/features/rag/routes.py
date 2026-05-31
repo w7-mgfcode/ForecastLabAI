@@ -6,9 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.core.exceptions import DatabaseError
+from app.core.exceptions import DatabaseError, EmbeddingProviderAuthError
 from app.core.logging import get_logger
-from app.features.rag.embeddings import EmbeddingError
+from app.features.rag.embeddings import EmbeddingAuthError, EmbeddingError
 from app.features.rag.schemas import (
     DeleteResponse,
     IndexProjectDocsRequest,
@@ -24,6 +24,21 @@ from app.features.rag.service import RAGService, SourceNotFoundError
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/rag", tags=["rag"])
+
+
+def _embedding_auth_failure(log_event: str, exc: EmbeddingAuthError) -> EmbeddingProviderAuthError:
+    """Map a low-level embedding auth failure to the marked 502 (#329).
+
+    Shared by all three RAG routes (``index_document`` / ``index_project_docs``
+    / ``retrieve``) so the warning log + RFC 7807 ``EMBEDDING_AUTH`` mapping
+    never drift between handlers. The caller passes a route-specific
+    ``log_event`` for tracing and re-raises the returned error ``from`` the
+    original exception. Logs the exception TYPE only, never a key value.
+    """
+    logger.warning(log_event, error_type=type(exc).__name__)
+    return EmbeddingProviderAuthError(
+        message=f"Embedding provider rejected the credentials: {exc}",
+    )
 
 
 # =============================================================================
@@ -110,6 +125,9 @@ async def index_document(
             detail=str(e),
         ) from e
 
+    except EmbeddingAuthError as e:
+        raise _embedding_auth_failure("rag.index_request_auth_failed", e) from e
+
     except EmbeddingError as e:
         logger.error(
             "rag.index_request_failed",
@@ -194,6 +212,9 @@ async def index_project_docs(
         )
 
         return response
+
+    except EmbeddingAuthError as e:
+        raise _embedding_auth_failure("rag.index_project_docs_request_auth_failed", e) from e
 
     except EmbeddingError as e:
         logger.error(
@@ -297,6 +318,9 @@ async def retrieve(
         )
 
         return response
+
+    except EmbeddingAuthError as e:
+        raise _embedding_auth_failure("rag.retrieve_request_auth_failed", e) from e
 
     except EmbeddingError as e:
         logger.error(

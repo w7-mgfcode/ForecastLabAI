@@ -1468,6 +1468,93 @@ async def test_rag_index_subset_skips_when_provider_unreachable():
     assert client.calls == []
 
 
+async def test_rag_index_subset_skips_on_embedding_auth_502():
+    """#329 — an EMBEDDING_AUTH 502 (invalid/placeholder key) SKIPs, not FAILs.
+
+    The probe only checks key presence, so a bad key reaches the index call and
+    502s with the machine-readable EMBEDDING_AUTH marker. The step classifies it
+    and skips, and marks the context so the retrieve probe skips too.
+    """
+    ctx = _make_showcase_ctx()
+    assert ctx.embedding_unreachable is False
+    client = _RecordingClient(
+        None,
+        errors={
+            ("POST", "/rag/index/project-docs"): pipeline._StepError(
+                "rag_index_subset",
+                502,
+                {
+                    "type": "/errors/embedding-auth",
+                    "title": "Embedding Auth",
+                    "status": 502,
+                    "code": "EMBEDDING_AUTH",
+                    "detail": "Embedding provider rejected the credentials",
+                },
+            ),
+        },
+    )
+    status, detail, _ = await pipeline.step_rag_index_subset(ctx, _as_client(client))
+    assert status == "skip"
+    assert "rejected credentials" in detail
+    # The call WAS attempted (unlike the unreachable case)...
+    assert len(client.calls) == 1
+    # ...and the context is now marked so the retrieve probe skips too.
+    assert ctx.embedding_unreachable is True
+
+
+async def test_rag_index_subset_skips_on_embedding_auth_type_only():
+    """#329 — classification by `type` alone (no `code`) still SKIPs gracefully.
+
+    The classifier accepts a problem whose `type` URI's final path segment is
+    `embedding-auth` even when there is no `code` field — and even when the
+    `type` is a fully-qualified absolute URI rather than the canonical relative
+    one. The step must still skip and flag the context.
+    """
+    ctx = _make_showcase_ctx()
+    assert ctx.embedding_unreachable is False
+    client = _RecordingClient(
+        None,
+        errors={
+            ("POST", "/rag/index/project-docs"): pipeline._StepError(
+                "rag_index_subset",
+                502,
+                {
+                    # No "code" key — only an absolute "type" ending in the slug.
+                    "type": "https://errors.example.com/rag/embedding-auth",
+                    "title": "Embedding Auth",
+                    "status": 502,
+                    "detail": "Embedding provider rejected the credentials",
+                },
+            ),
+        },
+    )
+    status, detail, _ = await pipeline.step_rag_index_subset(ctx, _as_client(client))
+    assert status == "skip"
+    assert "rejected credentials" in detail
+    assert len(client.calls) == 1
+    assert ctx.embedding_unreachable is True
+
+
+async def test_rag_index_subset_reraises_non_auth_502():
+    """#329 — a non-auth 502 (e.g. connection failure) still propagates as FAIL."""
+    import pytest
+
+    ctx = _make_showcase_ctx()
+    client = _RecordingClient(
+        None,
+        errors={
+            ("POST", "/rag/index/project-docs"): pipeline._StepError(
+                "rag_index_subset",
+                502,
+                {"title": "Bad Gateway", "detail": "Embedding generation failed: timeout"},
+            ),
+        },
+    )
+    with pytest.raises(pipeline._StepError):
+        await pipeline.step_rag_index_subset(ctx, _as_client(client))
+    assert ctx.embedding_unreachable is False
+
+
 async def test_rag_retrieve_probe_happy_path():
     """PRP-40 — top hit + similarity score surface on PASS."""
     ctx = _make_showcase_ctx()
@@ -1519,6 +1606,31 @@ async def test_rag_retrieve_probe_skips_when_provider_unreachable():
     assert status == "skip"
     assert "unreachable" in detail
     assert client.calls == []
+
+
+async def test_rag_retrieve_probe_skips_on_embedding_auth_502():
+    """#329 — retrieve also classifies an EMBEDDING_AUTH 502 as SKIP, not FAIL."""
+    ctx = _make_showcase_ctx()
+    client = _RecordingClient(
+        None,
+        errors={
+            ("POST", "/rag/retrieve"): pipeline._StepError(
+                "rag_retrieve_probe",
+                502,
+                {
+                    "type": "/errors/embedding-auth",
+                    "title": "Embedding Auth",
+                    "status": 502,
+                    "code": "EMBEDDING_AUTH",
+                    "detail": "Embedding provider rejected the credentials",
+                },
+            ),
+        },
+    )
+    status, detail, _ = await pipeline.step_rag_retrieve_probe(ctx, _as_client(client))
+    assert status == "skip"
+    assert "rejected credentials" in detail
+    assert ctx.embedding_unreachable is True
 
 
 async def test_run_pipeline_showcase_rich_runs_planning_and_knowledge(monkeypatch, tmp_path):

@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 
 from app.core.logging import get_logger
 from app.core.problem_details import (
+    EMBEDDING_AUTH_CODE,
     ERROR_TYPES,
     ProblemDetailResponse,
     problem_response,
@@ -219,6 +220,36 @@ class GatewayTimeoutError(ForecastLabError):
             message=message,
             code="GATEWAY_TIMEOUT",
             status_code=504,
+            details=details,
+        )
+
+
+class EmbeddingProviderAuthError(ForecastLabError):
+    """502 — the embedding provider rejected the configured credentials.
+
+    Raised when the RAG embedding provider returns an authentication/
+    authorization failure (HTTP 401/403 — an invalid, placeholder, or
+    unauthorized API key) rather than a transient connection/server failure.
+    Keeps the public ``/rag`` status at 502 (an upstream/gateway failure from
+    the caller's perspective) but emits a *machine-readable* ``EMBEDDING_AUTH``
+    problem ``type``/``code`` so consumers — notably the showcase demo
+    pipeline — can classify it and SKIP the knowledge phase gracefully instead
+    of hard-failing (issue #329). Disambiguated from a generic embedding 502
+    (bare ``{"detail": ...}``) via the ``type`` URI in the problem+json body,
+    mirroring the :class:`UnprocessableEntityError` 422 precedent.
+    """
+
+    error_type_uri: str = ERROR_TYPES[EMBEDDING_AUTH_CODE]
+
+    def __init__(
+        self,
+        message: str = "Embedding provider rejected the configured credentials",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            message=message,
+            code=EMBEDDING_AUTH_CODE,
+            status_code=502,
             details=details,
         )
 
