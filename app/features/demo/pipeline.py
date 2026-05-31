@@ -327,6 +327,22 @@ def _parse_artifact_key(artifact_uri: str) -> str:
     return match.group(1)
 
 
+# Demo artifact keys are 12 hex chars -- the trained-model file stem
+# (``model_{KEY}.joblib``) that ``register`` copies into the registry root.
+# Kept next to ``_parse_artifact_key`` so the producer and parser stay in sync.
+_DEMO_ARTIFACT_KEY_LEN = 12
+
+
+def _format_demo_artifact_key(run_id_raw: str) -> str:
+    """Build a parseable demo artifact key from a registry run id.
+
+    Strips dashes (registry ids may be hyphenated UUIDs) and truncates to
+    ``_DEMO_ARTIFACT_KEY_LEN`` so the result is hex-only and matches the
+    ``_ARTIFACT_KEY_RE`` (``model_([0-9a-f]+)``) parser.
+    """
+    return run_id_raw.replace("-", "")[:_DEMO_ARTIFACT_KEY_LEN]
+
+
 # PRP-40 — curated 5-file user-guide corpus indexed by the knowledge phase.
 # The path_prefix RAG indexing additive contract scopes discovery to this
 # subset (memory anchor: [[rag-runtime-config-and-corpus-state]] — keep the
@@ -1159,15 +1175,22 @@ async def step_scenario_simulate_and_save(ctx: DemoContext, client: _Client) -> 
     if ctx.date_end is None:
         return ("fail", "no date_end on ctx (status step did not populate it)", {})
 
-    # (1) Resolve alias -> registry run_id (32-char uuid).
-    alias_body = await client.request(
-        "scenario_simulate_and_save[alias]",
-        "GET",
-        f"/registry/aliases/{DEMO_ALIAS}",
-    )
-    winner_run_id = alias_body.get("run_id")
-    if not isinstance(winner_run_id, str):
-        return ("fail", f"{DEMO_ALIAS} alias has no run_id", {})
+    # (1) Resolve the champion via ctx.winning_run_id (set by step_register), not
+    # the live demo-production alias -- safer_promote_flow swaps that alias to a
+    # worse-WAPE run, which broke replay here (#324). The champion run keeps its
+    # real, parseable artifact_uri. Fall back to the alias only when no champion
+    # was recorded.
+    winner_run_id = ctx.winning_run_id
+    if winner_run_id is None:
+        alias_body = await client.request(
+            "scenario_simulate_and_save[alias]",
+            "GET",
+            f"/registry/aliases/{DEMO_ALIAS}",
+        )
+        alias_run_id = alias_body.get("run_id")
+        if not isinstance(alias_run_id, str):
+            return ("fail", f"{DEMO_ALIAS} alias has no run_id", {})
+        winner_run_id = alias_run_id
 
     # (2) Resolve run -> artifact_uri.
     run_body = await client.request(
@@ -1769,7 +1792,11 @@ async def step_safer_promote_flow(ctx: DemoContext, client: _Client) -> StepResu
         json_body={
             "status": "success",
             "metrics": {"wape": 99.0},
-            "artifact_uri": "demo/safer-promote-placeholder.joblib",
+            # #324 — real-shape, parseable artifact_uri (not a placeholder) so a
+            # downstream ``_parse_artifact_key`` consumer can resolve it.
+            "artifact_uri": (
+                f"demo/seasonal_naive-model_{_format_demo_artifact_key(worse_run_id_raw)}.joblib"
+            ),
             "artifact_hash": "0" * 64,
             "artifact_size_bytes": 1,
         },
@@ -1931,6 +1958,38 @@ async def step_batch_preset(ctx: DemoContext, client: _Client) -> StepResult:
             "failed_items": body.get("failed_items"),
         },
     )
+
+
+async def _restore_demo_alias_after_failure(ctx: DemoContext, client: _Client) -> None:
+    """Best-effort restore of the demo-production alias after a mid-run failure.
+
+    issue #324 — when a step fails the pipeline aborts before the trailing
+    ``cleanup`` row runs, which would otherwise leave ``demo-production``
+    pointing at the ``safer_promote_flow`` worse-WAPE run. This restores the
+    original target captured before the swap. Never raises — a restore failure
+    must not mask the original step failure.
+    """
+    if ctx.original_demo_alias_run_id is None:
+        return
+    try:
+        await client.request(
+            "cleanup[alias_restore_safeguard]",
+            "POST",
+            "/registry/aliases",
+            json_body={
+                "alias_name": DEMO_ALIAS,
+                "run_id": ctx.original_demo_alias_run_id,
+                "description": ("Restored by the showcase pipeline failure safeguard (#324)."),
+            },
+        )
+    except (_StepError, httpx.HTTPError, OSError):
+        # Best-effort — a restore failure must never mask the original failure,
+        # but capture the exception so intermittent restore issues stay debuggable.
+        logger.warning(
+            "demo.cleanup.alias_restore_safeguard_failed",
+            run_id=ctx.original_demo_alias_run_id,
+            exc_info=True,
+        )
 
 
 async def step_cleanup(ctx: DemoContext, client: _Client) -> StepResult:
@@ -2549,6 +2608,13 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
             )
             if status == "fail":
                 any_fail = True
+                # issue #324 — guarantee demo-production alias restoration even
+                # when a step fails mid-run. The pipeline aborts here, before the
+                # trailing ``cleanup`` row runs, which would otherwise leave the
+                # alias pointing at the safer_promote_flow worse-WAPE run.
+                # Best-effort; never raises. Skipped if cleanup itself failed.
+                if name != "cleanup":
+                    await _restore_demo_alias_after_failure(ctx, client)
                 break
 
     wall = time.monotonic() - wall_start

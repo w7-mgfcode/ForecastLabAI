@@ -1077,17 +1077,15 @@ def _make_showcase_ctx(scenario: ScenarioPreset = ScenarioPreset.SHOWCASE_RICH) 
 
 
 async def test_scenario_simulate_and_save_happy_path():
-    """PRP-40 — happy path: resolves alias -> run -> artifact_key, saves plan."""
-    ctx = _make_showcase_ctx()
+    """PRP-40 + #324 — resolves the champion via ctx.winning_run_id -> run ->
+    artifact_key, saves the plan. Must NOT read the demo-production alias
+    (safer_promote_flow deliberately corrupts it)."""
+    ctx = _make_showcase_ctx()  # winning_run_id = "demo-run-abc123def456"
     client = _RecordingClient(
         None,
         responses={
-            (
-                "GET",
-                "/registry/aliases/demo-production",
-            ): {"alias_name": "demo-production", "run_id": "uuid-32-char"},
-            ("GET", "/registry/runs/uuid-32-char"): {
-                "run_id": "uuid-32-char",
+            ("GET", "/registry/runs/demo-run-abc123def456"): {
+                "run_id": "demo-run-abc123def456",
                 "artifact_uri": "demo/seasonal_naive-model_abc123def456.joblib",
             },
             ("POST", "/scenarios"): {
@@ -1118,11 +1116,15 @@ async def test_scenario_simulate_and_save_happy_path():
     assert body["run_id"] == "abc123def456"
     assert body["assumptions"]["price"]["change_pct"] == -0.10
     assert body["tags"] == ["showcase", "price"]
+    # #324 — the safer-promote-corrupted demo-production alias must NOT be read.
+    assert all(path != "/registry/aliases/demo-production" for _m, path, _b in client.calls)
 
 
-async def test_scenario_simulate_and_save_missing_alias_fails():
-    """PRP-40 — alias missing run_id -> FAIL with clear detail."""
+async def test_scenario_simulate_and_save_missing_champion_falls_back_to_alias():
+    """PRP-40 + #324 — with no champion recorded, fall back to the alias; an
+    alias missing run_id -> FAIL with clear detail."""
     ctx = _make_showcase_ctx()
+    ctx.winning_run_id = None  # force the defensive alias fallback
     client = _RecordingClient(
         None,
         responses={
@@ -1135,18 +1137,117 @@ async def test_scenario_simulate_and_save_missing_alias_fails():
 
 
 async def test_scenario_simulate_and_save_unparseable_artifact_uri_fails():
-    """PRP-40 — artifact_uri the regex can't parse -> FAIL."""
-    ctx = _make_showcase_ctx()
+    """PRP-40 — the champion run's artifact_uri the regex can't parse -> FAIL."""
+    ctx = _make_showcase_ctx()  # winning_run_id = "demo-run-abc123def456"
     client = _RecordingClient(
         None,
         responses={
-            ("GET", "/registry/aliases/demo-production"): {"run_id": "uuid"},
-            ("GET", "/registry/runs/uuid"): {"artifact_uri": "garbage-path.bin"},
+            ("GET", "/registry/runs/demo-run-abc123def456"): {"artifact_uri": "garbage-path.bin"},
         },
     )
     status, detail, _ = await pipeline.step_scenario_simulate_and_save(ctx, _as_client(client))
     assert status == "fail"
     assert "artifact-key" in detail
+
+
+async def test_scenario_simulate_and_save_ignores_corrupted_demo_alias():
+    """#324 regression — the step resolves the champion via ctx.winning_run_id
+    and never consults the safer-promote-corrupted demo-production alias."""
+    ctx = _make_showcase_ctx()  # winning_run_id = "demo-run-abc123def456"
+    client = _RecordingClient(
+        None,
+        responses={
+            ("GET", "/registry/runs/demo-run-abc123def456"): {
+                "artifact_uri": "demo/seasonal_naive-model_abc123def456.joblib",
+            },
+            ("POST", "/scenarios"): {
+                "scenario_id": "scn-001",
+                "comparison": {"method": "heuristic", "units_delta": 1.0, "revenue_delta": 2.0},
+            },
+        },
+    )
+    status, _detail, _data = await pipeline.step_scenario_simulate_and_save(ctx, _as_client(client))
+    assert status == "pass"
+    assert ctx.scenario_artifact_key == "abc123def456"
+    assert all(path != "/registry/aliases/demo-production" for _m, path, _b in client.calls)
+
+
+def test_parse_artifact_key_rejects_safer_promote_placeholder():
+    """#324 regression — the OLD PRP-39 placeholder artifact_uri is unparseable
+    (the exact failure the cascade surfaced); the NEW real-shape safer-promote
+    URI parses cleanly."""
+    import pytest
+
+    with pytest.raises(ValueError, match="Cannot parse artifact-key"):
+        pipeline._parse_artifact_key("demo/safer-promote-placeholder.joblib")
+    assert (
+        pipeline._parse_artifact_key("demo/seasonal_naive-model_abcdef012345.joblib")
+        == "abcdef012345"
+    )
+
+
+def test_format_demo_artifact_key_round_trips_through_parser():
+    """#324 — _format_demo_artifact_key strips dashes + truncates to a hex-only
+    key that round-trips through _parse_artifact_key (producer/parser in sync)."""
+    key = pipeline._format_demo_artifact_key("1234abcd-5678-90ef-dead-beef00112233")
+    assert key == "1234abcd5678"
+    assert len(key) == pipeline._DEMO_ARTIFACT_KEY_LEN
+    uri = f"demo/seasonal_naive-model_{key}.joblib"
+    assert pipeline._parse_artifact_key(uri) == key
+
+
+class _AliasRestoreSpyClient:
+    """Minimal _Client stand-in recording alias-restore POSTs (#324 safeguard)."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.calls: list[tuple[str, str, dict[str, Any] | None]] = []
+        self._fail = fail
+
+    async def request(
+        self,
+        step: str,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append((method, path, json_body))
+        if self._fail:
+            raise OSError("simulated transport failure")
+        return {}
+
+
+async def test_restore_demo_alias_after_failure_repoints_to_original():
+    """#324 — a mid-run failure must restore demo-production to the champion."""
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    ctx.original_demo_alias_run_id = "champion-run-123"
+    spy = _AliasRestoreSpyClient()
+    await pipeline._restore_demo_alias_after_failure(ctx, cast("pipeline._Client", spy))
+    assert len(spy.calls) == 1
+    method, path, body = spy.calls[0]
+    assert method == "POST"
+    assert path == "/registry/aliases"
+    assert body is not None
+    assert body["alias_name"] == pipeline.DEMO_ALIAS
+    assert body["run_id"] == "champion-run-123"
+
+
+async def test_restore_demo_alias_after_failure_noop_without_swap():
+    """#324 — no original alias captured (no swap happened) -> no restore call."""
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    ctx.original_demo_alias_run_id = None
+    spy = _AliasRestoreSpyClient()
+    await pipeline._restore_demo_alias_after_failure(ctx, cast("pipeline._Client", spy))
+    assert spy.calls == []
+
+
+async def test_restore_demo_alias_after_failure_swallows_errors():
+    """#324 — the safeguard must never raise (must not mask the original fail)."""
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    ctx.original_demo_alias_run_id = "champion-run-123"
+    spy = _AliasRestoreSpyClient(fail=True)
+    await pipeline._restore_demo_alias_after_failure(ctx, cast("pipeline._Client", spy))  # no raise
+    assert len(spy.calls) == 1
 
 
 async def test_multi_plan_compare_happy_path():
