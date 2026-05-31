@@ -156,7 +156,7 @@ run. The Inspect button deep-links to `/chat` where the approved tool
 call is visible in the transcript. See
 [Agents and RAG Guide](./agents-and-rag-guide.md) for the approval gate.
 
-![Agents (HITL) phase — the agent_hitl_flow step card. In this local run the agent answered without calling save_scenario, so the step skipped by design; the one-click Approve button renders only when the agent triggers the gated save_scenario tool.](./img/agent-hitl-approve.png)
+![Agents (HITL) phase — the agent_hitl_flow step card. In this local run the agent answered without calling save_scenario, so the step is skipped by design; the one-click Approve button renders only when the agent triggers the gated save_scenario tool.](./img/agent-hitl-approve.png)
 
 ### Phase: Ops snapshot
 
