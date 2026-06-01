@@ -1229,3 +1229,47 @@ class TestFinalizerSalvage:
         service = AgentService()
         result = await service._salvage_plaintext_answer("any question", [])
         assert result is None
+
+    def test_compact_for_finalizer_strips_verbose_keys_keeps_metrics(self) -> None:
+        """Compaction drops bulky config/runtime blobs but keeps identity + metrics (#351).
+
+        Regression for the finalizer reporting 99.0 as "lowest WAPE" when the
+        true minimum (18.93) had been truncated out of the oversized payload.
+        """
+        raw = [
+            {
+                "tool": "tool_list_runs",
+                "result": {
+                    "runs": [
+                        {
+                            "run_id": "a",
+                            "model_type": "seasonal_naive",
+                            "metrics": {"wape": 99.0},
+                            "model_config_data": {"x": "y" * 500},
+                            "runtime_info": {"python": "3.12"},
+                            "artifact_uri": "demo/seasonal-model_a.joblib",
+                        },
+                        {
+                            "run_id": "b",
+                            "model_type": "naive",
+                            "metrics": {"wape": 18.93},
+                            "feature_config": {"lots": "of stuff"},
+                        },
+                    ]
+                },
+            }
+        ]
+
+        compact = AgentService._compact_for_finalizer(raw)
+        runs = compact[0]["result"]["runs"]
+
+        # Identity + metrics survive for BOTH runs (so a ranking sees 18.93).
+        assert runs[0]["run_id"] == "a"
+        assert runs[0]["metrics"] == {"wape": 99.0}
+        assert runs[1]["run_id"] == "b"
+        assert runs[1]["metrics"] == {"wape": 18.93}
+        # Verbose blobs are gone.
+        assert "model_config_data" not in runs[0]
+        assert "runtime_info" not in runs[0]
+        assert "artifact_uri" not in runs[0]
+        assert "feature_config" not in runs[1]

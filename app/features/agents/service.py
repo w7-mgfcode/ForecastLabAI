@@ -41,9 +41,30 @@ from app.features.agents.schemas import (
 
 logger = structlog.get_logger()
 
-# Cap on the tool-data JSON fed to the plain-text finalizer (#351). Large enough
-# for a runs list, small enough to stay well within the model's context budget.
-_FINALIZER_MAX_CHARS = 6000
+# Cap on the tool-data JSON fed to the plain-text finalizer (#351). With the
+# verbose keys below stripped, a full runs page fits comfortably; the cap is a
+# context-budget backstop for pathological payloads.
+_FINALIZER_MAX_CHARS = 8000
+
+# Verbose, decision-irrelevant keys stripped from tool results before they are
+# handed to the finalizer (#351). Dropping these keeps every run's identity +
+# metrics (e.g. WAPE) inside the budget, so a ranking question sees ALL runs
+# instead of just the first one or two — the bug where the finalizer reported
+# 99.0 as "lowest" while the true minimum (18.93) had been truncated away.
+_FINALIZER_DROP_KEYS = frozenset(
+    {
+        "model_config",
+        "model_config_data",
+        "feature_config",
+        "runtime_info",
+        "agent_context",
+        "config_hash",
+        "artifact_hash",
+        "artifact_uri",
+        "artifact_size_bytes",
+        "error_message",
+    }
+)
 
 
 class SessionNotFoundError(ValueError):
@@ -1003,6 +1024,31 @@ class AgentService:
                     payloads.append({"tool": part.tool_name, "result": part.content})
         return payloads
 
+    @classmethod
+    def _compact_for_finalizer(cls, obj: object) -> object:
+        """Recursively strip verbose, decision-irrelevant keys from tool data (#351).
+
+        Keeps each entry's identity + metrics while dropping bulky nested config
+        / runtime blobs, so a full result set fits in the finalizer's budget and
+        a ranking sees every entry. Pure/serialisation-only — no I/O.
+
+        Args:
+            obj: Any JSON-ish value extracted from a tool return.
+
+        Returns:
+            The same structure with :data:`_FINALIZER_DROP_KEYS` removed at every
+            dict level.
+        """
+        if isinstance(obj, dict):
+            return {
+                k: cls._compact_for_finalizer(v)
+                for k, v in obj.items()
+                if k not in _FINALIZER_DROP_KEYS
+            }
+        if isinstance(obj, list):
+            return [cls._compact_for_finalizer(v) for v in obj]
+        return obj
+
     async def _salvage_plaintext_answer(
         self,
         message: str,
@@ -1032,11 +1078,16 @@ class AgentService:
         try:
             from app.features.agents.agents.base import build_finalizer_agent
 
-            data = json.dumps(payloads, default=str)[:_FINALIZER_MAX_CHARS]
+            compact = self._compact_for_finalizer(payloads)
+            data = json.dumps(compact, default=str)[:_FINALIZER_MAX_CHARS]
             prompt = (
                 f"User question:\n{message}\n\n"
                 f"Data retrieved from tools (JSON):\n{data}\n\n"
-                "Answer the user's question concisely from this data."
+                "Answer the user's question concisely from this data. If the "
+                "question asks for the lowest/highest of a metric (e.g. WAPE), "
+                "compare that metric across ALL entries that have it, ignore "
+                "entries where it is missing/null, and report the true "
+                "minimum/maximum with its value."
             )
             finalizer = build_finalizer_agent()
             result = await asyncio.wait_for(
