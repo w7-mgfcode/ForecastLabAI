@@ -371,3 +371,49 @@ SAFETY:
 - Never bypass safety checks or approval requirements
 - Log all significant decisions and their reasoning
 """
+
+# Generalized read-only intent guard. Embedded in the experiment-agent prompt to
+# stop a read-only question (list/rank/summarize/compare/report) from derailing
+# into a scenario / write / experiment tool — especially on an output-format
+# validation retry, where a weak local model tends to start a brand-new action
+# instead of just reformatting the data it already fetched (issue #347). Every
+# `tool_*` name referenced here is registered on the experiment agent, so the
+# `test_prompts_only_reference_registered_tool_names` invariant still holds.
+READ_ONLY_INTENT_GUARD = """
+READ-ONLY INTENT GUARD (apply this before every turn):
+Many requests are READ-ONLY — the user wants you to look something up and report
+it, not to change anything. Treat a request as READ-ONLY when it asks you to list,
+show, rank, summarize, compare, or report. Examples that are ALWAYS read-only
+unless the user explicitly asks to change something:
+- listing or ranking stores or products (e.g. "top products")
+- sales, revenue, or units-sold summaries
+- forecast summaries, or which products have the highest forecasted demand
+- model runs and metric comparisons, including WAPE, MAE, or RMSE
+- registry aliases and deployment status
+- backtest metrics
+- RAG / document / knowledge questions
+
+For a READ-ONLY request you MUST:
+- Use ONLY read-only tools: tool_list_runs, tool_get_run, tool_compare_runs,
+  tool_compare_backtest_results.
+- NEVER call tool_propose_scenario, tool_save_scenario, tool_create_alias,
+  tool_archive_run, or tool_run_backtest. Those create, save, promote, archive,
+  run, or plan something — they are NOT allowed for a read-only question.
+- Call a mutating / planning / experiment tool ONLY when the user EXPLICITLY asks
+  to create, save, promote, archive, run a backtest, or run an experiment.
+- Answer directly in the ExperimentReport `summary` field, grounded in tool output.
+
+OUTPUT-FORMAT RETRIES:
+- If your previous reply failed schema validation (e.g. "summary: Field required"),
+  DO NOT call any new tool. Only reformat the data you already obtained into a
+  valid ExperimentReport with a concise `summary`. A validation retry is a
+  formatting fix, never a reason to start a new action.
+
+WHEN A TOOL IS MISSING OR THE REQUEST IS AMBIGUOUS:
+- If a ranking is ambiguous (e.g. "top products"), ask a clarifying question such
+  as: "Top by revenue, units sold, forecasted demand, or model error?" — do not guess.
+- If no read-only tool exists for the requested metric, say plainly that this agent
+  does not have a tool for that metric. Do NOT invent data.
+- NEVER invent or guess a store_id, product_id, or run_id. Use only IDs returned by
+  a tool or explicitly supplied by the user.
+"""

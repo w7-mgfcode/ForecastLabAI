@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete, func, select
@@ -35,18 +36,85 @@ def test_save_scenario_requires_approval() -> None:
     assert requires_approval("save_scenario") is True
 
 
+class TestProposeScenarioEntityValidation:
+    """propose_scenario rejects a grain whose store/product do not exist (#347).
+
+    Unit-level (mocked DB): the entity-existence probe (`_grain_exists`) issues
+    `db.scalar(...)` for the store id, then the product id, then — only on the
+    valid path — the latest unit price. Driving `db.scalar` with a `side_effect`
+    list exercises every branch with no database. These run in the fast
+    ``not integration`` gate.
+    """
+
+    @staticmethod
+    def _mock_db(scalar_returns: list[object]) -> AsyncMock:
+        """An AsyncSession-shaped mock whose `scalar` yields the given values."""
+        db = AsyncMock(spec=AsyncSession)
+        db.scalar = AsyncMock(side_effect=scalar_returns)
+        return db
+
+    async def test_existing_grain_returns_a_proposal(self) -> None:
+        """A real store/product pair yields a normal, save-able proposal."""
+        db = self._mock_db([5, 8, 12.5])  # store id, product id, latest price
+
+        result = await propose_scenario(
+            db, store_id=5, product_id=8, horizon=14, objective="grow demand"
+        )
+
+        assert result.get("valid") is not False
+        assert "assumptions" in result
+        assert "recommendation" in result
+        ScenarioAssumptions.model_validate(result["assumptions"])
+
+    async def test_nonexistent_grain_is_rejected(self) -> None:
+        """A grain with no store and no product row is rejected, not proposed."""
+        db = self._mock_db([None, None])
+
+        result = await propose_scenario(
+            db, store_id=77001, product_id=77002, horizon=14, objective="x"
+        )
+
+        assert result["valid"] is False
+        assert result["persistable"] is False
+        assert "assumptions" not in result
+        assert "store_id=77001" in result["missing"]
+        assert "product_id=77002" in result["missing"]
+
+    async def test_hallucinated_123_456_is_rejected(self) -> None:
+        """The exact hallucinated store 123 / product 456 case never proposes."""
+        db = self._mock_db([None, None])
+
+        result = await propose_scenario(db, store_id=123, product_id=456, horizon=14, objective="")
+
+        assert result["valid"] is False
+        assert "assumptions" not in result
+        # Read-only rejection — nothing is written.
+        db.add.assert_not_called()
+        db.commit.assert_not_awaited()
+
+    async def test_missing_product_only_is_rejected(self) -> None:
+        """A real store but a missing product is still rejected."""
+        db = self._mock_db([5, None])
+
+        result = await propose_scenario(db, store_id=5, product_id=999999, horizon=7, objective="")
+
+        assert result["valid"] is False
+        assert result["missing"] == ["product_id=999999"]
+
+
 @pytest.mark.integration
 class TestProposeScenario:
-    """propose_scenario drafts a candidate and persists nothing."""
+    """propose_scenario drafts a candidate (for a real grain) and persists nothing."""
 
     async def test_returns_valid_assumptions_and_recommendation(
-        self, db_session: AsyncSession
+        self, db_session: AsyncSession, existing_grain: tuple[int, int]
     ) -> None:
         """A default objective yields a valid price-cut candidate."""
+        store_id, product_id = existing_grain
         result = await propose_scenario(
             db_session,
-            store_id=TEST_STORE_ID,
-            product_id=TEST_PRODUCT_ID,
+            store_id=store_id,
+            product_id=product_id,
             horizon=14,
             objective="grow demand for the summer range",
         )
@@ -58,12 +126,15 @@ class TestProposeScenario:
         assert isinstance(result["recommendation"], str)
         assert result["recommendation"]
 
-    async def test_promotion_keyword_proposes_a_promotion(self, db_session: AsyncSession) -> None:
+    async def test_promotion_keyword_proposes_a_promotion(
+        self, db_session: AsyncSession, existing_grain: tuple[int, int]
+    ) -> None:
         """An objective mentioning a promotion steers the candidate accordingly."""
+        store_id, product_id = existing_grain
         result = await propose_scenario(
             db_session,
-            store_id=TEST_STORE_ID,
-            product_id=TEST_PRODUCT_ID,
+            store_id=store_id,
+            product_id=product_id,
             horizon=7,
             objective="run a promotion next week",
         )
@@ -72,15 +143,43 @@ class TestProposeScenario:
         assert assumptions.promotion is not None
         assert assumptions.price is None
 
-    async def test_persists_no_row(self, db_session: AsyncSession) -> None:
+    async def test_persists_no_row(
+        self, db_session: AsyncSession, existing_grain: tuple[int, int]
+    ) -> None:
         """propose_scenario is read-only — it never writes a scenario_plan row."""
+        store_id, product_id = existing_grain
         await propose_scenario(
             db_session,
-            store_id=TEST_STORE_ID,
-            product_id=TEST_PRODUCT_ID,
+            store_id=store_id,
+            product_id=product_id,
             horizon=10,
             objective="test",
         )
+        count = await db_session.scalar(select(func.count()).select_from(ScenarioPlan))
+        assert count == 0
+
+
+@pytest.mark.integration
+class TestProposeScenarioRejectsUnknownGrain:
+    """propose_scenario rejects a non-existent grain against a real DB (#347)."""
+
+    async def test_rejects_nonexistent_grain_and_persists_nothing(
+        self, db_session: AsyncSession
+    ) -> None:
+        """A grain with no dimension rows is rejected and writes no plan."""
+        # IDs far above any seeded range — guaranteed absent.
+        result = await propose_scenario(
+            db_session,
+            store_id=9_999_001,
+            product_id=9_999_002,
+            horizon=14,
+            objective="grow demand",
+        )
+
+        assert result["valid"] is False
+        assert result["persistable"] is False
+        assert "assumptions" not in result
+
         count = await db_session.scalar(select(func.count()).select_from(ScenarioPlan))
         assert count == 0
 

@@ -26,7 +26,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.features.data_platform.models import SalesDaily
+from app.features.data_platform.models import Product, SalesDaily, Store
 from app.features.scenarios.models import SCENARIO_SOURCE_AGENT
 from app.features.scenarios.schemas import (
     CreateScenarioRequest,
@@ -50,6 +50,27 @@ _PROPOSED_PRICE_CHANGE_PCT = -0.15
 # and unauthenticated, so the approving party is simply the local operator who
 # released the HITL gate.
 AGENT_SAVE_APPROVED_BY = "operator"
+
+
+async def _grain_exists(db: AsyncSession, store_id: int, product_id: int) -> tuple[bool, bool]:
+    """Report whether the store and product dimension rows exist.
+
+    Read-only existence probe against the ``store`` / ``product`` dimension
+    tables. Used to reject a proposal for a grain that does not exist (issue
+    #347 — a weak model derailed into proposing a what-if for a hallucinated
+    ``store_id=123`` / ``product_id=456``).
+
+    Args:
+        db: Database session.
+        store_id: Candidate store id.
+        product_id: Candidate product id.
+
+    Returns:
+        ``(store_exists, product_exists)``.
+    """
+    store_exists = await db.scalar(select(Store.id).where(Store.id == store_id)) is not None
+    product_exists = await db.scalar(select(Product.id).where(Product.id == product_id)) is not None
+    return store_exists, product_exists
 
 
 async def propose_scenario(
@@ -79,6 +100,12 @@ async def propose_scenario(
         the candidate ``assumptions`` (JSON-mode dump so dates are ISO strings,
         ready to pass straight back into ``save_scenario``), and a
         plain-language ``recommendation``.
+
+        When the ``(store_id, product_id)`` grain does not exist, returns a
+        non-persistable validation error instead — ``{"valid": False,
+        "persistable": False, "error": ..., "missing": [...]}`` — so a
+        hallucinated grain (e.g. store 123 / product 456) never yields a normal
+        proposal (issue #347).
     """
     logger.info(
         "agents.scenario_tool.propose_scenario_called",
@@ -86,6 +113,36 @@ async def propose_scenario(
         product_id=product_id,
         horizon=horizon,
     )
+
+    # Reject a grain that does not exist before drafting anything. A weak model
+    # can hallucinate placeholder ids (store 123 / product 456); a proposal for a
+    # non-existent grain is meaningless and must never look like a normal,
+    # save-able candidate (issue #347). This is read-only and persists nothing.
+    store_exists, product_exists = await _grain_exists(db, store_id, product_id)
+    if not (store_exists and product_exists):
+        missing: list[str] = []
+        if not store_exists:
+            missing.append(f"store_id={store_id}")
+        if not product_exists:
+            missing.append(f"product_id={product_id}")
+        logger.info(
+            "agents.scenario_tool.propose_scenario_rejected_unknown_grain",
+            store_id=store_id,
+            product_id=product_id,
+            missing=missing,
+        )
+        return {
+            "valid": False,
+            "persistable": False,
+            "store_id": store_id,
+            "product_id": product_id,
+            "missing": missing,
+            "error": (
+                f"Cannot propose a scenario: {' and '.join(missing)} "
+                "do not exist. Use a real store/product pair (look one up with a "
+                "read-only tool) — do not invent identifiers."
+            ),
+        }
 
     # Read the most recent unit price for a grounded recommendation. Read-only.
     latest_price = await db.scalar(
