@@ -1,0 +1,568 @@
+"""Service layer for the Forecast Champion Selector slice (issue #353).
+
+Orchestrates pair-availability → candidate backtests → deterministic ranking →
+optional winner train/predict, persisting an auditable ``model_selection_run``.
+
+Cross-slice coupling rules (mirror ``OpsService`` + the forecasting/Batch
+precedent):
+- Read the data-platform ORM **models** at module scope (the sanctioned
+  read-only ORM surface).
+- Import sibling feature **services** (``BacktestingService`` /
+  ``ForecastingService``) and the ``ModelConfig`` ``TypeAdapter`` LAZILY inside
+  the methods that use them — avoids closing an alembic cold-boot import cycle.
+- Reuse the backtesting ``SplitConfig`` schema directly (no cycle).
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.exceptions import BadRequestError, NotFoundError
+from app.core.logging import get_logger
+from app.features.backtesting.schemas import SplitConfig
+from app.features.data_platform.models import Product, Promotion, SalesDaily, Store
+from app.features.model_selection.explanations import explain_winner
+from app.features.model_selection.models import ModelSelectionRun, ModelSelectionStatus
+from app.features.model_selection.ranking import build_chart_data, rank_candidates
+from app.features.model_selection.schemas import (
+    AvailabilityStatus,
+    CandidateModelConfig,
+    CandidateResult,
+    ChartData,
+    FoldChart,
+    ForecastSummary,
+    ModelSelectionRunRequest,
+    ModelSelectionRunResponse,
+    PairAvailabilityResponse,
+    RankingResult,
+    SelectionWindow,
+    TrainWinnerResponse,
+    WinnerSummary,
+)
+
+if TYPE_CHECKING:
+    from app.features.backtesting.schemas import BacktestResponse
+    from app.features.forecasting.schemas import PredictResponse
+
+logger = get_logger(__name__)
+
+# Availability policy constants (module-level; not operator-configurable in v1).
+MIN_COVERAGE_RATIO = 0.8
+DEFAULT_MIN_TRAIN_SIZE = 30
+MAX_RECOMMENDED_SPLITS = 5
+
+_TERMINAL_WITH_WINNER = frozenset(
+    {ModelSelectionStatus.COMPLETED.value, ModelSelectionStatus.PARTIAL.value}
+)
+
+
+class ModelSelectionService:
+    """Stateless orchestrator — a fresh ``db`` session per method."""
+
+    # -------------------------------------------------------------------------
+    # Availability
+    # -------------------------------------------------------------------------
+
+    async def get_availability(
+        self,
+        db: AsyncSession,
+        store_id: int,
+        product_id: int,
+        forecast_horizon: int,
+        split_config: SplitConfig | None = None,
+    ) -> PairAvailabilityResponse:
+        """Assess whether a (store, product) pair has enough history to model."""
+        store = await db.get(Store, store_id)
+        if store is None:
+            raise NotFoundError(message=f"Store {store_id} not found")
+        product = await db.get(Product, product_id)
+        if product is None:
+            raise NotFoundError(message=f"Product {product_id} not found")
+
+        n_splits = split_config.n_splits if split_config else MAX_RECOMMENDED_SPLITS
+        min_train = split_config.min_train_size if split_config else DEFAULT_MIN_TRAIN_SIZE
+
+        agg = (
+            await db.execute(
+                select(
+                    func.min(SalesDaily.date),
+                    func.max(SalesDaily.date),
+                    func.count(func.distinct(SalesDaily.date)),
+                    func.avg(SalesDaily.quantity),
+                    func.count().filter(SalesDaily.quantity == 0),
+                ).where(
+                    SalesDaily.store_id == store_id,
+                    SalesDaily.product_id == product_id,
+                )
+            )
+        ).one()
+        first_date, last_date, observed_raw, avg_qty, zero_raw = agg
+        observed_days = int(observed_raw or 0)
+        zero_sale_days = int(zero_raw or 0)
+        average_daily_demand = float(avg_qty) if avg_qty is not None else 0.0
+
+        warnings: list[str] = []
+
+        if first_date is None or last_date is None or observed_days == 0:
+            expected_calendar_days = 0
+            coverage_ratio = 0.0
+            missing_days = 0
+            promotion_days: int | None = 0
+        else:
+            expected_calendar_days = (last_date - first_date).days + 1
+            coverage_ratio = (
+                observed_days / expected_calendar_days if expected_calendar_days > 0 else 0.0
+            )
+            missing_days = max(0, expected_calendar_days - observed_days)
+            promotion_days = await self._count_promotion_days(db, store_id, product_id, warnings)
+
+        ready_threshold = min_train + forecast_horizon * n_splits
+        limited_threshold = min_train + forecast_horizon
+        status: AvailabilityStatus
+        if observed_days >= ready_threshold and coverage_ratio >= MIN_COVERAGE_RATIO:
+            status = "ready"
+        elif observed_days >= limited_threshold:
+            status = "limited"
+        else:
+            status = "unusable"
+
+        if coverage_ratio and coverage_ratio < MIN_COVERAGE_RATIO and status != "unusable":
+            warnings.append(
+                f"Coverage {coverage_ratio:.0%} is below the {MIN_COVERAGE_RATIO:.0%} "
+                "ready threshold."
+            )
+
+        feasible_splits = (observed_days - min_train) // max(forecast_horizon, 1)
+        recommended_splits = min(20, max(2, min(MAX_RECOMMENDED_SPLITS, feasible_splits)))
+        recommended_split_config = SplitConfig(
+            strategy="expanding",
+            n_splits=recommended_splits,
+            min_train_size=min_train,
+            gap=0,
+            horizon=forecast_horizon,
+        )
+
+        return PairAvailabilityResponse(
+            store_id=store_id,
+            product_id=product_id,
+            first_sales_date=first_date,
+            last_sales_date=last_date,
+            observed_days=observed_days,
+            expected_calendar_days=expected_calendar_days,
+            coverage_ratio=coverage_ratio,
+            missing_days=missing_days,
+            zero_sale_days=zero_sale_days,
+            promotion_days=promotion_days,
+            average_daily_demand=average_daily_demand,
+            status=status,
+            recommended_split_config=recommended_split_config,
+            warnings=warnings,
+        )
+
+    async def _count_promotion_days(
+        self,
+        db: AsyncSession,
+        store_id: int,
+        product_id: int,
+        warnings: list[str],
+    ) -> int | None:
+        """Count distinct sales dates inside any promotion for the pair.
+
+        Includes chain-wide promos (``promotion.store_id IS NULL``). Returns
+        ``None`` + a warning on any error (an acceptable fallback per the
+        Success Criteria) — never sums ``(end-start)`` which would double-count
+        overlapping ranges.
+        """
+        try:
+            count = await db.scalar(
+                select(func.count(func.distinct(SalesDaily.date)))
+                .select_from(SalesDaily)
+                .join(
+                    Promotion,
+                    and_(
+                        Promotion.product_id == SalesDaily.product_id,
+                        or_(
+                            Promotion.store_id == SalesDaily.store_id,
+                            Promotion.store_id.is_(None),
+                        ),
+                        SalesDaily.date >= Promotion.start_date,
+                        SalesDaily.date <= Promotion.end_date,
+                    ),
+                )
+                .where(
+                    SalesDaily.store_id == store_id,
+                    SalesDaily.product_id == product_id,
+                )
+            )
+            return int(count or 0)
+        except Exception as exc:  # promotion_days is best-effort; degrade gracefully
+            warnings.append(f"promotion_days could not be derived: {exc}")
+            return None
+
+    # -------------------------------------------------------------------------
+    # Orchestration
+    # -------------------------------------------------------------------------
+
+    async def run_selection(
+        self, db: AsyncSession, request: ModelSelectionRunRequest
+    ) -> ModelSelectionRunResponse:
+        """Run the full champion-selection workflow and persist the audit row."""
+        from pydantic import TypeAdapter  # lazy
+
+        from app.features.backtesting.schemas import BacktestConfig  # lazy
+        from app.features.backtesting.service import BacktestingService  # lazy
+        from app.features.forecasting.schemas import ModelConfig  # lazy
+
+        adapter: TypeAdapter[object] = TypeAdapter(ModelConfig)
+
+        row = ModelSelectionRun(
+            selection_id=uuid.uuid4().hex,
+            status=ModelSelectionStatus.RUNNING.value,
+            store_id=request.store_id,
+            product_id=request.product_id,
+            start_date=request.selection_window.start_date,
+            end_date=request.selection_window.end_date,
+            forecast_horizon=request.forecast_horizon,
+            ranking_metric=request.ranking_metric,
+            candidate_models=[c.model_dump() for c in request.candidate_models],
+            policy_snapshot=request.ranking_policy.model_dump(mode="json"),
+        )
+        db.add(row)
+        await db.flush()
+        logger.info(
+            "model_selection.run_received",
+            selection_id=row.selection_id,
+            store_id=request.store_id,
+            product_id=request.product_id,
+            n_candidates=len(request.candidate_models),
+        )
+
+        availability = await self.get_availability(
+            db,
+            request.store_id,
+            request.product_id,
+            request.forecast_horizon,
+            request.split_config,
+        )
+        row.availability_snapshot = availability.model_dump(mode="json")
+        logger.info(
+            "model_selection.availability_checked",
+            selection_id=row.selection_id,
+            status=availability.status,
+            observed_days=availability.observed_days,
+        )
+
+        if availability.status == "unusable":  # LOCKED #2 — fail fast (400)
+            message = "Insufficient data for model selection (availability unusable)."
+            row.status = ModelSelectionStatus.FAILED.value
+            row.error_message = message
+            await db.flush()
+            logger.warning(
+                "model_selection.run_failed",
+                selection_id=row.selection_id,
+                reason="unusable_availability",
+            )
+            raise BadRequestError(message=message)
+
+        results: list[CandidateResult] = []
+        backtesting_service = BacktestingService()
+        for candidate in request.candidate_models:
+            try:
+                cfg = adapter.validate_python(
+                    {"model_type": candidate.model_type, **candidate.params}
+                )
+                backtest = await backtesting_service.run_backtest(
+                    db,
+                    request.store_id,
+                    request.product_id,
+                    request.selection_window.start_date,
+                    request.selection_window.end_date,
+                    BacktestConfig(
+                        split_config=request.split_config,
+                        model_config_main=cfg,  # type: ignore[arg-type]
+                        include_baselines=False,
+                        store_fold_details=True,
+                    ),
+                )
+                results.append(self._shape_candidate(candidate, backtest))
+                logger.info(
+                    "model_selection.candidate_completed",
+                    selection_id=row.selection_id,
+                    model_type=candidate.model_type,
+                )
+            except Exception as exc:  # never hide a failed candidate
+                results.append(self._shape_failed_candidate(candidate, exc))
+                logger.warning(
+                    "model_selection.candidate_failed",
+                    selection_id=row.selection_id,
+                    model_type=candidate.model_type,
+                    error=str(exc),
+                )
+
+        row.candidate_results = [r.model_dump(mode="json") for r in results]
+        ranking = rank_candidates(
+            results, request.ranking_policy, request.ranking_metric, availability.status
+        )
+        row.ranking_result = ranking.model_dump(mode="json")
+
+        if ranking.winner is None:  # LOCKED #3 — persist failed, return 200
+            row.status = ModelSelectionStatus.FAILED.value
+            row.error_message = "No candidate produced a valid backtest."
+            row.business_summary = explain_winner(ranking, availability)
+            row.completed_at = datetime.now(UTC)
+            await db.flush()
+            await db.refresh(row)
+            logger.warning(
+                "model_selection.run_failed",
+                selection_id=row.selection_id,
+                reason="no_valid_winner",
+            )
+            return self._response(row, ranking)
+
+        winner_cfg = adapter.validate_python(
+            {"model_type": ranking.winner.model_type, **ranking.winner.params}
+        )
+
+        if request.auto_train_winner:
+            from app.features.forecasting.service import ForecastingService  # lazy
+
+            train = await ForecastingService().train_model(
+                db,
+                request.store_id,
+                request.product_id,
+                request.selection_window.start_date,
+                request.selection_window.end_date,
+                winner_cfg,  # type: ignore[arg-type]
+                feature_frame_version=request.feature_frame_version,
+                feature_groups=request.feature_groups,
+            )
+            row.final_model_path = train.model_path
+
+        forecast_warning: str | None = None
+        if request.auto_predict and row.final_model_path:
+            from app.features.forecasting.service import ForecastingService  # lazy
+
+            try:
+                prediction = await ForecastingService().predict(
+                    request.store_id,
+                    request.product_id,
+                    request.forecast_horizon,
+                    row.final_model_path,
+                )
+                row.forecast_result = self._forecast_summary(
+                    prediction, request.forecast_horizon
+                ).model_dump(mode="json")
+            except Exception as exc:  # e.g. feature-aware predict reject — warn, don't fail
+                forecast_warning = f"Auto-predict skipped: {exc}"
+                logger.warning(
+                    "model_selection.predict_skipped",
+                    selection_id=row.selection_id,
+                    error=str(exc),
+                )
+
+        row.winner_model_type = ranking.winner.model_type
+        row.winner_metrics = ranking.winner.metrics
+        row.chart_data = build_chart_data(results, ranking).model_dump(mode="json")
+        business = explain_winner(ranking, availability)
+        if forecast_warning is not None:
+            business["forecast_warning"] = forecast_warning
+        row.business_summary = business
+        row.status = (
+            ModelSelectionStatus.PARTIAL.value
+            if any(r.failed for r in results)
+            else ModelSelectionStatus.COMPLETED.value
+        )
+        row.completed_at = datetime.now(UTC)
+        await db.flush()
+        await db.refresh(row)
+        logger.info(
+            "model_selection.run_completed",
+            selection_id=row.selection_id,
+            status=row.status,
+            winner=row.winner_model_type,
+        )
+        return self._response(row, ranking)
+
+    # -------------------------------------------------------------------------
+    # Read / re-run helpers
+    # -------------------------------------------------------------------------
+
+    async def get_selection(self, db: AsyncSession, selection_id: str) -> ModelSelectionRunResponse:
+        """Return a persisted selection run by id (404 when missing)."""
+        row = await self._load(db, selection_id)
+        return self._response(row, self._load_ranking(row))
+
+    async def get_ranking(self, db: AsyncSession, selection_id: str) -> RankingResult:
+        """Return just the ranking block for a selection run."""
+        row = await self._load(db, selection_id)
+        return self._load_ranking(row)
+
+    async def train_winner(self, db: AsyncSession, selection_id: str) -> TrainWinnerResponse:
+        """Train the winning model for a completed selection (V1 contract)."""
+        from pydantic import TypeAdapter  # lazy
+
+        from app.features.forecasting.schemas import ModelConfig  # lazy
+        from app.features.forecasting.service import ForecastingService  # lazy
+
+        row = await self._load(db, selection_id)
+        ranking = self._load_ranking(row)
+        if ranking.winner is None:
+            raise BadRequestError(message="Selection has no winning model to train.")
+
+        adapter: TypeAdapter[object] = TypeAdapter(ModelConfig)
+        cfg = adapter.validate_python(
+            {"model_type": ranking.winner.model_type, **ranking.winner.params}
+        )
+        train = await ForecastingService().train_model(
+            db,
+            row.store_id,
+            row.product_id,
+            row.start_date,
+            row.end_date,
+            cfg,  # type: ignore[arg-type]
+        )
+        row.final_model_path = train.model_path
+        await db.flush()
+        logger.info(
+            "model_selection.winner_trained",
+            selection_id=row.selection_id,
+            model_type=ranking.winner.model_type,
+        )
+        return TrainWinnerResponse(
+            selection_id=row.selection_id,
+            model_type=ranking.winner.model_type,
+            model_path=train.model_path,
+        )
+
+    async def predict_winner(self, db: AsyncSession, selection_id: str) -> ForecastSummary:
+        """Forecast with the trained winning model (requires train-winner first)."""
+        from app.features.forecasting.service import ForecastingService  # lazy
+
+        row = await self._load(db, selection_id)
+        if not row.final_model_path:
+            raise BadRequestError(
+                message="No trained model for this selection; call train-winner first."
+            )
+        prediction = await ForecastingService().predict(
+            row.store_id, row.product_id, row.forecast_horizon, row.final_model_path
+        )
+        summary = self._forecast_summary(prediction, row.forecast_horizon)
+        row.forecast_result = summary.model_dump(mode="json")
+        await db.flush()
+        logger.info(
+            "model_selection.winner_predicted",
+            selection_id=row.selection_id,
+            horizon=row.forecast_horizon,
+        )
+        return summary
+
+    # -------------------------------------------------------------------------
+    # Pure mappers
+    # -------------------------------------------------------------------------
+
+    def _shape_candidate(
+        self, candidate: CandidateModelConfig, backtest: BacktestResponse
+    ) -> CandidateResult:
+        main = backtest.main_model_results
+        sample_size = sum(len(fold.actuals) for fold in main.fold_results)
+        folds = [
+            FoldChart(
+                fold_index=fold.fold_index,
+                dates=fold.dates,
+                actuals=fold.actuals,
+                predictions=fold.predictions,
+            )
+            for fold in main.fold_results
+        ]
+        return CandidateResult(
+            model_type=candidate.model_type,
+            params=candidate.params,
+            failed=False,
+            aggregated_metrics=main.aggregated_metrics,
+            sample_size=sample_size,
+            config_hash=backtest.config_hash,
+            folds=folds,
+        )
+
+    def _shape_failed_candidate(
+        self, candidate: CandidateModelConfig, exc: Exception
+    ) -> CandidateResult:
+        return CandidateResult(
+            model_type=candidate.model_type,
+            params=candidate.params,
+            failed=True,
+            error=str(exc),
+            aggregated_metrics=None,
+            sample_size=0,
+            folds=[],
+        )
+
+    def _forecast_summary(self, prediction: PredictResponse, horizon: int) -> ForecastSummary:
+        points = [point.model_dump(mode="json") for point in prediction.forecasts]
+        total = float(sum(point.forecast for point in prediction.forecasts))
+        average = total / len(prediction.forecasts) if prediction.forecasts else 0.0
+        return ForecastSummary(
+            points=points, total_demand=total, average_demand=average, horizon=horizon
+        )
+
+    async def _load(self, db: AsyncSession, selection_id: str) -> ModelSelectionRun:
+        row = await db.scalar(
+            select(ModelSelectionRun).where(ModelSelectionRun.selection_id == selection_id)
+        )
+        if row is None:
+            raise NotFoundError(message=f"Selection run {selection_id} not found")
+        return row
+
+    def _load_ranking(self, row: ModelSelectionRun) -> RankingResult:
+        if row.ranking_result:
+            return RankingResult.model_validate(row.ranking_result)
+        return RankingResult(winner=None, entries=[], confidence="low", reasons=[])
+
+    def _response(
+        self, row: ModelSelectionRun, ranking: RankingResult
+    ) -> ModelSelectionRunResponse:
+        availability = (
+            PairAvailabilityResponse.model_validate(row.availability_snapshot)
+            if row.availability_snapshot
+            else None
+        )
+        chart_data = ChartData.model_validate(row.chart_data) if row.chart_data else None
+        forecast = (
+            ForecastSummary.model_validate(row.forecast_result) if row.forecast_result else None
+        )
+        winner: WinnerSummary | None = None
+        if ranking.winner is not None and row.status in _TERMINAL_WITH_WINNER:
+            winner = WinnerSummary(
+                model_type=ranking.winner.model_type,
+                params=ranking.winner.params,
+                metrics=ranking.winner.metrics or {},
+                rank=1,
+            )
+        confidence = ranking.confidence if (ranking.entries or ranking.winner) else None
+        final_model = {"model_path": row.final_model_path} if row.final_model_path else None
+        return ModelSelectionRunResponse(
+            selection_id=row.selection_id,
+            store_id=row.store_id,
+            product_id=row.product_id,
+            status=row.status,  # type: ignore[arg-type]
+            selection_window=SelectionWindow(start_date=row.start_date, end_date=row.end_date),
+            forecast_horizon=row.forecast_horizon,
+            ranking_metric=row.ranking_metric,
+            availability=availability,
+            ranking=ranking.entries,
+            winner=winner,
+            recommendation_confidence=confidence,
+            confidence_reasons=ranking.reasons,
+            chart_data=chart_data,
+            final_model=final_model,
+            forecast=forecast,
+            business_summary=row.business_summary,
+            error_message=row.error_message,
+            created_at=row.created_at,
+            completed_at=row.completed_at,
+        )
