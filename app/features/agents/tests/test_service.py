@@ -14,6 +14,7 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     TextPart,
+    ToolReturnPart,
     UserPromptPart,
 )
 
@@ -334,6 +335,49 @@ class TestAgentServiceChat:
         assert response.pending_approval is False
         assert "invalid tool call" in response.message
         assert "exceeded max retries" not in response.message
+
+    @pytest.mark.asyncio
+    async def test_chat_finalizer_salvages_answer_on_misbehavior(
+        self,
+        sample_active_session: AgentSession,
+    ) -> None:
+        """When tools fetched data but structured output failed, salvage a reply (#351).
+
+        A weak local model calls the read tool and gets the data, then can't wrap
+        it in the ExperimentReport schema and exhausts the output-retry budget.
+        The service then asks a tool-less finalizer to answer in plain text — the
+        user gets the answer instead of the generic "invalid tool call" error.
+        """
+        service = AgentService()
+        mock_db = AsyncMock()
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(
+            side_effect=UnexpectedModelBehavior("Exceeded maximum output retries (3)")
+        )
+
+        salvaged_answer = "The lowest WAPE is the naive run 2fad611b (18.93)."
+        with (
+            patch.object(service, "_get_agent", return_value=mock_agent),
+            patch.object(
+                service,
+                "_salvage_plaintext_answer",
+                AsyncMock(return_value=salvaged_answer),
+            ),
+        ):
+            response = await service.chat(
+                db=mock_db,
+                session_id=sample_active_session.session_id,
+                message="List the most recent model runs and tell me which has the lowest WAPE.",
+            )
+
+        assert response.message == salvaged_answer
+        assert response.pending_approval is False
+        assert "invalid tool call" not in response.message
 
     @pytest.mark.asyncio
     async def test_chat_runs_tools_sequentially(
@@ -1143,3 +1187,45 @@ class TestAgentServiceDepsApproval:
         assert approval_events[0].data["action"].action_type == "save_scenario"
         assert sample_active_session.status == SessionStatus.AWAITING_APPROVAL.value
         assert sample_active_session.pending_action is not None
+
+
+class TestFinalizerSalvage:
+    """The plain-text finalizer fallback used on structured-output failure (#351)."""
+
+    def test_extract_tool_payloads_pulls_tool_returns(self) -> None:
+        """Tool returns are extracted from a captured run trace, in order."""
+        captured: list[ModelMessage] = [
+            ModelRequest(parts=[UserPromptPart(content="List runs")]),
+            ModelResponse(parts=[TextPart(content="{}")]),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="tool_list_runs",
+                        content={"runs": [{"run_id": "abc", "wape": 18.93}]},
+                        tool_call_id="call-1",
+                    )
+                ]
+            ),
+        ]
+
+        payloads = AgentService._extract_tool_payloads(captured)
+
+        assert payloads == [
+            {"tool": "tool_list_runs", "result": {"runs": [{"run_id": "abc", "wape": 18.93}]}}
+        ]
+
+    def test_extract_tool_payloads_empty_when_no_tool_returns(self) -> None:
+        """No tool returns (model failed before any tool ran) yields an empty list."""
+        captured: list[ModelMessage] = [
+            ModelRequest(parts=[UserPromptPart(content="List runs")]),
+            ModelResponse(parts=[TextPart(content='{"runs": []}')]),
+        ]
+
+        assert AgentService._extract_tool_payloads(captured) == []
+
+    @pytest.mark.asyncio
+    async def test_salvage_returns_none_without_tool_data(self) -> None:
+        """With no captured tool data, salvage returns None (caller emits the error)."""
+        service = AgentService()
+        result = await service._salvage_plaintext_answer("any question", [])
+        assert result is None

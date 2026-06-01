@@ -13,6 +13,7 @@ CRITICAL: Sessions expire after configured TTL.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import AbstractContextManager
@@ -20,9 +21,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
 import structlog
-from pydantic_ai import Agent
+from pydantic_ai import Agent, capture_run_messages
 from pydantic_ai.exceptions import UnexpectedModelBehavior
-from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
+from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ToolReturnPart
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,6 +40,10 @@ from app.features.agents.schemas import (
 )
 
 logger = structlog.get_logger()
+
+# Cap on the tool-data JSON fed to the plain-text finalizer (#351). Large enough
+# for a runs list, small enough to stay well within the model's context budget.
+_FINALIZER_MAX_CHARS = 6000
 
 
 class SessionNotFoundError(ValueError):
@@ -266,16 +271,20 @@ class AgentService:
             history_length=len(message_history),
         )
 
+        # Always bound for the misbehavior handler, even if the run raises before
+        # capture_run_messages() populates it.
+        captured_messages: list[ModelMessage] = []
         try:
-            with _sequential_tool_execution():
-                result = await asyncio.wait_for(
-                    agent.run(
-                        message,
-                        deps=deps,
-                        message_history=message_history,
-                    ),
-                    timeout=self.settings.agent_timeout_seconds,
-                )
+            with capture_run_messages() as captured_messages:
+                with _sequential_tool_execution():
+                    result = await asyncio.wait_for(
+                        agent.run(
+                            message,
+                            deps=deps,
+                            message_history=message_history,
+                        ),
+                        timeout=self.settings.agent_timeout_seconds,
+                    )
         except TimeoutError as e:
             raise TimeoutError(
                 f"Agent response timed out after {self.settings.agent_timeout_seconds} seconds"
@@ -307,6 +316,13 @@ class AgentService:
                     pending_approval=True,
                     pending_action=salvaged,
                 )
+            # A weak local model often calls tools and obtains the data, then
+            # fails to wrap it in the structured output schema (#351). Salvage a
+            # plain-text answer from the tool data already captured this run.
+            answer = await self._salvage_plaintext_answer(message, captured_messages)
+            if answer is not None:
+                logger.info("agents.chat_finalizer_salvage", session_id=session_id)
+                return ChatResponse(session_id=session_id, message=answer)
             return ChatResponse(
                 session_id=session_id,
                 message=(
@@ -483,8 +499,10 @@ class AgentService:
         default_model = self.settings.agent_default_model
         provider = default_model.split(":", 1)[0] if ":" in default_model else ""
         stream_supported = provider != "ollama"
+        # Always bound for the misbehavior handler (see chat()).
+        captured_messages: list[ModelMessage] = []
         try:
-            with _sequential_tool_execution():
+            with capture_run_messages() as captured_messages, _sequential_tool_execution():
                 async with asyncio.timeout(self.settings.agent_timeout_seconds):
                     final_result: Any
                     usage: Any
@@ -690,6 +708,29 @@ class AgentService:
                         "tokens_used": 0,
                         "tool_calls_count": deps.tool_call_count,
                         "pending_approval": True,
+                    },
+                    timestamp=misbehavior_now,
+                )
+                return
+            # A weak local model often calls tools and obtains the data, then
+            # fails to wrap it in the structured output schema (#351). Salvage a
+            # plain-text answer from the tool data already captured this run and
+            # emit it as a normal reply rather than an error.
+            answer = await self._salvage_plaintext_answer(message, captured_messages)
+            if answer is not None:
+                logger.info("agents.stream_chat_finalizer_salvage", session_id=session_id)
+                yield StreamEvent(
+                    event_type="text_delta",
+                    data={"delta": answer},
+                    timestamp=misbehavior_now,
+                )
+                yield StreamEvent(
+                    event_type="complete",
+                    data={
+                        "message": answer,
+                        "tokens_used": 0,
+                        "tool_calls_count": deps.tool_call_count,
+                        "pending_approval": False,
                     },
                     timestamp=misbehavior_now,
                 )
@@ -940,6 +981,75 @@ class AgentService:
             ),
             now=now,
         )
+
+    @staticmethod
+    def _extract_tool_payloads(captured: list[ModelMessage]) -> list[dict[str, Any]]:
+        """Pull every tool return out of a captured run's message trace.
+
+        Used by :meth:`_salvage_plaintext_answer` to recover the data a weak
+        model fetched before it failed structured-output validation (#351).
+
+        Args:
+            captured: Messages captured via ``capture_run_messages`` (may be empty
+                when the run failed before any tool returned).
+
+        Returns:
+            One ``{"tool", "result"}`` dict per ``ToolReturnPart``, in order.
+        """
+        payloads: list[dict[str, Any]] = []
+        for message in captured:
+            for part in getattr(message, "parts", []):
+                if isinstance(part, ToolReturnPart):
+                    payloads.append({"tool": part.tool_name, "result": part.content})
+        return payloads
+
+    async def _salvage_plaintext_answer(
+        self,
+        message: str,
+        captured: list[ModelMessage],
+    ) -> str | None:
+        """Answer in plain text from tool data when structured output failed (#351).
+
+        A weak local model (e.g. ``ollama:llama3.1:8b``) reliably calls the read
+        tool and gets the data, but echoes the raw tool result instead of the
+        primary agent's ``PromptedOutput`` schema, exhausting the output-retry
+        budget. The data was obtained, though — so hand it to a tool-less,
+        ``str``-output finalizer that answers the user's question directly. The
+        finalizer cannot loop (no tools) or fail schema validation (plain text).
+
+        Args:
+            message: The original user message.
+            captured: Messages captured from the failed run.
+
+        Returns:
+            The finalizer's plain-text answer, or ``None`` when no tool data was
+            obtained or the finalizer itself errors (caller falls back to the
+            generic recoverable error).
+        """
+        payloads = self._extract_tool_payloads(captured)
+        if not payloads:
+            return None
+        try:
+            from app.features.agents.agents.base import build_finalizer_agent
+
+            data = json.dumps(payloads, default=str)[:_FINALIZER_MAX_CHARS]
+            prompt = (
+                f"User question:\n{message}\n\n"
+                f"Data retrieved from tools (JSON):\n{data}\n\n"
+                "Answer the user's question concisely from this data."
+            )
+            finalizer = build_finalizer_agent()
+            result = await asyncio.wait_for(
+                finalizer.run(prompt),
+                timeout=self.settings.agent_timeout_seconds,
+            )
+            text = str(result.output).strip()
+            return text or None
+        except Exception:
+            # Best-effort: a finalizer failure must never replace the original
+            # recoverable error with a crash.
+            logger.warning("agents.finalizer_fallback_failed", exc_info=True)
+            return None
 
     def _record_pending_action(
         self,
