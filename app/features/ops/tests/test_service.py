@@ -188,14 +188,23 @@ def test_run_feature_frame_version_reads_runtime_info() -> None:
     assert _run_feature_frame_version(_make_run(run_id="b")) == 1
 
 
-def test_run_feature_frame_version_rejects_unsupported_value() -> None:
-    """Unknown int (e.g. 3) or non-int values fall back to V=1 (defensive)."""
-    legacy_explicit_v3 = _make_run(run_id="bad-int")
-    legacy_explicit_v3.runtime_info = {"feature_frame_version": 3}
-    legacy_str = _make_run(run_id="bad-str")
-    legacy_str.runtime_info = {"feature_frame_version": "2"}
-    assert _run_feature_frame_version(legacy_explicit_v3) == 1
-    assert _run_feature_frame_version(legacy_str) == 1
+def test_run_feature_frame_version_honors_any_positive_int() -> None:
+    """Any positive int V is honored (e.g. 3); non-int / non-positive / bool -> V=1.
+
+    Regression for #338: feature_frame_version is an opaque incrementing integer
+    (docs/_base/DOMAIN_MODEL.md), so V>=3 must NOT be clamped to 1 — the showcase
+    stale_alias_trigger step registers a V=3 run to fire the
+    feature_frame_version_mismatch verdict.
+    """
+    v3 = _make_run(run_id="v3")
+    v3.runtime_info = {"feature_frame_version": 3}
+    assert _run_feature_frame_version(v3) == 3
+
+    # Non-int / non-positive / bool all fall back to V=1.
+    for bad in ("2", 0, -1, True):
+        run = _make_run(run_id=f"bad-{bad!r}")
+        run.runtime_info = {"feature_frame_version": bad}
+        assert _run_feature_frame_version(run) == 1
 
 
 def test_alias_staleness_legacy_run_treated_as_v1_no_spurious_mismatch() -> None:
@@ -239,6 +248,24 @@ def test_alias_staleness_v_mismatch_wins_over_newer_run() -> None:
     assert reason == StaleReason.FEATURE_FRAME_VERSION_MISMATCH.value
     assert alias_v == 1
     assert comparable_v == 2
+
+
+def test_alias_staleness_v1_alias_v3_latest_reports_mismatch() -> None:
+    """A V1 alias with a newer V3 comparable reports MISMATCH, not NEWER (#338).
+
+    Mirrors the showcase stale_alias_trigger scenario: the demo-production alias
+    points at a V1 run while the grain's newest run is V=3. Before #338 the V=3
+    latest was clamped to V=1, so this fell through to NEWER_SUCCESS_RUN.
+    """
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    newer = datetime(2026, 5, 1, tzinfo=UTC)
+    run = _make_run(run_id="v1-alias", created_at=older, feature_frame_version=1)
+    latest = _make_run(run_id="v3-latest", created_at=newer, feature_frame_version=3)
+    is_stale, reason, alias_v, comparable_v = _alias_staleness(run, {(1, 1): latest})
+    assert is_stale is True
+    assert reason == StaleReason.FEATURE_FRAME_VERSION_MISMATCH.value
+    assert alias_v == 1
+    assert comparable_v == 3
 
 
 def test_alias_staleness_same_v_newer_run_uses_newer_reason() -> None:
