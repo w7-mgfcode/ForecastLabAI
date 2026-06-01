@@ -435,6 +435,99 @@ class TestAgentServiceStreamChat:
         assert "exceeded max retries" not in events[0].data["error"]
 
     @pytest.mark.asyncio
+    async def test_chat_surfaces_pending_action_on_model_misbehavior(
+        self,
+        sample_active_session: AgentSession,
+    ) -> None:
+        """A gated tool that fired before the model misbehaved must surface the
+        Approve card, not the generic error (#344).
+
+        A gated tool records ``deps.pending_action`` the moment it fires, but a
+        weak model can ramble past the gate and exhaust its retry budget, so
+        ``agent.run`` raises ``UnexpectedModelBehavior`` before returning. The
+        captured approval is valid and must not be discarded.
+        """
+        service = AgentService()
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        def _fire_gate_then_misbehave(*_args: Any, **kwargs: Any) -> None:
+            deps: AgentDeps = kwargs["deps"]
+            deps.set_pending_action(
+                "create_alias",
+                {"alias_name": "champion", "run_id": "1" * 32},
+                "Create alias champion",
+            )
+            raise UnexpectedModelBehavior("Exceeded maximum output retries (3)")
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(side_effect=_fire_gate_then_misbehave)
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            response = await service.chat(
+                db=mock_db,
+                session_id=sample_active_session.session_id,
+                message="Create alias champion. Call tool_create_alias now.",
+            )
+
+        assert response.pending_approval is True
+        assert response.pending_action is not None
+        assert response.pending_action.action_type == "create_alias"
+        assert response.pending_action.arguments["alias_name"] == "champion"
+        assert "invalid tool call" not in response.message
+        # Session flipped so POST /approve can find the action.
+        assert sample_active_session.status == SessionStatus.AWAITING_APPROVAL.value
+        assert sample_active_session.pending_action is not None
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_surfaces_approval_on_model_misbehavior(
+        self,
+        sample_active_session: AgentSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The streaming path must emit ``approval_required`` (not ``error``)
+        when a gated tool fired before the model misbehaved (#344)."""
+        service = AgentService()
+        # Pin ollama so stream_chat uses the non-streaming run() path (#342) —
+        # the real-world scenario where this surfaced.
+        monkeypatch.setattr(service.settings, "agent_default_model", "ollama:qwen3:8b")
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        def _fire_gate_then_misbehave(*_args: Any, **kwargs: Any) -> None:
+            deps: AgentDeps = kwargs["deps"]
+            deps.set_pending_action(
+                "create_alias",
+                {"alias_name": "champion", "run_id": "1" * 32},
+                "Create alias champion",
+            )
+            raise UnexpectedModelBehavior("Exceeded maximum output retries (3)")
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(side_effect=_fire_gate_then_misbehave)
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            events = [
+                event
+                async for event in service.stream_chat(
+                    db=mock_db,
+                    session_id=sample_active_session.session_id,
+                    message="Create alias champion. Call tool_create_alias now.",
+                )
+            ]
+
+        event_types = [event.event_type for event in events]
+        assert "approval_required" in event_types
+        assert "error" not in event_types
+        approval = next(e for e in events if e.event_type == "approval_required")
+        assert approval.data["action"].action_type == "create_alias"
+        assert sample_active_session.status == SessionStatus.AWAITING_APPROVAL.value
+
+    @pytest.mark.asyncio
     async def test_stream_chat_runs_tools_sequentially(
         self,
         sample_active_session: AgentSession,
