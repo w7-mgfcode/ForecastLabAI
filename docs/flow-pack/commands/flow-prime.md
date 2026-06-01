@@ -92,12 +92,30 @@ Produce the two required sections:
 - Labels: umbrella=`[✅/❌]` epic=`[✅/❌]` flow=`[✅/❌]`
 - Gap: concise plain-language statement of what the flow: suite still needs in this repo
 
-Write these two sections to `.flow/state.md`:
-- If the file **does not exist**, create it with a provenance HTML comment at the top and a
-  `## Phase status` header, then append the two sections under `## Current workflow map` and
-  `## You are here`.
-- If the file **already exists**, find and update the two matching `##` sections in place; preserve
-  all other content (Phase status, Gate decisions, Chosen workflow, Open epics, etc.).
+Write these two sections to `.flow/state.md` using **HTML marker pairs** so the update is
+deterministic and never corrupts unrelated content:
+
+```
+<!-- FLOW-PRIME:CURRENT-WORKFLOW-MAP:START -->
+## Current workflow map
+<content>
+<!-- FLOW-PRIME:CURRENT-WORKFLOW-MAP:END -->
+
+<!-- FLOW-PRIME:YOU-ARE-HERE:START -->
+## You are here
+<content>
+<!-- FLOW-PRIME:YOU-ARE-HERE:END -->
+```
+
+Update rules:
+- **File does not exist** — create it with a provenance HTML comment at the top, then write both
+  marker blocks (with their `## ` headings inside).
+- **File exists, markers present** — replace only the content between each `START` / `END` pair;
+  leave every byte outside the markers unchanged.
+- **File exists, markers absent** — append both marker blocks at the end of the file; do not
+  rewrite or delete any existing content.
+
+Never match on bare `##` headings to locate sections — the markers are the authoritative delimiters.
 
 ### 5. Gate and next-command
 
