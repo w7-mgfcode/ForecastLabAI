@@ -3,7 +3,7 @@
 import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1260,7 +1260,7 @@ class TestFinalizerSalvage:
             }
         ]
 
-        compact = AgentService._compact_for_finalizer(raw)
+        compact = cast(list[dict[str, Any]], AgentService._compact_for_finalizer(raw))
         runs = compact[0]["result"]["runs"]
 
         # Identity + metrics survive for BOTH runs (so a ranking sees 18.93).
