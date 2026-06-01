@@ -386,6 +386,7 @@ class TestAgentServiceStreamChat:
     async def test_stream_chat_model_misbehavior_yields_error_event(
         self,
         sample_active_session: AgentSession,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A misbehaving model should yield a recoverable `error` event, not crash.
 
@@ -394,6 +395,9 @@ class TestAgentServiceStreamChat:
         raw exception string to the client.
         """
         service = AgentService()
+        # Pin a streaming-capable (cloud) provider so this exercises the
+        # run_stream path regardless of the local .env (#342).
+        monkeypatch.setattr(service.settings, "agent_default_model", "anthropic:claude-test")
         mock_db = AsyncMock()
 
         mock_result = MagicMock()
@@ -434,6 +438,7 @@ class TestAgentServiceStreamChat:
     async def test_stream_chat_runs_tools_sequentially(
         self,
         sample_active_session: AgentSession,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """stream_chat() must also run the agent under sequential tool execution.
 
@@ -442,6 +447,9 @@ class TestAgentServiceStreamChat:
         concurrent-session bug from issue #172.
         """
         service = AgentService()
+        # Pin a streaming-capable (cloud) provider so this exercises the
+        # run_stream path regardless of the local .env (#342).
+        monkeypatch.setattr(service.settings, "agent_default_model", "anthropic:claude-test")
         mock_db = AsyncMock()
 
         mock_result = MagicMock()
@@ -483,6 +491,120 @@ class TestAgentServiceStreamChat:
                 pass
 
         mock_mode.assert_called_once_with("sequential")
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_ollama_uses_nonstreaming_path(
+        self,
+        sample_active_session: AgentSession,
+        sample_experiment_report: ExperimentReport,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#342 — an ollama agent uses agent.run() (not run_stream).
+
+        Ollama's OpenAI-compat endpoint rejects PydanticAI's streamed request
+        with 400 "invalid message content type: <nil>". The service must fall
+        back to the non-streaming run() path and still emit text_delta +
+        approval_required (from deps.pending_action, #336) + complete.
+        """
+        service = AgentService()
+        monkeypatch.setattr(service.settings, "agent_default_model", "ollama:qwen3:8b")
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        def _run(message: str, *, deps: AgentDeps, message_history: Any) -> MagicMock:
+            # A gated tool fired during the run and recorded an approval request.
+            deps.set_pending_action(
+                "save_scenario",
+                {"name": "p", "run_id": "r", "store_id": 1, "product_id": 2},
+                "Save scenario plan 'p'",
+            )
+            res = MagicMock()
+            res.output = sample_experiment_report  # has a non-empty summary
+            usage = MagicMock()
+            usage.total_tokens = 11
+            res.usage.return_value = usage
+            res.all_messages.return_value = []
+            return res
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(side_effect=_run)
+        mock_agent.run_stream = MagicMock(
+            side_effect=AssertionError("run_stream must not be called for the ollama provider")
+        )
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            events = [
+                event
+                async for event in service.stream_chat(
+                    db=mock_db,
+                    session_id=sample_active_session.session_id,
+                    message="Save a what-if scenario plan",
+                )
+            ]
+
+        types = [e.event_type for e in events]
+        assert "text_delta" in types  # full reply emitted as one delta
+        assert "approval_required" in types
+        assert types[-1] == "complete"
+        approval = next(e for e in events if e.event_type == "approval_required")
+        assert approval.data["action"].action_type == "save_scenario"
+        mock_agent.run.assert_awaited_once()
+        mock_agent.run_stream.assert_not_called()
+        assert sample_active_session.status == SessionStatus.AWAITING_APPROVAL.value
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_cloud_keeps_streaming_path(
+        self,
+        sample_active_session: AgentSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Regression guard for #342 — a cloud provider keeps the run_stream path."""
+        service = AgentService()
+        monkeypatch.setattr(service.settings, "agent_default_model", "anthropic:claude-test")
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        class _StubStream:
+            async def __aenter__(self) -> MagicMock:
+                stream = MagicMock()
+
+                async def _stream_text() -> AsyncIterator[str]:
+                    yield "hello"
+
+                stream.stream_text = _stream_text
+                stream.get_output = AsyncMock(return_value=None)
+                usage = MagicMock()
+                usage.total_tokens = 1
+                stream.usage.return_value = usage
+                stream.all_messages.return_value = []
+                return stream
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        mock_agent = MagicMock()
+        mock_agent.run_stream = MagicMock(return_value=_StubStream())
+        mock_agent.run = AsyncMock(
+            side_effect=AssertionError("run must not be called for a cloud provider")
+        )
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            events = [
+                event
+                async for event in service.stream_chat(
+                    db=mock_db,
+                    session_id=sample_active_session.session_id,
+                    message="hello",
+                )
+            ]
+
+        mock_agent.run_stream.assert_called_once()
+        mock_agent.run.assert_not_called()
+        assert any(e.event_type == "complete" for e in events)
 
 
 class TestAgentServiceApproval:
@@ -871,9 +993,13 @@ class TestAgentServiceDepsApproval:
         self,
         sample_active_session: AgentSession,
         sample_experiment_report: ExperimentReport,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """stream_chat() must emit approval_required from deps.pending_action."""
         service = AgentService()
+        # Pin a streaming-capable (cloud) provider so this exercises the
+        # run_stream path regardless of the local .env (#342).
+        monkeypatch.setattr(service.settings, "agent_default_model", "anthropic:claude-test")
         mock_db = AsyncMock()
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = sample_active_session
