@@ -25,6 +25,7 @@ import { WinnerCard } from '@/components/champion-selector/results/winner-card'
 import { ComparisonCharts } from '@/components/champion-selector/results/comparison-charts'
 import { ModelDetailDrawer } from '@/components/champion-selector/results/model-detail-drawer'
 import { CancelRunDialog } from '@/components/champion-selector/results/cancel-run-dialog'
+import { DecisionSection } from '@/components/champion-selector/decision/decision-section'
 import { isTerminalSelectionStatus } from '@/components/champion-selector/results/constants'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -369,6 +370,16 @@ export default function ChampionSelectorPage() {
             open={drawerOpen}
             onOpenChange={setDrawerOpen}
           />
+          {/* Slice C — decide → train → forecast → interpret → promote. Keyed by
+              selectionId so a fresh run resets the decision state. */}
+          {selectionId && run.winner && (
+            <DecisionSection
+              key={selectionId}
+              selectionId={selectionId}
+              run={run}
+              catalog={catalogQuery.data}
+            />
+          )}
         </>
       )}
     </div>

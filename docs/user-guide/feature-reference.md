@@ -133,6 +133,23 @@ Tracks every trained model so runs are reproducible and comparable.
 A run moves through `pending → running → success` (or `failed`), and an alias is a
 human-friendly pointer (like `production` or `champion`) to a chosen successful run.
 
+## Champion Selector
+
+An end-to-end "which model is best, and now what?" workflow over one (store,
+product) pair: compare candidate models, accept or override the recommendation,
+train, forecast, interpret, and promote to a registry alias.
+
+- `POST /model-selection/runs` — submit an async candidate comparison (`202`).
+- `GET /model-selection/{id}` — poll progress / fetch the ranked results + winner.
+- `POST /model-selection/{id}/train-winner` — train the ranked winner.
+- `POST /model-selection/{id}/train-selected` — train a chosen candidate (override + audit).
+- `POST /model-selection/{id}/predict` — forecast the trained model + a labeled
+  safety-stock decision heuristic (feature-aware models are blocked → use Scenarios).
+- `POST /model-selection/{id}/promote` — approval-gated, audited promotion to a
+  registry alias (requires an approver; a non-recommended model needs an explicit ack).
+
+See the full walkthrough in **[champion-selector-guide.md](./champion-selector-guide.md)**.
+
 ## Jobs
 
 Long-running work — training, prediction, backtesting — submitted as jobs.

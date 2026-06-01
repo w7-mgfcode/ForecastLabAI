@@ -270,3 +270,134 @@ async def test_legacy_sync_run_has_no_progress_children(
     body = fetched.json()
     assert body["progress"] is None
     assert body["candidate_progress"] == []
+
+
+# --------------------------------------------------------------------- Slice C
+
+from uuid import uuid4  # noqa: E402
+
+
+async def test_decision_journey_override_predict(
+    client: AsyncClient, ready_pair: dict[str, Any]
+) -> None:
+    """Sync run → train-selected (override) → predict (decision + peak/low)."""
+    run = await client.post("/model-selection/run", json=_run_body(ready_pair))
+    assert run.status_code == 200
+    body = run.json()
+    selection_id = body["selection_id"]
+    winner_type = body["winner"]["model_type"]
+
+    # Pick a candidate that is NOT the winner to exercise the override path.
+    candidate_types = [c["model_type"] for c in _run_body(ready_pair)["candidate_models"]]
+    override_type = next(t for t in candidate_types if t != winner_type)
+
+    trained = await client.post(
+        f"/model-selection/{selection_id}/train-selected",
+        json={"model_type": override_type, "override_reason": "domain seasonality"},
+    )
+    assert trained.status_code == 200
+    tbody = trained.json()
+    assert tbody["is_override"] is True
+    assert tbody["override_warning"]
+
+    predicted = await client.post(
+        f"/model-selection/{selection_id}/predict",
+        json={"lead_time_days": 7, "service_level": 0.95},
+    )
+    assert predicted.status_code == 200
+    pbody = predicted.json()
+    assert pbody["forecast"]["peak_demand"] is not None
+    assert pbody["forecast"]["low_demand"] is not None
+    assert pbody["decision"]["method"] == "heuristic"
+    assert pbody["decision"]["lead_time_days"] == 7
+    assert "safety_stock" in pbody["decision"]
+    assert "reorder_point" in pbody["decision"]
+
+
+async def test_promote_creates_registry_run_and_alias_with_real_v(
+    client: AsyncClient, ready_pair: dict[str, Any], db_session: AsyncSession
+) -> None:
+    """V2-configured run → train-winner → promote → SUCCESS registry run + alias.
+
+    Asserts the registry run's runtime_info carries the REAL feature_frame_version
+    (2), and the selection persisted champion_run_id/promoted_alias/decision.
+    """
+    body = _run_body(ready_pair)
+    body["feature_frame_version"] = 2  # baseline winner ignores V at train, column persists 2
+    run = await client.post("/model-selection/run", json=body)
+    assert run.status_code == 200
+    selection_id = run.json()["selection_id"]
+
+    trained = await client.post(f"/model-selection/{selection_id}/train-winner")
+    assert trained.status_code == 200
+
+    alias_name = f"champ-{uuid4().hex[:8]}"
+    promoted = await client.post(
+        f"/model-selection/{selection_id}/promote",
+        json={"alias_name": alias_name, "approved_by": "integration", "description": "Q3"},
+    )
+    assert promoted.status_code == 200
+    pbody = promoted.json()
+    assert pbody["alias_name"] == alias_name
+    assert pbody["run_status"] == "success"
+    run_id = pbody["run_id"]
+
+    # The alias resolves to the SUCCESS run via the registry endpoint.
+    alias_resp = await client.get(f"/registry/aliases/{alias_name}")
+    assert alias_resp.status_code == 200
+    assert alias_resp.json()["run_status"] == "success"
+
+    # The registry run carries the REAL feature_frame_version (2).
+    run_detail = await client.get(f"/registry/runs/{run_id}")
+    assert run_detail.status_code == 200
+    assert run_detail.json()["runtime_info"]["feature_frame_version"] == 2
+
+    # The selection persisted the promotion audit.
+    selection = await client.get(f"/model-selection/{selection_id}")
+    sbody = selection.json()
+    rows = await db_session.execute(
+        text(
+            "SELECT champion_run_id, promoted_alias, promotion_decision "
+            "FROM model_selection_run WHERE selection_id = :sid"
+        ),
+        {"sid": selection_id},
+    )
+    champion_run_id, promoted_alias, promotion_decision = rows.one()
+    assert champion_run_id == run_id
+    assert promoted_alias == alias_name
+    assert promotion_decision["approved_by"] == "integration"
+    assert promotion_decision["decision"] == "promoted"
+    assert sbody["status"] in {"completed", "partial"}
+
+
+async def test_promote_before_train_returns_422(
+    client: AsyncClient, ready_pair: dict[str, Any]
+) -> None:
+    run = await client.post("/model-selection/run", json=_run_body(ready_pair))
+    selection_id = run.json()["selection_id"]
+    promoted = await client.post(
+        f"/model-selection/{selection_id}/promote",
+        json={"alias_name": f"champ-{uuid4().hex[:8]}", "approved_by": "x"},
+    )
+    assert promoted.status_code == 422
+    assert promoted.json()["status"] == 422
+
+
+async def test_seven_decision_columns_exist(db_session: AsyncSession) -> None:
+    rows = await db_session.execute(
+        text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'model_selection_run'"
+        )
+    )
+    cols = {row[0] for row in rows}
+    for col in (
+        "trained_model_type",
+        "is_override",
+        "override_reason",
+        "champion_run_id",
+        "promoted_alias",
+        "promotion_decision",
+        "feature_frame_version",
+    ):
+        assert col in cols, f"missing Slice C column: {col}"

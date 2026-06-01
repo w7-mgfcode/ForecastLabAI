@@ -78,3 +78,38 @@ def test_model_selection_candidate_construction() -> None:
     assert cand.status == "pending"
     assert cand.result is None
     assert cand.error_message is None
+
+
+# =============================================================================
+# Slice C — decision + promotion columns (in-Python construction)
+# =============================================================================
+
+
+def test_model_selection_run_slice_c_columns_construct() -> None:
+    run = ModelSelectionRun(
+        selection_id="selC",
+        status=ModelSelectionStatus.COMPLETED.value,
+        store_id=3,
+        product_id=8,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 5, 31),
+        forecast_horizon=14,
+        ranking_metric="wape",
+        candidate_models=[{"model_type": "naive", "params": {}}],
+        policy_snapshot={},
+        trained_model_type="naive",
+        is_override=True,
+        override_reason="domain seasonality",
+        champion_run_id="run_abc123",
+        promoted_alias="champion-test",
+        promotion_decision={"decision": "promoted", "approved_by": "gabor"},
+        feature_frame_version=2,
+    )
+    assert run.trained_model_type == "naive"
+    assert run.is_override is True
+    assert run.override_reason == "domain seasonality"
+    assert run.champion_run_id == "run_abc123"
+    assert run.promoted_alias == "champion-test"
+    assert run.promotion_decision is not None
+    assert run.promotion_decision["approved_by"] == "gabor"
+    assert run.feature_frame_version == 2

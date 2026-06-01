@@ -6,7 +6,9 @@ Endpoints (all under ``/model-selection``):
 - GET  /{selection_id}          — fetch a persisted selection run
 - GET  /{selection_id}/ranking  — fetch just the ranking block
 - POST /{selection_id}/train-winner — train the winning model
-- POST /{selection_id}/predict  — forecast with the trained winner
+- POST /{selection_id}/train-selected — train a user-chosen candidate (override)
+- POST /{selection_id}/predict  — forecast with the trained winner + decision
+- POST /{selection_id}/promote  — promote the trained champion to a registry alias
 
 Error mapping mirrors ``app/features/backtesting/routes.py``: ``ValueError`` →
 ``BadRequestError`` (RFC 7807 400), ``SQLAlchemyError`` → ``DatabaseError`` (500).
@@ -16,7 +18,7 @@ Error mapping mirrors ``app/features/backtesting/routes.py``: ``ValueError`` →
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Body, Depends, Query, Response, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,13 +26,17 @@ from app.core.database import get_db
 from app.core.exceptions import BadRequestError, DatabaseError
 from app.core.logging import get_logger
 from app.features.model_selection.schemas import (
+    ForecastDecisionParams,
     ModelCatalogResponse,
     ModelSelectionRunRequest,
     ModelSelectionRunResponse,
     PairAvailabilityResponse,
     PredictWinnerResponse,
+    PromoteRequest,
+    PromoteResponse,
     RankingResult,
     SubmitRunResponse,
+    TrainSelectedRequest,
     TrainWinnerResponse,
 )
 from app.features.model_selection.service import ModelSelectionService
@@ -242,23 +248,91 @@ async def train_winner(
 
 
 @router.post(
+    "/{selection_id}/train-selected",
+    response_model=TrainWinnerResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Train a user-chosen candidate (override)",
+)
+async def train_selected(
+    selection_id: str,
+    request: TrainSelectedRequest,
+    db: AsyncSession = Depends(get_db),
+) -> TrainWinnerResponse:
+    """Train a chosen candidate (override). A non-candidate ``model_type`` → 400.
+
+    Overriding the recommended winner returns ``is_override=true`` plus an
+    ``override_warning`` and records the override reason on the run.
+    """
+    service = ModelSelectionService()
+    try:
+        return await service.train_selected(
+            db, selection_id, request.model_type, request.override_reason
+        )
+    except ValueError as exc:
+        raise BadRequestError(message=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise DatabaseError(
+            message="Failed to train selected model", details={"error": str(exc)}
+        ) from exc
+
+
+@router.post(
     "/{selection_id}/predict",
     response_model=PredictWinnerResponse,
     status_code=status.HTTP_200_OK,
-    summary="Forecast with the trained winning model",
+    summary="Forecast with the trained model + inventory decision",
 )
 async def predict_winner(
     selection_id: str,
+    request: ForecastDecisionParams | None = Body(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> PredictWinnerResponse:
-    """Generate a horizon forecast from the trained champion bundle."""
+    """Generate a horizon forecast + a labeled safety-stock decision heuristic.
+
+    The body is OPTIONAL — an empty body uses ``ForecastDecisionParams``
+    defaults (lead_time_days=7, service_level=0.95). A feature-aware model 400s
+    (use the What-If Planner instead).
+    """
+    params = request or ForecastDecisionParams()
     service = ModelSelectionService()
     try:
-        forecast = await service.predict_winner(db, selection_id)
-        return PredictWinnerResponse(selection_id=selection_id, forecast=forecast)
+        forecast, decision = await service.predict_winner(
+            db, selection_id, params.lead_time_days, params.service_level
+        )
+        return PredictWinnerResponse(
+            selection_id=selection_id, forecast=forecast, decision=decision
+        )
     except ValueError as exc:
         raise BadRequestError(message=str(exc)) from exc
     except SQLAlchemyError as exc:
         raise DatabaseError(
             message="Failed to forecast with winning model", details={"error": str(exc)}
+        ) from exc
+
+
+@router.post(
+    "/{selection_id}/promote",
+    response_model=PromoteResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Promote the trained champion to a registry alias (approval-gated)",
+)
+async def promote(
+    selection_id: str,
+    request: PromoteRequest,
+    db: AsyncSession = Depends(get_db),
+) -> PromoteResponse:
+    """Register a SUCCESS model run + alias for the trained champion.
+
+    Approval-gated + audited: requires ``approved_by``; a non-recommended model
+    requires ``acknowledge_non_recommended=true`` (else 422); promoting before
+    training → 422; a bad ``alias_name`` → 422 at the schema boundary.
+    """
+    service = ModelSelectionService()
+    try:
+        return await service.promote(db, selection_id, request)
+    except ValueError as exc:
+        raise BadRequestError(message=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise DatabaseError(
+            message="Failed to promote champion", details={"error": str(exc)}
         ) from exc
