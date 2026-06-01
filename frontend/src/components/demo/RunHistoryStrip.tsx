@@ -63,26 +63,35 @@ export function RunHistoryStrip({ onReplay, summary, scenario }: RunHistoryStrip
   const [items, setItems] = useState<RunHistoryItem[]>(() => loadHistory())
   const [lastSummary, setLastSummary] = useState<DemoSummary | null>(null)
 
-  useEffect(() => {
-    if (!summary || summary === lastSummary) return
-    // Persist exactly once per pipeline_complete summary (R18).
-    const entry: RunHistoryItem = {
-      id: crypto.randomUUID(),
-      runId: summary.winningRunId,
-      timestamp: new Date().toISOString(),
-      scenario,
-      status: summary.overallStatus,
-      wallClockS: summary.wallClockS,
-    }
-    const next = [entry, ...items].slice(0, HISTORY_CAP)
-    setItems(next)
-    saveHistory(next)
+  // Append exactly once per pipeline_complete summary (R18). Done DURING render
+  // (the React "storing information from previous renders" pattern) rather than
+  // in an effect — calling setState synchronously inside an effect body causes
+  // cascading renders and is flagged by react-hooks/set-state-in-effect.
+  if (summary && summary !== lastSummary) {
     setLastSummary(summary)
-  }, [summary, lastSummary, items, scenario])
+    setItems((prev) =>
+      [
+        {
+          id: crypto.randomUUID(),
+          runId: summary.winningRunId,
+          timestamp: new Date().toISOString(),
+          scenario,
+          status: summary.overallStatus,
+          wallClockS: summary.wallClockS,
+        },
+        ...prev,
+      ].slice(0, HISTORY_CAP),
+    )
+  }
+
+  // Persist the history to localStorage whenever it changes — syncing React
+  // state to an external system is the sanctioned use of an effect.
+  useEffect(() => {
+    saveHistory(items)
+  }, [items])
 
   const clear = useCallback(() => {
     setItems([])
-    saveHistory([])
   }, [])
 
   if (items.length === 0) return null
