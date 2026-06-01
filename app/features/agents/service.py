@@ -290,8 +290,23 @@ class AgentService:
                 error=str(e),
                 error_type=type(e).__name__,
             )
-            session.last_activity = datetime.now(UTC)
+            misbehavior_now = datetime.now(UTC)
+            session.last_activity = misbehavior_now
+            # A gated tool may have fired (and recorded a valid approval request)
+            # before the model misbehaved — surface the Approve card rather than
+            # discarding it behind the generic error (#344).
+            salvaged = self._salvage_pending_action(session, deps, misbehavior_now)
             await db.flush()
+            if salvaged is not None:
+                return ChatResponse(
+                    session_id=session_id,
+                    message=(
+                        "I've prepared an action that needs your approval before "
+                        "I can proceed. Please review the pending request."
+                    ),
+                    pending_approval=True,
+                    pending_action=salvaged,
+                )
             return ChatResponse(
                 session_id=session_id,
                 message=(
@@ -650,6 +665,35 @@ class AgentService:
                 error=str(e),
                 error_type=type(e).__name__,
             )
+            misbehavior_now = datetime.now(UTC)
+            session.last_activity = misbehavior_now
+            # A gated tool may have fired (and recorded a valid approval request)
+            # before the model misbehaved — surface the Approve card rather than
+            # discarding it behind the generic error (#344).
+            salvaged = self._salvage_pending_action(session, deps, misbehavior_now)
+            await db.flush()
+            if salvaged is not None:
+                yield StreamEvent(
+                    event_type="approval_required",
+                    data={
+                        "action": salvaged,
+                        "message": "Human approval required before proceeding.",
+                    },
+                    timestamp=misbehavior_now,
+                )
+                yield StreamEvent(
+                    event_type="complete",
+                    data={
+                        "message": (
+                            "I've prepared an action that needs your approval before I can proceed."
+                        ),
+                        "tokens_used": 0,
+                        "tool_calls_count": deps.tool_call_count,
+                        "pending_approval": True,
+                    },
+                    timestamp=misbehavior_now,
+                )
+                return
             yield StreamEvent(
                 event_type="error",
                 data={
@@ -660,7 +704,7 @@ class AgentService:
                     "error_type": "model_behavior_error",
                     "recoverable": True,
                 },
-                timestamp=datetime.now(UTC),
+                timestamp=misbehavior_now,
             )
             return
 
@@ -857,6 +901,45 @@ class AgentService:
                 exc_info=True,
             )
             return []
+
+    def _salvage_pending_action(
+        self,
+        session: AgentSession,
+        deps: AgentDeps,
+        now: datetime,
+    ) -> PendingAction | None:
+        """Persist a gated tool's approval request captured before a misbehaving run.
+
+        A gated tool sets ``deps.pending_action`` the moment it fires (#336), but
+        it does not halt the run. A weak model can ramble past the gate and
+        exhaust its retry budget, so ``agent.run()`` raises
+        ``UnexpectedModelBehavior`` BEFORE returning and the normal post-run
+        approval-surfacing path never executes. The gate did fire and the
+        captured arguments are valid, so surface the approval card instead of
+        discarding it behind a generic error (issue #344).
+
+        Args:
+            session: The agent session to mutate.
+            deps: The agent deps that a gated tool may have written to.
+            now: Timestamp for created_at / expires_at.
+
+        Returns:
+            The formatted :class:`PendingAction` when a gated tool recorded a
+            request, else ``None`` (the genuine "invalid tool call" case).
+        """
+        if not deps.pending_action:
+            return None
+        action_type = str(deps.pending_action.get("action_type", "unknown"))
+        return self._record_pending_action(
+            session,
+            action_type=action_type,
+            arguments=deps.pending_action.get("arguments") or {},
+            description=str(
+                deps.pending_action.get("description")
+                or f"Agent requested approval for {action_type}"
+            ),
+            now=now,
+        )
 
     def _record_pending_action(
         self,
