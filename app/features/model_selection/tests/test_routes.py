@@ -178,3 +178,53 @@ async def test_availability_rejects_bad_query() -> None:
         )
     assert response.status_code == 422
     _assert_problem_detail(response.json(), 422)
+
+
+async def test_get_models_returns_catalog_200() -> None:
+    """GET /model-selection/models returns the static catalog (no mock needed)."""
+    async with _client() as ac:
+        response = await ac.get("/model-selection/models")
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body["models"], list)
+    assert len(body["models"]) == 11
+    # Each entry carries the backend-owned capability contract.
+    first = body["models"][0]
+    for key in (
+        "model_type",
+        "label",
+        "family",
+        "feature_aware",
+        "requires_extra",
+        "default_params",
+        "supports_auto_predict",
+        "description",
+    ):
+        assert key in first, f"missing catalog field: {key}"
+    assert body["default_candidate_model_types"] == [
+        "naive",
+        "seasonal_naive",
+        "moving_average",
+        "regression",
+        "prophet_like",
+    ]
+
+
+async def test_models_route_not_captured_by_selection_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Literal /models must NOT be matched as GET /{selection_id}.
+
+    If route ordering regressed, the request would hit ``get_selection`` (here
+    forced to 404) instead of the catalog handler. We assert the catalog shape
+    comes back, proving the literal-before-path-param ordering holds.
+    """
+    monkeypatch.setattr(
+        ModelSelectionService,
+        "get_selection",
+        AsyncMock(side_effect=NotFoundError(message="selection run models not found")),
+    )
+    async with _client() as ac:
+        response = await ac.get("/model-selection/models")
+    assert response.status_code == 200
+    assert "models" in response.json()

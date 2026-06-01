@@ -288,6 +288,32 @@ class ModelSelectionRunResponse(BaseModel):
     completed_at: datetime | None
 
 
+class CandidateModelInfo(BaseModel):
+    """One selectable forecasting model in the capability catalog.
+
+    Output-only (plain ``BaseModel`` — no strict coercion needed). The
+    capability flags are BACKEND-OWNED: they derive from the forecasting
+    authority (``model_family_for`` + each forecaster's ``requires_features``)
+    so the frontend never re-derives families/feature-awareness in TypeScript.
+    """
+
+    model_type: str
+    label: str
+    family: Literal["baseline", "tree", "additive"]
+    feature_aware: bool
+    requires_extra: bool  # lightgbm/xgboost — opt-in extra may be absent at runtime
+    default_params: dict[str, Any]
+    supports_auto_predict: bool  # False for feature-aware models (predict() rejects them)
+    description: str
+
+
+class ModelCatalogResponse(BaseModel):
+    """``GET /model-selection/models`` — backend-owned candidate catalog."""
+
+    models: list[CandidateModelInfo]
+    default_candidate_model_types: list[str]
+
+
 class TrainWinnerResponse(BaseModel):
     """``POST /model-selection/{id}/train-winner`` response."""
 

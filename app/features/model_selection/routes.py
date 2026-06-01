@@ -24,6 +24,7 @@ from app.core.database import get_db
 from app.core.exceptions import BadRequestError, DatabaseError
 from app.core.logging import get_logger
 from app.features.model_selection.schemas import (
+    ModelCatalogResponse,
     ModelSelectionRunRequest,
     ModelSelectionRunResponse,
     PairAvailabilityResponse,
@@ -60,6 +61,22 @@ async def get_availability(
         raise DatabaseError(
             message="Failed to assess availability", details={"error": str(exc)}
         ) from exc
+
+
+@router.get(
+    "/models",
+    response_model=ModelCatalogResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List the backend-owned candidate-model capability catalog",
+)
+async def get_model_catalog() -> ModelCatalogResponse:
+    """Return the static candidate-model catalog (no DB, no query params).
+
+    Declared BEFORE ``GET /{selection_id}`` so Starlette matches the literal
+    ``/models`` path and does not capture it as ``selection_id="models"``.
+    """
+    service = ModelSelectionService()
+    return service.get_model_catalog()
 
 
 @router.post(
