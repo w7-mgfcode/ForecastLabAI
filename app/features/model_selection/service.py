@@ -26,6 +26,7 @@ from app.core.exceptions import BadRequestError, NotFoundError
 from app.core.logging import get_logger
 from app.features.backtesting.schemas import SplitConfig
 from app.features.data_platform.models import Product, Promotion, SalesDaily, Store
+from app.features.model_selection.capabilities import build_model_catalog
 from app.features.model_selection.explanations import explain_winner
 from app.features.model_selection.models import ModelSelectionRun, ModelSelectionStatus
 from app.features.model_selection.ranking import build_chart_data, rank_candidates
@@ -36,6 +37,7 @@ from app.features.model_selection.schemas import (
     ChartData,
     FoldChart,
     ForecastSummary,
+    ModelCatalogResponse,
     ModelSelectionRunRequest,
     ModelSelectionRunResponse,
     PairAvailabilityResponse,
@@ -63,6 +65,18 @@ _TERMINAL_WITH_WINNER = frozenset(
 
 class ModelSelectionService:
     """Stateless orchestrator — a fresh ``db`` session per method."""
+
+    # -------------------------------------------------------------------------
+    # Capability catalog
+    # -------------------------------------------------------------------------
+
+    def get_model_catalog(self) -> ModelCatalogResponse:
+        """Return the backend-owned candidate-model catalog (static, no I/O).
+
+        Thin pass-through to the pure :func:`capabilities.build_model_catalog`;
+        kept on the service for symmetry with ``get_availability`` / ``run``.
+        """
+        return build_model_catalog()
 
     # -------------------------------------------------------------------------
     # Availability
