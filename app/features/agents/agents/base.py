@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import functools
 import inspect
+import json
 import os
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
+import httpx
 import structlog
 from pydantic_ai import ModelRetry
 from pydantic_ai.models import Model
@@ -62,6 +64,71 @@ def recoverable[**P, ToolReturnT](
     return wrapper
 
 
+def _coerce_null_message_content(body: bytes) -> bytes | None:
+    """Coerce ``messages[*].content: null`` -> ``""`` in a chat-request body.
+
+    Ollama's OpenAI-compatible ``/v1/chat/completions`` rejects any message
+    whose ``content`` is JSON ``null`` and which carries no ``tool_calls`` with
+    ``400 invalid message content type: <nil>`` — stricter than the real OpenAI
+    API, which tolerates it. A weak local model can emit a degenerate empty
+    assistant turn (no text, no tool call); PydanticAI serialises it as
+    ``content: null`` and then *replays* that message on its validation-retry,
+    so every retry 400s and the whole run dies with a ``FallbackExceptionGroup``.
+    Coercing ``null`` -> ``""`` keeps the message OpenAI-spec-valid and lets the
+    retry loop proceed.
+
+    Args:
+        body: The raw outgoing request body bytes.
+
+    Returns:
+        Re-serialised body bytes when a null ``content`` was rewritten, or
+        ``None`` when nothing changed (the common case) so the caller can
+        forward the original request untouched.
+    """
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    payload = cast("dict[str, Any]", parsed)
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return None
+    message_list: list[Any] = messages
+    changed = False
+    for message in message_list:
+        if isinstance(message, dict) and "content" in message and message["content"] is None:
+            message["content"] = ""
+            changed = True
+    if not changed:
+        return None
+    return json.dumps(payload).encode("utf-8")
+
+
+class _OllamaNullContentTransport(httpx.AsyncHTTPTransport):
+    """httpx transport that null-content-sanitises outgoing Ollama requests.
+
+    See :func:`_coerce_null_message_content` for the Ollama-compat defect this
+    works around. Applied to the ``OllamaProvider``'s HTTP client so the fix
+    covers both the streaming and non-streaming agent paths.
+    """
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        sanitized = _coerce_null_message_content(request.content)
+        if sanitized is not None:
+            headers = dict(request.headers)
+            headers.pop("content-length", None)  # httpx recomputes from the new body
+            request = httpx.Request(
+                request.method,
+                request.url,
+                headers=headers,
+                content=sanitized,
+                extensions=request.extensions,
+            )
+        return await super().handle_async_request(request)
+
+
 def build_agent_model(identifier: str) -> str | Model:
     """Build the PydanticAI ``model`` argument for an agent identifier.
 
@@ -85,7 +152,17 @@ def build_agent_model(identifier: str) -> str | Model:
     model_name = identifier.split(":", 1)[1]
     # CRITICAL: Ollama's OpenAI-compatible base ends in /v1.
     base_url = settings.ollama_base_url.rstrip("/") + "/v1"
-    return OpenAIChatModel(model_name, provider=OllamaProvider(base_url=base_url))
+    # The null-content sanitiser lives on the HTTP client (see
+    # _OllamaNullContentTransport). A generous read timeout is required because
+    # local generation on an 8B model routinely exceeds httpx's 5s default.
+    http_client = httpx.AsyncClient(
+        transport=_OllamaNullContentTransport(),
+        timeout=httpx.Timeout(600.0, connect=10.0),
+    )
+    return OpenAIChatModel(
+        model_name,
+        provider=OllamaProvider(base_url=base_url, http_client=http_client),
+    )
 
 
 def reset_agent_caches() -> None:

@@ -1,10 +1,12 @@
 """Unit tests for agent base helpers (Ollama-aware model factory)."""
 
+import json
 import re
 from collections.abc import Iterator
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from pydantic_ai import ModelRetry
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
@@ -15,6 +17,8 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from app.core.config import get_settings
 from app.features.agents.agents.base import (
     TOOL_USAGE_INSTRUCTIONS,
+    _coerce_null_message_content,
+    _OllamaNullContentTransport,
     build_agent_model,
     build_agent_model_with_fallback,
     get_agent_retries,
@@ -322,3 +326,134 @@ def test_rag_assistant_agent_uses_prompted_output() -> None:
     assert captured["output_tools"] == []
     assert isinstance(result.output, RAGAnswer)
     assert result.output.confidence == "high"
+
+
+class TestOllamaNullContentSanitizer:
+    """The Ollama HTTP client must convert ``content: null`` -> ``""`` (#344).
+
+    Ollama's OpenAI-compatible ``/v1/chat/completions`` rejects any message
+    whose ``content`` is JSON ``null`` and carries no ``tool_calls`` with
+    ``400 invalid message content type: <nil>``. PydanticAI emits that shape for
+    a degenerate empty assistant turn and then replays it on retry, so without
+    this coercion every retry 400s and the run dies with ``FallbackExceptionGroup``.
+    """
+
+    def test_coerce_rewrites_null_content_to_empty_string(self) -> None:
+        body = json.dumps(
+            {
+                "model": "qwen3:8b",
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": None},
+                ],
+            }
+        ).encode("utf-8")
+
+        out = _coerce_null_message_content(body)
+
+        assert out is not None
+        payload = json.loads(out)
+        assert payload["messages"][1]["content"] == ""
+        # Untouched fields survive the round-trip.
+        assert payload["messages"][0]["content"] == "hi"
+        assert payload["model"] == "qwen3:8b"
+
+    def test_coerce_rewrites_null_content_even_with_tool_calls(self) -> None:
+        body = json.dumps(
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "c1",
+                                "type": "function",
+                                "function": {"name": "x", "arguments": "{}"},
+                            }
+                        ],
+                    }
+                ]
+            }
+        ).encode("utf-8")
+
+        out = _coerce_null_message_content(body)
+
+        assert out is not None
+        payload = json.loads(out)
+        assert payload["messages"][0]["content"] == ""
+        assert payload["messages"][0]["tool_calls"][0]["id"] == "c1"
+
+    def test_coerce_is_noop_when_no_null_content(self) -> None:
+        body = json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode("utf-8")
+
+        assert _coerce_null_message_content(body) is None
+
+    def test_coerce_ignores_missing_content_key(self) -> None:
+        # A message with no ``content`` key at all must not be rewritten — only
+        # an explicit JSON null is the Ollama-rejected shape.
+        body = json.dumps({"messages": [{"role": "assistant", "tool_calls": []}]}).encode("utf-8")
+
+        assert _coerce_null_message_content(body) is None
+
+    def test_coerce_handles_non_json_body(self) -> None:
+        assert _coerce_null_message_content(b"not json at all") is None
+
+    def test_coerce_handles_non_dict_payload(self) -> None:
+        assert _coerce_null_message_content(b"[1, 2, 3]") is None
+
+    @pytest.mark.asyncio
+    async def test_transport_sanitizes_outgoing_request(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The transport rewrites the body and fixes Content-Length before send."""
+        captured: dict[str, bytes] = {}
+
+        async def fake_send(
+            _self: httpx.AsyncHTTPTransport, request: httpx.Request
+        ) -> httpx.Response:
+            captured["body"] = request.content
+            captured["content_length"] = request.headers["content-length"].encode()
+            return httpx.Response(200, json={"ok": True})
+
+        monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", fake_send)
+
+        transport = _OllamaNullContentTransport()
+        body = json.dumps({"messages": [{"role": "assistant", "content": None}]}).encode("utf-8")
+        request = httpx.Request("POST", "http://ollama/v1/chat/completions", content=body)
+
+        await transport.handle_async_request(request)
+
+        sent = json.loads(captured["body"])
+        assert sent["messages"][0]["content"] == ""
+        # Content-Length must match the rewritten body, not the original.
+        assert int(captured["content_length"]) == len(captured["body"])
+
+    @pytest.mark.asyncio
+    async def test_transport_passthrough_when_nothing_to_sanitize(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, bytes] = {}
+
+        async def fake_send(
+            _self: httpx.AsyncHTTPTransport, request: httpx.Request
+        ) -> httpx.Response:
+            captured["body"] = request.content
+            return httpx.Response(200, json={"ok": True})
+
+        monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", fake_send)
+
+        transport = _OllamaNullContentTransport()
+        body = json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode("utf-8")
+        request = httpx.Request("POST", "http://ollama/v1/chat/completions", content=body)
+
+        await transport.handle_async_request(request)
+
+        # Forwarded unchanged.
+        assert json.loads(captured["body"])["messages"][0]["content"] == "hi"
+
+    def test_build_agent_model_returns_openai_chat_model_for_ollama(self) -> None:
+        # The Ollama branch must hand back a configured OpenAIChatModel (whose
+        # HTTP client carries the sanitizing transport), not the bare identifier.
+        model = build_agent_model("ollama:qwen3:8b")
+        assert isinstance(model, OpenAIChatModel)
