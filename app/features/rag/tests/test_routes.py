@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import AsyncClient
 
-from app.features.rag.embeddings import EmbeddingError, EmbeddingService
+from app.features.rag.embeddings import EmbeddingAuthError, EmbeddingError, EmbeddingService
 from app.features.rag.service import RAGService
 
 # =============================================================================
@@ -168,6 +168,42 @@ class TestIndexEndpoint:
         )
         assert response.status_code == 404
 
+    @pytest.mark.asyncio
+    async def test_index_embedding_auth_failure_returns_502_with_marker(self, client: AsyncClient):
+        """#329 — /rag/index maps an embedding auth failure to the marked 502.
+
+        Mirrors the /rag/index/project-docs assertion so all three RAG routes
+        stay aligned on the same RFC 7807 type/code.
+        """
+        # MagicMock var (not the EmbeddingService-typed factory return) so mypy
+        # permits the method assignment — same pattern as
+        # test_embedding_failure_returns_502.
+        mock_service = MagicMock(spec=EmbeddingService)
+        mock_service.embed_texts = AsyncMock(
+            side_effect=EmbeddingAuthError("OpenAI rejected the embedding credentials")
+        )
+        mock_service.count_tokens = MagicMock(side_effect=lambda text: len(text.split()))
+        mock_service.truncate_to_tokens = MagicMock(side_effect=lambda text, max_tokens: text)
+
+        with patch(
+            "app.features.rag.service.get_embedding_service",
+            return_value=mock_service,
+        ):
+            response = await client.post(
+                "/rag/index",
+                json={
+                    "source_type": "markdown",
+                    "source_path": "test-index-auth-001",
+                    "content": "# Auth\n\nContent that needs embedding.",
+                },
+            )
+
+        assert response.status_code == 502
+        body = response.json()
+        assert body["code"] == "EMBEDDING_AUTH"
+        assert body["type"].endswith("/embedding-auth")
+        assert body["status"] == 502
+
 
 # =============================================================================
 # Retrieve Endpoint Tests
@@ -280,6 +316,38 @@ class TestRetrieveEndpoint:
             },
         )
         assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_retrieve_embedding_auth_failure_returns_502_with_marker(
+        self, client: AsyncClient
+    ):
+        """#329 — /rag/retrieve maps an embedding auth failure to the marked 502.
+
+        Keeps the retrieve handler aligned with the two index handlers on the
+        same RFC 7807 type/code.
+        """
+        # MagicMock var (not the EmbeddingService-typed factory return) so mypy
+        # permits the method assignment — same pattern as
+        # test_embedding_failure_returns_502.
+        mock_service = MagicMock(spec=EmbeddingService)
+        auth_error = EmbeddingAuthError("OpenAI rejected the embedding credentials")
+        mock_service.embed_query = AsyncMock(side_effect=auth_error)
+        mock_service.embed_texts = AsyncMock(side_effect=auth_error)
+
+        with patch(
+            "app.features.rag.service.get_embedding_service",
+            return_value=mock_service,
+        ):
+            response = await client.post(
+                "/rag/retrieve",
+                json={"query": "anything", "top_k": 5, "similarity_threshold": 0.0},
+            )
+
+        assert response.status_code == 502
+        body = response.json()
+        assert body["code"] == "EMBEDDING_AUTH"
+        assert body["type"].endswith("/embedding-auth")
+        assert body["status"] == 502
 
 
 # =============================================================================
@@ -565,3 +633,41 @@ class TestIndexProjectDocsEndpoint:
             response = await client.post("/rag/index/project-docs", json={})
 
         assert response.status_code == 502
+
+    @pytest.mark.asyncio
+    async def test_embedding_auth_failure_returns_502_with_marker(
+        self, client: AsyncClient, tmp_path
+    ):
+        """#329 — an embedding auth failure stays 502 but carries the
+
+        machine-readable EMBEDDING_AUTH problem marker so the demo pipeline can
+        classify it (vs a generic embedding 502) without brittle text matching.
+        """
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "docs" / "auth-doc.md").write_text(
+            "# Delta\n\nDelta content.", encoding="utf-8"
+        )
+        mock_service = MagicMock(spec=EmbeddingService)
+        mock_service.embed_texts = AsyncMock(
+            side_effect=EmbeddingAuthError("OpenAI rejected the embedding credentials")
+        )
+
+        with (
+            patch(
+                "app.features.rag.routes.RAGService",
+                partial(RAGService, base_dir=str(tmp_path)),
+            ),
+            patch(
+                "app.features.rag.service.get_embedding_service",
+                return_value=mock_service,
+            ),
+        ):
+            response = await client.post("/rag/index/project-docs", json={})
+
+        # Status stays 502 (public contract stable); body is RFC 7807 with a
+        # stable type/code an automated consumer can branch on.
+        assert response.status_code == 502
+        body = response.json()
+        assert body["code"] == "EMBEDDING_AUTH"
+        assert body["type"].endswith("/embedding-auth")
+        assert body["status"] == 502

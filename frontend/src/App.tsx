@@ -26,6 +26,7 @@ const BacktestPage = lazy(() => import('@/pages/visualize/backtest'))
 const DemandPlannerPage = lazy(() => import('@/pages/visualize/demand'))
 const WhatIfPlannerPage = lazy(() => import('@/pages/visualize/planner'))
 const BatchRunnerPage = lazy(() => import('@/pages/visualize/batch'))
+const ChampionSelectorPage = lazy(() => import('@/pages/visualize/champion'))
 const ChatPage = lazy(() => import('@/pages/chat'))
 const KnowledgePage = lazy(() => import('@/pages/knowledge'))
 const GuidePage = lazy(() => import('@/pages/guide'))
@@ -183,6 +184,14 @@ function App() {
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <BatchRunnerPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.VISUALIZE.CHAMPION}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <ChampionSelectorPage />
                   </Suspense>
                 }
               />

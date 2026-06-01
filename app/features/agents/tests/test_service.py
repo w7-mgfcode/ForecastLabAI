@@ -3,7 +3,7 @@
 import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,6 +14,7 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     TextPart,
+    ToolReturnPart,
     UserPromptPart,
 )
 
@@ -336,6 +337,49 @@ class TestAgentServiceChat:
         assert "exceeded max retries" not in response.message
 
     @pytest.mark.asyncio
+    async def test_chat_finalizer_salvages_answer_on_misbehavior(
+        self,
+        sample_active_session: AgentSession,
+    ) -> None:
+        """When tools fetched data but structured output failed, salvage a reply (#351).
+
+        A weak local model calls the read tool and gets the data, then can't wrap
+        it in the ExperimentReport schema and exhausts the output-retry budget.
+        The service then asks a tool-less finalizer to answer in plain text — the
+        user gets the answer instead of the generic "invalid tool call" error.
+        """
+        service = AgentService()
+        mock_db = AsyncMock()
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(
+            side_effect=UnexpectedModelBehavior("Exceeded maximum output retries (3)")
+        )
+
+        salvaged_answer = "The lowest WAPE is the naive run 2fad611b (18.93)."
+        with (
+            patch.object(service, "_get_agent", return_value=mock_agent),
+            patch.object(
+                service,
+                "_salvage_plaintext_answer",
+                AsyncMock(return_value=salvaged_answer),
+            ),
+        ):
+            response = await service.chat(
+                db=mock_db,
+                session_id=sample_active_session.session_id,
+                message="List the most recent model runs and tell me which has the lowest WAPE.",
+            )
+
+        assert response.message == salvaged_answer
+        assert response.pending_approval is False
+        assert "invalid tool call" not in response.message
+
+    @pytest.mark.asyncio
     async def test_chat_runs_tools_sequentially(
         self,
         sample_active_session: AgentSession,
@@ -386,6 +430,7 @@ class TestAgentServiceStreamChat:
     async def test_stream_chat_model_misbehavior_yields_error_event(
         self,
         sample_active_session: AgentSession,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A misbehaving model should yield a recoverable `error` event, not crash.
 
@@ -394,6 +439,9 @@ class TestAgentServiceStreamChat:
         raw exception string to the client.
         """
         service = AgentService()
+        # Pin a streaming-capable (cloud) provider so this exercises the
+        # run_stream path regardless of the local .env (#342).
+        monkeypatch.setattr(service.settings, "agent_default_model", "anthropic:claude-test")
         mock_db = AsyncMock()
 
         mock_result = MagicMock()
@@ -431,9 +479,103 @@ class TestAgentServiceStreamChat:
         assert "exceeded max retries" not in events[0].data["error"]
 
     @pytest.mark.asyncio
+    async def test_chat_surfaces_pending_action_on_model_misbehavior(
+        self,
+        sample_active_session: AgentSession,
+    ) -> None:
+        """A gated tool that fired before the model misbehaved must surface the
+        Approve card, not the generic error (#344).
+
+        A gated tool records ``deps.pending_action`` the moment it fires, but a
+        weak model can ramble past the gate and exhaust its retry budget, so
+        ``agent.run`` raises ``UnexpectedModelBehavior`` before returning. The
+        captured approval is valid and must not be discarded.
+        """
+        service = AgentService()
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        def _fire_gate_then_misbehave(*_args: Any, **kwargs: Any) -> None:
+            deps: AgentDeps = kwargs["deps"]
+            deps.set_pending_action(
+                "create_alias",
+                {"alias_name": "champion", "run_id": "1" * 32},
+                "Create alias champion",
+            )
+            raise UnexpectedModelBehavior("Exceeded maximum output retries (3)")
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(side_effect=_fire_gate_then_misbehave)
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            response = await service.chat(
+                db=mock_db,
+                session_id=sample_active_session.session_id,
+                message="Create alias champion. Call tool_create_alias now.",
+            )
+
+        assert response.pending_approval is True
+        assert response.pending_action is not None
+        assert response.pending_action.action_type == "create_alias"
+        assert response.pending_action.arguments["alias_name"] == "champion"
+        assert "invalid tool call" not in response.message
+        # Session flipped so POST /approve can find the action.
+        assert sample_active_session.status == SessionStatus.AWAITING_APPROVAL.value
+        assert sample_active_session.pending_action is not None
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_surfaces_approval_on_model_misbehavior(
+        self,
+        sample_active_session: AgentSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The streaming path must emit ``approval_required`` (not ``error``)
+        when a gated tool fired before the model misbehaved (#344)."""
+        service = AgentService()
+        # Pin ollama so stream_chat uses the non-streaming run() path (#342) —
+        # the real-world scenario where this surfaced.
+        monkeypatch.setattr(service.settings, "agent_default_model", "ollama:qwen3:8b")
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        def _fire_gate_then_misbehave(*_args: Any, **kwargs: Any) -> None:
+            deps: AgentDeps = kwargs["deps"]
+            deps.set_pending_action(
+                "create_alias",
+                {"alias_name": "champion", "run_id": "1" * 32},
+                "Create alias champion",
+            )
+            raise UnexpectedModelBehavior("Exceeded maximum output retries (3)")
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(side_effect=_fire_gate_then_misbehave)
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            events = [
+                event
+                async for event in service.stream_chat(
+                    db=mock_db,
+                    session_id=sample_active_session.session_id,
+                    message="Create alias champion. Call tool_create_alias now.",
+                )
+            ]
+
+        event_types = [event.event_type for event in events]
+        assert "approval_required" in event_types
+        assert "error" not in event_types
+        approval = next(e for e in events if e.event_type == "approval_required")
+        assert approval.data["action"].action_type == "create_alias"
+        assert sample_active_session.status == SessionStatus.AWAITING_APPROVAL.value
+
+    @pytest.mark.asyncio
     async def test_stream_chat_runs_tools_sequentially(
         self,
         sample_active_session: AgentSession,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """stream_chat() must also run the agent under sequential tool execution.
 
@@ -442,6 +584,9 @@ class TestAgentServiceStreamChat:
         concurrent-session bug from issue #172.
         """
         service = AgentService()
+        # Pin a streaming-capable (cloud) provider so this exercises the
+        # run_stream path regardless of the local .env (#342).
+        monkeypatch.setattr(service.settings, "agent_default_model", "anthropic:claude-test")
         mock_db = AsyncMock()
 
         mock_result = MagicMock()
@@ -483,6 +628,120 @@ class TestAgentServiceStreamChat:
                 pass
 
         mock_mode.assert_called_once_with("sequential")
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_ollama_uses_nonstreaming_path(
+        self,
+        sample_active_session: AgentSession,
+        sample_experiment_report: ExperimentReport,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#342 — an ollama agent uses agent.run() (not run_stream).
+
+        Ollama's OpenAI-compat endpoint rejects PydanticAI's streamed request
+        with 400 "invalid message content type: <nil>". The service must fall
+        back to the non-streaming run() path and still emit text_delta +
+        approval_required (from deps.pending_action, #336) + complete.
+        """
+        service = AgentService()
+        monkeypatch.setattr(service.settings, "agent_default_model", "ollama:qwen3:8b")
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        def _run(message: str, *, deps: AgentDeps, message_history: Any) -> MagicMock:
+            # A gated tool fired during the run and recorded an approval request.
+            deps.set_pending_action(
+                "save_scenario",
+                {"name": "p", "run_id": "r", "store_id": 1, "product_id": 2},
+                "Save scenario plan 'p'",
+            )
+            res = MagicMock()
+            res.output = sample_experiment_report  # has a non-empty summary
+            usage = MagicMock()
+            usage.total_tokens = 11
+            res.usage.return_value = usage
+            res.all_messages.return_value = []
+            return res
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(side_effect=_run)
+        mock_agent.run_stream = MagicMock(
+            side_effect=AssertionError("run_stream must not be called for the ollama provider")
+        )
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            events = [
+                event
+                async for event in service.stream_chat(
+                    db=mock_db,
+                    session_id=sample_active_session.session_id,
+                    message="Save a what-if scenario plan",
+                )
+            ]
+
+        types = [e.event_type for e in events]
+        assert "text_delta" in types  # full reply emitted as one delta
+        assert "approval_required" in types
+        assert types[-1] == "complete"
+        approval = next(e for e in events if e.event_type == "approval_required")
+        assert approval.data["action"].action_type == "save_scenario"
+        mock_agent.run.assert_awaited_once()
+        mock_agent.run_stream.assert_not_called()
+        assert sample_active_session.status == SessionStatus.AWAITING_APPROVAL.value
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_cloud_keeps_streaming_path(
+        self,
+        sample_active_session: AgentSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Regression guard for #342 — a cloud provider keeps the run_stream path."""
+        service = AgentService()
+        monkeypatch.setattr(service.settings, "agent_default_model", "anthropic:claude-test")
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        class _StubStream:
+            async def __aenter__(self) -> MagicMock:
+                stream = MagicMock()
+
+                async def _stream_text() -> AsyncIterator[str]:
+                    yield "hello"
+
+                stream.stream_text = _stream_text
+                stream.get_output = AsyncMock(return_value=None)
+                usage = MagicMock()
+                usage.total_tokens = 1
+                stream.usage.return_value = usage
+                stream.all_messages.return_value = []
+                return stream
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        mock_agent = MagicMock()
+        mock_agent.run_stream = MagicMock(return_value=_StubStream())
+        mock_agent.run = AsyncMock(
+            side_effect=AssertionError("run must not be called for a cloud provider")
+        )
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            events = [
+                event
+                async for event in service.stream_chat(
+                    db=mock_db,
+                    session_id=sample_active_session.session_id,
+                    message="hello",
+                )
+            ]
+
+        mock_agent.run_stream.assert_called_once()
+        mock_agent.run.assert_not_called()
+        assert any(e.event_type == "complete" for e in events)
 
 
 class TestAgentServiceApproval:
@@ -777,3 +1036,240 @@ class TestAgentDeps:
         assert deps.tool_call_count == 1
         deps.increment_tool_calls()
         assert deps.tool_call_count == 2
+
+    def test_set_pending_action_records_request(self, mock_db_session: AsyncMock) -> None:
+        """set_pending_action should record a machine-readable HITL request (#336)."""
+        deps = AgentDeps(db=mock_db_session, session_id="test-123")
+        assert deps.pending_action is None
+
+        deps.set_pending_action(
+            "save_scenario",
+            {"name": "p", "run_id": "r", "store_id": 1, "product_id": 2},
+            "Save scenario plan 'p'",
+        )
+
+        assert deps.pending_action is not None
+        assert deps.pending_action["action_type"] == "save_scenario"
+        assert deps.pending_action["arguments"]["run_id"] == "r"
+        assert deps.pending_action["description"] == "Save scenario plan 'p'"
+
+
+class TestAgentServiceDepsApproval:
+    """Regression tests for #336 — gated tools propagate approval via deps.
+
+    The experiment agent's structured output (ExperimentReport) carries no
+    pending_action/approval_required field, so a gated tool call (e.g.
+    save_scenario) used to leave the session ``active`` with no pending action
+    and no ``approval_required`` event. These assert the deterministic
+    deps-based path: tool -> deps.pending_action -> awaiting_approval ->
+    approval_required.
+    """
+
+    @staticmethod
+    def _save_scenario_pending(deps: AgentDeps) -> None:
+        """Simulate the gated save_scenario tool short-circuiting for approval."""
+        deps.set_pending_action(
+            "save_scenario",
+            {
+                "name": "plan-a",
+                "run_id": "702c7ce74e9848d3b11f124a71bf7b50",
+                "store_id": 111,
+                "product_id": 339,
+                "horizon": 14,
+                "assumptions": {},
+                "source": "agent",
+                "agent_session_id": deps.session_id,
+            },
+            "Save scenario plan 'plan-a' for store 111 / product 339",
+        )
+
+    @pytest.mark.asyncio
+    async def test_chat_persists_pending_action_from_deps(
+        self,
+        sample_active_session: AgentSession,
+        sample_experiment_report: ExperimentReport,
+    ) -> None:
+        """chat() must persist deps.pending_action even when the output lacks one."""
+        service = AgentService()
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        def _run(message: str, *, deps: AgentDeps, message_history: Any) -> MagicMock:
+            # A gated tool fired during the run and recorded the approval request.
+            self._save_scenario_pending(deps)
+            res = MagicMock()
+            res.output = sample_experiment_report  # no pending_action field
+            usage = MagicMock()
+            usage.total_tokens = 7
+            res.usage.return_value = usage
+            res.all_messages.return_value = []
+            return res
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(side_effect=_run)
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            response = await service.chat(
+                db=mock_db,
+                session_id=sample_active_session.session_id,
+                message="Save a what-if scenario plan for run 702c...",
+            )
+
+        assert response.pending_approval is True
+        assert response.pending_action is not None
+        assert response.pending_action.action_type == "save_scenario"
+        assert response.pending_action.arguments["run_id"] == "702c7ce74e9848d3b11f124a71bf7b50"
+        assert sample_active_session.status == SessionStatus.AWAITING_APPROVAL.value
+        assert sample_active_session.pending_action is not None
+        assert sample_active_session.pending_action["action_type"] == "save_scenario"
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_emits_approval_required_from_deps(
+        self,
+        sample_active_session: AgentSession,
+        sample_experiment_report: ExperimentReport,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """stream_chat() must emit approval_required from deps.pending_action."""
+        service = AgentService()
+        # Pin a streaming-capable (cloud) provider so this exercises the
+        # run_stream path regardless of the local .env (#342).
+        monkeypatch.setattr(service.settings, "agent_default_model", "anthropic:claude-test")
+        mock_db = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        report = sample_experiment_report
+
+        class _StubStream:
+            async def __aenter__(self) -> MagicMock:
+                stream = MagicMock()
+
+                async def _stream_text() -> AsyncIterator[str]:
+                    # Structured-output agents cannot stream text deltas; mirror
+                    # that by yielding nothing.
+                    return
+                    yield  # pragma: no cover
+
+                stream.stream_text = _stream_text
+                stream.get_output = AsyncMock(return_value=report)
+                usage = MagicMock()
+                usage.total_tokens = 9
+                stream.usage.return_value = usage
+                stream.all_messages.return_value = []
+                return stream
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        def _run_stream(message: str, *, deps: AgentDeps, message_history: Any) -> _StubStream:
+            self._save_scenario_pending(deps)
+            return _StubStream()
+
+        mock_agent = MagicMock()
+        mock_agent.run_stream = MagicMock(side_effect=_run_stream)
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            events = [
+                event
+                async for event in service.stream_chat(
+                    db=mock_db,
+                    session_id=sample_active_session.session_id,
+                    message="Save a what-if scenario plan for run 702c...",
+                )
+            ]
+
+        approval_events = [e for e in events if e.event_type == "approval_required"]
+        assert len(approval_events) == 1
+        assert approval_events[0].data["action"].action_type == "save_scenario"
+        assert sample_active_session.status == SessionStatus.AWAITING_APPROVAL.value
+        assert sample_active_session.pending_action is not None
+
+
+class TestFinalizerSalvage:
+    """The plain-text finalizer fallback used on structured-output failure (#351)."""
+
+    def test_extract_tool_payloads_pulls_tool_returns(self) -> None:
+        """Tool returns are extracted from a captured run trace, in order."""
+        captured: list[ModelMessage] = [
+            ModelRequest(parts=[UserPromptPart(content="List runs")]),
+            ModelResponse(parts=[TextPart(content="{}")]),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="tool_list_runs",
+                        content={"runs": [{"run_id": "abc", "wape": 18.93}]},
+                        tool_call_id="call-1",
+                    )
+                ]
+            ),
+        ]
+
+        payloads = AgentService._extract_tool_payloads(captured)
+
+        assert payloads == [
+            {"tool": "tool_list_runs", "result": {"runs": [{"run_id": "abc", "wape": 18.93}]}}
+        ]
+
+    def test_extract_tool_payloads_empty_when_no_tool_returns(self) -> None:
+        """No tool returns (model failed before any tool ran) yields an empty list."""
+        captured: list[ModelMessage] = [
+            ModelRequest(parts=[UserPromptPart(content="List runs")]),
+            ModelResponse(parts=[TextPart(content='{"runs": []}')]),
+        ]
+
+        assert AgentService._extract_tool_payloads(captured) == []
+
+    @pytest.mark.asyncio
+    async def test_salvage_returns_none_without_tool_data(self) -> None:
+        """With no captured tool data, salvage returns None (caller emits the error)."""
+        service = AgentService()
+        result = await service._salvage_plaintext_answer("any question", [])
+        assert result is None
+
+    def test_compact_for_finalizer_strips_verbose_keys_keeps_metrics(self) -> None:
+        """Compaction drops bulky config/runtime blobs but keeps identity + metrics (#351).
+
+        Regression for the finalizer reporting 99.0 as "lowest WAPE" when the
+        true minimum (18.93) had been truncated out of the oversized payload.
+        """
+        raw = [
+            {
+                "tool": "tool_list_runs",
+                "result": {
+                    "runs": [
+                        {
+                            "run_id": "a",
+                            "model_type": "seasonal_naive",
+                            "metrics": {"wape": 99.0},
+                            "model_config_data": {"x": "y" * 500},
+                            "runtime_info": {"python": "3.12"},
+                            "artifact_uri": "demo/seasonal-model_a.joblib",
+                        },
+                        {
+                            "run_id": "b",
+                            "model_type": "naive",
+                            "metrics": {"wape": 18.93},
+                            "feature_config": {"lots": "of stuff"},
+                        },
+                    ]
+                },
+            }
+        ]
+
+        compact = cast(list[dict[str, Any]], AgentService._compact_for_finalizer(raw))
+        runs = compact[0]["result"]["runs"]
+
+        # Identity + metrics survive for BOTH runs (so a ranking sees 18.93).
+        assert runs[0]["run_id"] == "a"
+        assert runs[0]["metrics"] == {"wape": 99.0}
+        assert runs[1]["run_id"] == "b"
+        assert runs[1]["metrics"] == {"wape": 18.93}
+        # Verbose blobs are gone.
+        assert "model_config_data" not in runs[0]
+        assert "runtime_info" not in runs[0]
+        assert "artifact_uri" not in runs[0]
+        assert "feature_config" not in runs[1]

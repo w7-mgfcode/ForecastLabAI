@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import functools
 import inspect
+import json
 import os
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
+import httpx
 import structlog
-from pydantic_ai import ModelRetry
+from pydantic_ai import Agent, ModelRetry
 from pydantic_ai.models import Model
 from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -62,6 +64,71 @@ def recoverable[**P, ToolReturnT](
     return wrapper
 
 
+def _coerce_null_message_content(body: bytes) -> bytes | None:
+    """Coerce ``messages[*].content: null`` -> ``""`` in a chat-request body.
+
+    Ollama's OpenAI-compatible ``/v1/chat/completions`` rejects any message
+    whose ``content`` is JSON ``null`` and which carries no ``tool_calls`` with
+    ``400 invalid message content type: <nil>`` — stricter than the real OpenAI
+    API, which tolerates it. A weak local model can emit a degenerate empty
+    assistant turn (no text, no tool call); PydanticAI serialises it as
+    ``content: null`` and then *replays* that message on its validation-retry,
+    so every retry 400s and the whole run dies with a ``FallbackExceptionGroup``.
+    Coercing ``null`` -> ``""`` keeps the message OpenAI-spec-valid and lets the
+    retry loop proceed.
+
+    Args:
+        body: The raw outgoing request body bytes.
+
+    Returns:
+        Re-serialised body bytes when a null ``content`` was rewritten, or
+        ``None`` when nothing changed (the common case) so the caller can
+        forward the original request untouched.
+    """
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    payload = cast("dict[str, Any]", parsed)
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return None
+    message_list: list[Any] = messages
+    changed = False
+    for message in message_list:
+        if isinstance(message, dict) and "content" in message and message["content"] is None:
+            message["content"] = ""
+            changed = True
+    if not changed:
+        return None
+    return json.dumps(payload).encode("utf-8")
+
+
+class _OllamaNullContentTransport(httpx.AsyncHTTPTransport):
+    """httpx transport that null-content-sanitises outgoing Ollama requests.
+
+    See :func:`_coerce_null_message_content` for the Ollama-compat defect this
+    works around. Applied to the ``OllamaProvider``'s HTTP client so the fix
+    covers both the streaming and non-streaming agent paths.
+    """
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        sanitized = _coerce_null_message_content(request.content)
+        if sanitized is not None:
+            headers = dict(request.headers)
+            headers.pop("content-length", None)  # httpx recomputes from the new body
+            request = httpx.Request(
+                request.method,
+                request.url,
+                headers=headers,
+                content=sanitized,
+                extensions=request.extensions,
+            )
+        return await super().handle_async_request(request)
+
+
 def build_agent_model(identifier: str) -> str | Model:
     """Build the PydanticAI ``model`` argument for an agent identifier.
 
@@ -85,7 +152,17 @@ def build_agent_model(identifier: str) -> str | Model:
     model_name = identifier.split(":", 1)[1]
     # CRITICAL: Ollama's OpenAI-compatible base ends in /v1.
     base_url = settings.ollama_base_url.rstrip("/") + "/v1"
-    return OpenAIChatModel(model_name, provider=OllamaProvider(base_url=base_url))
+    # The null-content sanitiser lives on the HTTP client (see
+    # _OllamaNullContentTransport). A generous read timeout is required because
+    # local generation on an 8B model routinely exceeds httpx's 5s default.
+    http_client = httpx.AsyncClient(
+        transport=_OllamaNullContentTransport(),
+        timeout=httpx.Timeout(600.0, connect=10.0),
+    )
+    return OpenAIChatModel(
+        model_name,
+        provider=OllamaProvider(base_url=base_url, http_client=http_client),
+    )
 
 
 def reset_agent_caches() -> None:
@@ -169,6 +246,40 @@ def build_agent_model_with_fallback() -> Model | str:
     fallback = build_agent_model(fallback_id)
     logger.info("agents.fallback_enabled", primary=primary_id, fallback=fallback_id)
     return FallbackModel(primary, fallback)
+
+
+FINALIZER_SYSTEM_PROMPT = """You are a concise analyst for ForecastLabAI.
+Answer the user's question using ONLY the provided tool data. Be specific and brief
+(2-4 sentences, plain text — no JSON, no preamble).
+- If the user asked for a ranking (lowest/highest WAPE, MAE, RMSE, …), name the
+  specific run/item and its value, and ignore entries whose metric is missing.
+- If the data is empty, say so plainly.
+- Never invent values, run ids, or entities that are not present in the data.
+"""
+
+
+def build_finalizer_agent() -> Agent[None, str]:
+    """Build a tool-less, plain-text agent that salvages an answer from tool data.
+
+    Weak local models (e.g. ``ollama:llama3.1:8b``) reliably call tools and obtain
+    the data, but cannot wrap the result in the primary agent's structured
+    ``PromptedOutput`` schema — they echo the raw tool output and exhaust the
+    output-retry budget (issue #351). This finalizer takes the data already
+    obtained and answers in plain text, which weak models *can* do. It has NO
+    tools (cannot loop) and ``output_type=str`` (cannot fail schema validation),
+    so it degrades gracefully. Cloud models never need it — it only runs on the
+    primary agent's misbehavior path.
+
+    Returns:
+        A configured plain-text :class:`Agent`, primary+fallback model wrapped.
+    """
+    model = build_agent_model_with_fallback()
+    return Agent(
+        model=model,
+        output_type=str,
+        system_prompt=FINALIZER_SYSTEM_PROMPT,
+        **get_model_settings(),
+    )
 
 
 def get_agent_retries() -> int:
@@ -293,4 +404,60 @@ SAFETY:
 - Actions marked as requiring approval will be paused for human review
 - Never bypass safety checks or approval requirements
 - Log all significant decisions and their reasoning
+"""
+
+# Generalized read-only intent guard. Embedded in the experiment-agent prompt to
+# stop a read-only question (list/rank/summarize/compare/report) from derailing
+# into a scenario / write / experiment tool — especially on an output-format
+# validation retry, where a weak local model tends to start a brand-new action
+# instead of just reformatting the data it already fetched (issue #347). Every
+# `tool_*` name referenced here is registered on the experiment agent, so the
+# `test_prompts_only_reference_registered_tool_names` invariant still holds.
+READ_ONLY_INTENT_GUARD = """
+READ-ONLY INTENT GUARD (apply this before every turn):
+Many requests are READ-ONLY — the user wants you to look something up and report
+it, not to change anything. Treat a request as READ-ONLY when it asks you to list,
+show, rank, summarize, compare, or report. Examples that are ALWAYS read-only
+unless the user explicitly asks to change something:
+- listing or ranking stores or products (e.g. "top products")
+- sales, revenue, or units-sold summaries
+- forecast summaries, or which products have the highest forecasted demand
+- model runs and metric comparisons, including WAPE, MAE, or RMSE
+- registry aliases and deployment status
+- backtest metrics
+- RAG / document / knowledge questions
+
+For a READ-ONLY request you MUST:
+- Use ONLY read-only tools: tool_list_runs, tool_get_run, tool_compare_runs,
+  tool_compare_backtest_results.
+- NEVER call tool_propose_scenario, tool_save_scenario, tool_create_alias,
+  tool_archive_run, or tool_run_backtest. Those create, save, promote, archive,
+  run, or plan something — they are NOT allowed for a read-only question.
+- Call a mutating / planning / experiment tool ONLY when the user EXPLICITLY asks
+  to create, save, promote, archive, run a backtest, or run an experiment.
+- Answer directly in the ExperimentReport `summary` field, grounded in tool output.
+
+FINISH IN ONE PASS — do not loop:
+- Call each read-only tool AT MOST ONCE per question.
+- The MOMENT a read tool returns, STOP calling tools and write your
+  ExperimentReport `summary` from what it returned — you already have the answer.
+- NEVER call a tool again that has already returned. Re-running the same tool
+  (e.g. tool_list_runs twice) is the most common failure: it burns the retry
+  budget until the run is killed. Use the data you already received.
+- If a read tool returns an EMPTY result, say so in the `summary` (e.g. "No model
+  runs found.") — do NOT retry the tool hoping for different data.
+
+OUTPUT-FORMAT RETRIES:
+- If your previous reply failed schema validation (e.g. "summary: Field required"),
+  DO NOT call any new tool. Only reformat the data you already obtained into a
+  valid ExperimentReport with a concise `summary`. A validation retry is a
+  formatting fix, never a reason to start a new action.
+
+WHEN A TOOL IS MISSING OR THE REQUEST IS AMBIGUOUS:
+- If a ranking is ambiguous (e.g. "top products"), ask a clarifying question such
+  as: "Top by revenue, units sold, forecasted demand, or model error?" — do not guess.
+- If no read-only tool exists for the requested metric, say plainly that this agent
+  does not have a tool for that metric. Do NOT invent data.
+- NEVER invent or guess a store_id, product_id, or run_id. Use only IDs returned by
+  a tool or explicitly supplied by the user.
 """

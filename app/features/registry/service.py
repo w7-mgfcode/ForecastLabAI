@@ -649,7 +649,10 @@ class RegistryService:
         if not runtime_info_extras:
             return 1
         value = runtime_info_extras.get("feature_frame_version")
-        if isinstance(value, int) and value in (1, 2):
+        # Honor any positive int V (feature_frame_version is an opaque
+        # incrementing integer per docs/_base/DOMAIN_MODEL.md). bool is excluded
+        # because it subclasses int. Missing / invalid value -> V=1 (#338).
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
             return value
         return 1
 

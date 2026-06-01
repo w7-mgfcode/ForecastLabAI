@@ -13,6 +13,7 @@ CRITICAL: Sessions expire after configured TTL.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import AbstractContextManager
@@ -20,9 +21,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
 import structlog
-from pydantic_ai import Agent
+from pydantic_ai import Agent, capture_run_messages
 from pydantic_ai.exceptions import UnexpectedModelBehavior
-from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
+from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ToolReturnPart
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,6 +40,31 @@ from app.features.agents.schemas import (
 )
 
 logger = structlog.get_logger()
+
+# Cap on the tool-data JSON fed to the plain-text finalizer (#351). With the
+# verbose keys below stripped, a full runs page fits comfortably; the cap is a
+# context-budget backstop for pathological payloads.
+_FINALIZER_MAX_CHARS = 8000
+
+# Verbose, decision-irrelevant keys stripped from tool results before they are
+# handed to the finalizer (#351). Dropping these keeps every run's identity +
+# metrics (e.g. WAPE) inside the budget, so a ranking question sees ALL runs
+# instead of just the first one or two — the bug where the finalizer reported
+# 99.0 as "lowest" while the true minimum (18.93) had been truncated away.
+_FINALIZER_DROP_KEYS = frozenset(
+    {
+        "model_config",
+        "model_config_data",
+        "feature_config",
+        "runtime_info",
+        "agent_context",
+        "config_hash",
+        "artifact_hash",
+        "artifact_uri",
+        "artifact_size_bytes",
+        "error_message",
+    }
+)
 
 
 class SessionNotFoundError(ValueError):
@@ -266,16 +292,20 @@ class AgentService:
             history_length=len(message_history),
         )
 
+        # Always bound for the misbehavior handler, even if the run raises before
+        # capture_run_messages() populates it.
+        captured_messages: list[ModelMessage] = []
         try:
-            with _sequential_tool_execution():
-                result = await asyncio.wait_for(
-                    agent.run(
-                        message,
-                        deps=deps,
-                        message_history=message_history,
-                    ),
-                    timeout=self.settings.agent_timeout_seconds,
-                )
+            with capture_run_messages() as captured_messages:
+                with _sequential_tool_execution():
+                    result = await asyncio.wait_for(
+                        agent.run(
+                            message,
+                            deps=deps,
+                            message_history=message_history,
+                        ),
+                        timeout=self.settings.agent_timeout_seconds,
+                    )
         except TimeoutError as e:
             raise TimeoutError(
                 f"Agent response timed out after {self.settings.agent_timeout_seconds} seconds"
@@ -290,8 +320,30 @@ class AgentService:
                 error=str(e),
                 error_type=type(e).__name__,
             )
-            session.last_activity = datetime.now(UTC)
+            misbehavior_now = datetime.now(UTC)
+            session.last_activity = misbehavior_now
+            # A gated tool may have fired (and recorded a valid approval request)
+            # before the model misbehaved — surface the Approve card rather than
+            # discarding it behind the generic error (#344).
+            salvaged = self._salvage_pending_action(session, deps, misbehavior_now)
             await db.flush()
+            if salvaged is not None:
+                return ChatResponse(
+                    session_id=session_id,
+                    message=(
+                        "I've prepared an action that needs your approval before "
+                        "I can proceed. Please review the pending request."
+                    ),
+                    pending_approval=True,
+                    pending_action=salvaged,
+                )
+            # A weak local model often calls tools and obtains the data, then
+            # fails to wrap it in the structured output schema (#351). Salvage a
+            # plain-text answer from the tool data already captured this run.
+            answer = await self._salvage_plaintext_answer(message, captured_messages)
+            if answer is not None:
+                logger.info("agents.chat_finalizer_salvage", session_id=session_id)
+                return ChatResponse(session_id=session_id, message=answer)
             return ChatResponse(
                 session_id=session_id,
                 message=(
@@ -314,9 +366,26 @@ class AgentService:
         # NOTE: PydanticAI v1.48.0 uses result.output (not result.data)
         result_data: Any = result.output
 
-        # Check for pending_action in result data (primary trigger)
+        # Primary trigger (#336): a gated tool recorded a machine-readable
+        # approval request on deps. Deterministic — does not rely on the model
+        # echoing the request into its structured output (ExperimentReport has
+        # no pending_action field, so the legacy triggers below never fired).
+        if deps.pending_action:
+            pending_approval = True
+            pending_action = self._record_pending_action(
+                session,
+                action_type=str(deps.pending_action.get("action_type", "unknown")),
+                arguments=deps.pending_action.get("arguments") or {},
+                description=str(
+                    deps.pending_action.get("description")
+                    or f"Agent requested approval for "
+                    f"{deps.pending_action.get('action_type', 'unknown')}"
+                ),
+                now=now,
+            )
+        # Legacy trigger: structured output carried a pending_action field.
         # The agent tools should return a pending_action dict with action_type and arguments
-        if hasattr(result_data, "pending_action") and result_data.pending_action:
+        elif hasattr(result_data, "pending_action") and result_data.pending_action:
             pending_approval = True
             pending_action_data = result_data.pending_action
             # Extract action details - support both dict and object with attributes
@@ -335,33 +404,19 @@ class AgentService:
                     f"Agent requested approval for {action_type}",
                 )
 
-            session.pending_action = {
-                "action_id": uuid.uuid4().hex[:16],
-                "action_type": action_type,
-                "description": description,
-                "arguments": arguments,
-                "created_at": now.isoformat(),
-                "expires_at": (
-                    now + timedelta(minutes=self.settings.agent_approval_timeout_minutes)
-                ).isoformat(),
-            }
-            session.status = SessionStatus.AWAITING_APPROVAL.value
-            pending_action = self._format_pending_action(session.pending_action)
+            pending_action = self._record_pending_action(
+                session, action_type, arguments, description, now
+            )
         # Fallback: check approval_required flag (legacy trigger)
         elif hasattr(result_data, "approval_required") and result_data.approval_required:
             pending_approval = True
-            session.pending_action = {
-                "action_id": uuid.uuid4().hex[:16],
-                "action_type": "unknown",
-                "description": "Agent requested approval for an action",
-                "arguments": {},
-                "created_at": now.isoformat(),
-                "expires_at": (
-                    now + timedelta(minutes=self.settings.agent_approval_timeout_minutes)
-                ).isoformat(),
-            }
-            session.status = SessionStatus.AWAITING_APPROVAL.value
-            pending_action = self._format_pending_action(session.pending_action)
+            pending_action = self._record_pending_action(
+                session,
+                "unknown",
+                {},
+                "Agent requested approval for an action",
+                now,
+            )
 
         # Update session
         usage = result.usage()
@@ -456,153 +511,185 @@ class AgentService:
             agent_type=session.agent_type,
         )
 
-        # Stream the response
+        # Stream the response. Ollama's OpenAI-compat endpoint rejects
+        # PydanticAI's streamed request with 400 "invalid message content type:
+        # <nil>" (#342), while the non-streaming run() path works — so fall back
+        # to run() for the ollama provider and emit the result as a single
+        # text_delta plus the usual approval/complete events. Cloud providers
+        # keep the true token-streaming path.
+        default_model = self.settings.agent_default_model
+        provider = default_model.split(":", 1)[0] if ":" in default_model else ""
+        stream_supported = provider != "ollama"
+        # Always bound for the misbehavior handler (see chat()).
+        captured_messages: list[ModelMessage] = []
         try:
-            with _sequential_tool_execution():
+            with capture_run_messages() as captured_messages, _sequential_tool_execution():
                 async with asyncio.timeout(self.settings.agent_timeout_seconds):
-                    async with agent.run_stream(
-                        message,
-                        deps=deps,
-                        message_history=message_history,
-                    ) as result:
-                        try:
-                            async for text in result.stream_text():
-                                yield StreamEvent(
-                                    event_type="text_delta",
-                                    data={"delta": text},
-                                    timestamp=datetime.now(UTC),
+                    final_result: Any
+                    usage: Any
+                    all_messages: list[ModelMessage]
+
+                    if stream_supported:
+                        async with agent.run_stream(
+                            message,
+                            deps=deps,
+                            message_history=message_history,
+                        ) as result:
+                            try:
+                                async for text in result.stream_text():
+                                    yield StreamEvent(
+                                        event_type="text_delta",
+                                        data={"delta": text},
+                                        timestamp=datetime.now(UTC),
+                                    )
+                            except Exception as e:
+                                # Structured output agents (output_type=...) cannot
+                                # stream raw text deltas. Skip delta streaming and
+                                # only emit the final complete event.
+                                logger.info(
+                                    "agents.stream_chat_text_delta_unavailable",
+                                    session_id=session_id,
+                                    error=str(e),
+                                    error_type=type(e).__name__,
                                 )
-                        except Exception as e:
-                            # Structured output agents (output_type=...) cannot stream raw text deltas.
-                            # In that case we skip delta streaming and only emit the final complete event.
-                            logger.info(
-                                "agents.stream_chat_text_delta_unavailable",
-                                session_id=session_id,
-                                error=str(e),
-                                error_type=type(e).__name__,
+                            # NOTE: PydanticAI exposes get_output() on StreamedRunResult.
+                            final_result = await result.get_output()
+                            usage = result.usage()
+                            all_messages = result.all_messages()
+                    else:
+                        # #342 — non-streaming fallback for the ollama provider.
+                        run_result = await agent.run(
+                            message,
+                            deps=deps,
+                            message_history=message_history,
+                        )
+                        final_result = run_result.output
+                        usage = run_result.usage()
+                        all_messages = run_result.all_messages()
+
+                    # Update session (shared by both paths)
+                    session.message_history = self._serialize_messages(all_messages)
+                    session.total_tokens_used += usage.total_tokens or 0
+                    session.tool_calls_count += deps.tool_call_count
+                    session.last_activity = datetime.now(UTC)
+                    session.expires_at = session.last_activity + timedelta(
+                        minutes=self.settings.agent_session_ttl_minutes
+                    )
+
+                    await db.flush()
+
+                    # Check for pending approval actions (mirror chat() logic)
+                    pending_action = None
+                    pending_approval = False
+                    stream_now = datetime.now(UTC)
+
+                    # Primary trigger (#336): a gated tool recorded a
+                    # machine-readable approval request on deps. Deterministic
+                    # — the experiment agent's ExperimentReport output has no
+                    # pending_action field, so the legacy triggers below never
+                    # fired and the approval_required event was never emitted.
+                    if deps.pending_action:
+                        pending_approval = True
+                        pending_action = self._record_pending_action(
+                            session,
+                            action_type=str(deps.pending_action.get("action_type", "unknown")),
+                            arguments=deps.pending_action.get("arguments") or {},
+                            description=str(
+                                deps.pending_action.get("description")
+                                or "Agent requested approval for "
+                                f"{deps.pending_action.get('action_type', 'unknown')}"
+                            ),
+                            now=stream_now,
+                        )
+                    # Legacy trigger: structured output carried pending_action.
+                    elif hasattr(final_result, "pending_action") and final_result.pending_action:
+                        pending_approval = True
+                        pending_action_data = final_result.pending_action
+                        # Extract action details - support both dict and object with attributes
+                        if isinstance(pending_action_data, dict):
+                            action_type = pending_action_data.get("action_type", "unknown")
+                            arguments = pending_action_data.get("arguments", {})
+                            description = pending_action_data.get(
+                                "description", f"Agent requested approval for {action_type}"
+                            )
+                        else:
+                            action_type = getattr(pending_action_data, "action_type", "unknown")
+                            arguments = getattr(pending_action_data, "arguments", {})
+                            description = getattr(
+                                pending_action_data,
+                                "description",
+                                f"Agent requested approval for {action_type}",
                             )
 
-                        # Get final result and update session
-                        # NOTE: PydanticAI v1.48 exposes get_output() on StreamedRunResult.
-                        final_result: Any = await result.get_output()
-                        usage = result.usage()
-
-                        session.message_history = self._serialize_messages(result.all_messages())
-                        session.total_tokens_used += usage.total_tokens or 0
-                        session.tool_calls_count += deps.tool_call_count
-                        session.last_activity = datetime.now(UTC)
-                        session.expires_at = session.last_activity + timedelta(
-                            minutes=self.settings.agent_session_ttl_minutes
+                        pending_action = self._record_pending_action(
+                            session, action_type, arguments, description, stream_now
+                        )
+                    # Fallback: check approval_required flag (legacy trigger)
+                    elif (
+                        hasattr(final_result, "approval_required")
+                        and final_result.approval_required
+                    ):
+                        pending_approval = True
+                        pending_action = self._record_pending_action(
+                            session,
+                            "unknown",
+                            {},
+                            "Agent requested approval for an action",
+                            stream_now,
                         )
 
-                        await db.flush()
+                    await db.flush()
 
-                        # Check for pending approval actions (mirror chat() logic)
-                        pending_action = None
-                        pending_approval = False
-                        stream_now = datetime.now(UTC)
-
-                        # Check for pending_action in result data (primary trigger)
-                        if hasattr(final_result, "pending_action") and final_result.pending_action:
-                            pending_approval = True
-                            pending_action_data = final_result.pending_action
-                            # Extract action details - support both dict and object with attributes
-                            if isinstance(pending_action_data, dict):
-                                action_type = pending_action_data.get("action_type", "unknown")
-                                arguments = pending_action_data.get("arguments", {})
-                                description = pending_action_data.get(
-                                    "description", f"Agent requested approval for {action_type}"
-                                )
-                            else:
-                                action_type = getattr(pending_action_data, "action_type", "unknown")
-                                arguments = getattr(pending_action_data, "arguments", {})
-                                description = getattr(
-                                    pending_action_data,
-                                    "description",
-                                    f"Agent requested approval for {action_type}",
-                                )
-
-                            session.pending_action = {
-                                "action_id": uuid.uuid4().hex[:16],
-                                "action_type": action_type,
-                                "description": description,
-                                "arguments": arguments,
-                                "created_at": stream_now.isoformat(),
-                                "expires_at": (
-                                    stream_now
-                                    + timedelta(
-                                        minutes=self.settings.agent_approval_timeout_minutes
-                                    )
-                                ).isoformat(),
-                            }
-                            session.status = SessionStatus.AWAITING_APPROVAL.value
-                            pending_action = self._format_pending_action(session.pending_action)
-                        # Fallback: check approval_required flag (legacy trigger)
+                    # Build the response text (shared by both paths).
+                    response_message: str = "No response generated."
+                    if final_result:
+                        if hasattr(final_result, "answer") and final_result.answer:
+                            response_message = str(final_result.answer)
+                        elif hasattr(final_result, "summary") and final_result.summary:
+                            response_message = str(final_result.summary)
                         elif (
-                            hasattr(final_result, "approval_required")
-                            and final_result.approval_required
+                            hasattr(final_result, "recommendations")
+                            and final_result.recommendations
                         ):
-                            pending_approval = True
-                            session.pending_action = {
-                                "action_id": uuid.uuid4().hex[:16],
-                                "action_type": "unknown",
-                                "description": "Agent requested approval for an action",
-                                "arguments": {},
-                                "created_at": stream_now.isoformat(),
-                                "expires_at": (
-                                    stream_now
-                                    + timedelta(
-                                        minutes=self.settings.agent_approval_timeout_minutes
-                                    )
-                                ).isoformat(),
-                            }
-                            session.status = SessionStatus.AWAITING_APPROVAL.value
-                            pending_action = self._format_pending_action(session.pending_action)
-
-                        await db.flush()
-
-                        # If approval is required, emit approval_required event
-                        if pending_approval and pending_action:
-                            yield StreamEvent(
-                                event_type="approval_required",
-                                data={
-                                    "action": pending_action,
-                                    "message": "Human approval required before proceeding.",
-                                },
-                                timestamp=stream_now,
-                            )
-
-                        # Yield completion event
-                        response_message: str = "No response generated."
-                        if final_result:
-                            if hasattr(final_result, "answer") and final_result.answer:
-                                response_message = str(final_result.answer)
-                            elif hasattr(final_result, "summary") and final_result.summary:
-                                response_message = str(final_result.summary)
-                            elif (
-                                hasattr(final_result, "recommendations")
-                                and final_result.recommendations
-                            ):
-                                recommendations = final_result.recommendations
-                                if isinstance(recommendations, list) and recommendations:
-                                    response_message = "\n".join(
-                                        str(item) for item in recommendations
-                                    )
-                                else:
-                                    response_message = str(final_result)
+                            recommendations = final_result.recommendations
+                            if isinstance(recommendations, list) and recommendations:
+                                response_message = "\n".join(str(item) for item in recommendations)
                             else:
                                 response_message = str(final_result)
+                        else:
+                            response_message = str(final_result)
 
+                    # #342 — the ollama (non-streaming) path produced no token
+                    # deltas; emit the full text once so the FE renders the reply.
+                    # Cloud streaming behavior is unchanged.
+                    if not stream_supported and response_message != "No response generated.":
                         yield StreamEvent(
-                            event_type="complete",
-                            data={
-                                "message": response_message,
-                                "tokens_used": usage.total_tokens or 0,
-                                "tool_calls_count": deps.tool_call_count,
-                                "pending_approval": pending_approval,
-                            },
+                            event_type="text_delta",
+                            data={"delta": response_message},
                             timestamp=datetime.now(UTC),
                         )
+
+                    # If approval is required, emit approval_required event
+                    if pending_approval and pending_action:
+                        yield StreamEvent(
+                            event_type="approval_required",
+                            data={
+                                "action": pending_action,
+                                "message": "Human approval required before proceeding.",
+                            },
+                            timestamp=stream_now,
+                        )
+
+                    yield StreamEvent(
+                        event_type="complete",
+                        data={
+                            "message": response_message,
+                            "tokens_used": usage.total_tokens or 0,
+                            "tool_calls_count": deps.tool_call_count,
+                            "pending_approval": pending_approval,
+                        },
+                        timestamp=datetime.now(UTC),
+                    )
         except TimeoutError as e:
             raise TimeoutError(
                 f"Agent response timed out after {self.settings.agent_timeout_seconds} seconds"
@@ -617,6 +704,58 @@ class AgentService:
                 error=str(e),
                 error_type=type(e).__name__,
             )
+            misbehavior_now = datetime.now(UTC)
+            session.last_activity = misbehavior_now
+            # A gated tool may have fired (and recorded a valid approval request)
+            # before the model misbehaved — surface the Approve card rather than
+            # discarding it behind the generic error (#344).
+            salvaged = self._salvage_pending_action(session, deps, misbehavior_now)
+            await db.flush()
+            if salvaged is not None:
+                yield StreamEvent(
+                    event_type="approval_required",
+                    data={
+                        "action": salvaged,
+                        "message": "Human approval required before proceeding.",
+                    },
+                    timestamp=misbehavior_now,
+                )
+                yield StreamEvent(
+                    event_type="complete",
+                    data={
+                        "message": (
+                            "I've prepared an action that needs your approval before I can proceed."
+                        ),
+                        "tokens_used": 0,
+                        "tool_calls_count": deps.tool_call_count,
+                        "pending_approval": True,
+                    },
+                    timestamp=misbehavior_now,
+                )
+                return
+            # A weak local model often calls tools and obtains the data, then
+            # fails to wrap it in the structured output schema (#351). Salvage a
+            # plain-text answer from the tool data already captured this run and
+            # emit it as a normal reply rather than an error.
+            answer = await self._salvage_plaintext_answer(message, captured_messages)
+            if answer is not None:
+                logger.info("agents.stream_chat_finalizer_salvage", session_id=session_id)
+                yield StreamEvent(
+                    event_type="text_delta",
+                    data={"delta": answer},
+                    timestamp=misbehavior_now,
+                )
+                yield StreamEvent(
+                    event_type="complete",
+                    data={
+                        "message": answer,
+                        "tokens_used": 0,
+                        "tool_calls_count": deps.tool_call_count,
+                        "pending_approval": False,
+                    },
+                    timestamp=misbehavior_now,
+                )
+                return
             yield StreamEvent(
                 event_type="error",
                 data={
@@ -627,7 +766,7 @@ class AgentService:
                     "error_type": "model_behavior_error",
                     "recoverable": True,
                 },
-                timestamp=datetime.now(UTC),
+                timestamp=misbehavior_now,
             )
             return
 
@@ -824,6 +963,183 @@ class AgentService:
                 exc_info=True,
             )
             return []
+
+    def _salvage_pending_action(
+        self,
+        session: AgentSession,
+        deps: AgentDeps,
+        now: datetime,
+    ) -> PendingAction | None:
+        """Persist a gated tool's approval request captured before a misbehaving run.
+
+        A gated tool sets ``deps.pending_action`` the moment it fires (#336), but
+        it does not halt the run. A weak model can ramble past the gate and
+        exhaust its retry budget, so ``agent.run()`` raises
+        ``UnexpectedModelBehavior`` BEFORE returning and the normal post-run
+        approval-surfacing path never executes. The gate did fire and the
+        captured arguments are valid, so surface the approval card instead of
+        discarding it behind a generic error (issue #344).
+
+        Args:
+            session: The agent session to mutate.
+            deps: The agent deps that a gated tool may have written to.
+            now: Timestamp for created_at / expires_at.
+
+        Returns:
+            The formatted :class:`PendingAction` when a gated tool recorded a
+            request, else ``None`` (the genuine "invalid tool call" case).
+        """
+        if not deps.pending_action:
+            return None
+        action_type = str(deps.pending_action.get("action_type", "unknown"))
+        return self._record_pending_action(
+            session,
+            action_type=action_type,
+            arguments=deps.pending_action.get("arguments") or {},
+            description=str(
+                deps.pending_action.get("description")
+                or f"Agent requested approval for {action_type}"
+            ),
+            now=now,
+        )
+
+    @staticmethod
+    def _extract_tool_payloads(captured: list[ModelMessage]) -> list[dict[str, Any]]:
+        """Pull every tool return out of a captured run's message trace.
+
+        Used by :meth:`_salvage_plaintext_answer` to recover the data a weak
+        model fetched before it failed structured-output validation (#351).
+
+        Args:
+            captured: Messages captured via ``capture_run_messages`` (may be empty
+                when the run failed before any tool returned).
+
+        Returns:
+            One ``{"tool", "result"}`` dict per ``ToolReturnPart``, in order.
+        """
+        payloads: list[dict[str, Any]] = []
+        for message in captured:
+            for part in getattr(message, "parts", []):
+                if isinstance(part, ToolReturnPart):
+                    payloads.append({"tool": part.tool_name, "result": part.content})
+        return payloads
+
+    @classmethod
+    def _compact_for_finalizer(cls, obj: object) -> object:
+        """Recursively strip verbose, decision-irrelevant keys from tool data (#351).
+
+        Keeps each entry's identity + metrics while dropping bulky nested config
+        / runtime blobs, so a full result set fits in the finalizer's budget and
+        a ranking sees every entry. Pure/serialisation-only — no I/O.
+
+        Args:
+            obj: Any JSON-ish value extracted from a tool return.
+
+        Returns:
+            The same structure with :data:`_FINALIZER_DROP_KEYS` removed at every
+            dict level.
+        """
+        if isinstance(obj, dict):
+            return {
+                k: cls._compact_for_finalizer(v)
+                for k, v in obj.items()
+                if k not in _FINALIZER_DROP_KEYS
+            }
+        if isinstance(obj, list):
+            return [cls._compact_for_finalizer(v) for v in obj]
+        return obj
+
+    async def _salvage_plaintext_answer(
+        self,
+        message: str,
+        captured: list[ModelMessage],
+    ) -> str | None:
+        """Answer in plain text from tool data when structured output failed (#351).
+
+        A weak local model (e.g. ``ollama:llama3.1:8b``) reliably calls the read
+        tool and gets the data, but echoes the raw tool result instead of the
+        primary agent's ``PromptedOutput`` schema, exhausting the output-retry
+        budget. The data was obtained, though — so hand it to a tool-less,
+        ``str``-output finalizer that answers the user's question directly. The
+        finalizer cannot loop (no tools) or fail schema validation (plain text).
+
+        Args:
+            message: The original user message.
+            captured: Messages captured from the failed run.
+
+        Returns:
+            The finalizer's plain-text answer, or ``None`` when no tool data was
+            obtained or the finalizer itself errors (caller falls back to the
+            generic recoverable error).
+        """
+        payloads = self._extract_tool_payloads(captured)
+        if not payloads:
+            return None
+        try:
+            from app.features.agents.agents.base import build_finalizer_agent
+
+            compact = self._compact_for_finalizer(payloads)
+            data = json.dumps(compact, default=str)[:_FINALIZER_MAX_CHARS]
+            prompt = (
+                f"User question:\n{message}\n\n"
+                f"Data retrieved from tools (JSON):\n{data}\n\n"
+                "Answer the user's question concisely from this data. If the "
+                "question asks for the lowest/highest of a metric (e.g. WAPE), "
+                "compare that metric across ALL entries that have it, ignore "
+                "entries where it is missing/null, and report the true "
+                "minimum/maximum with its value."
+            )
+            finalizer = build_finalizer_agent()
+            result = await asyncio.wait_for(
+                finalizer.run(prompt),
+                timeout=self.settings.agent_timeout_seconds,
+            )
+            text = str(result.output).strip()
+            return text or None
+        except Exception:
+            # Best-effort: a finalizer failure must never replace the original
+            # recoverable error with a crash.
+            logger.warning("agents.finalizer_fallback_failed", exc_info=True)
+            return None
+
+    def _record_pending_action(
+        self,
+        session: AgentSession,
+        action_type: str,
+        arguments: dict[str, Any],
+        description: str,
+        now: datetime,
+    ) -> PendingAction | None:
+        """Persist a HITL approval request on the session and format it.
+
+        Builds the canonical ``session.pending_action`` dict (fresh action_id +
+        expiry), flips the session to ``awaiting_approval``, and returns the
+        ``PendingAction`` schema for the response / stream event. Shared by the
+        deterministic deps-based trigger (#336) and the legacy structured-output
+        triggers so all three paths persist an identical shape.
+
+        Args:
+            session: The agent session to mutate.
+            action_type: Gated action name.
+            arguments: Arguments to replay on approval.
+            description: Human-readable approval-card summary.
+            now: Timestamp used for created_at / expires_at.
+
+        Returns:
+            The formatted PendingAction, or None if formatting fails.
+        """
+        session.pending_action = {
+            "action_id": uuid.uuid4().hex[:16],
+            "action_type": action_type,
+            "description": description,
+            "arguments": arguments,
+            "created_at": now.isoformat(),
+            "expires_at": (
+                now + timedelta(minutes=self.settings.agent_approval_timeout_minutes)
+            ).isoformat(),
+        }
+        session.status = SessionStatus.AWAITING_APPROVAL.value
+        return self._format_pending_action(session.pending_action)
 
     def _format_pending_action(
         self,

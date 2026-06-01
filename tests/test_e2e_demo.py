@@ -504,23 +504,31 @@ def test_run_demo_showcase_rich_full_epic(
         f"status={scenario_step['status']!r} detail={scenario_step['detail']!r}"
     )
 
-    # Any OTHER failed step must be an environment-dependent knowledge-phase step
-    # (embedding provider unreachable / misconfigured key) -- those skip
-    # gracefully when the provider is absent (RUNBOOKS 20-22), but a real 401
-    # surfaces as a fail locally. Not the #324 cascade.
-    ENV_DEPENDENT_KNOWLEDGE_STEPS = {"rag_index_subset", "rag_retrieve_probe"}
+    # ---- PR1 (PRP-42, #329) — knowledge phase must never hard-fail -----------
+    # The embedding-provider knowledge steps now SKIP gracefully whether the
+    # provider is truly unreachable OR rejects an invalid/placeholder key (the
+    # 401/403 -> EMBEDDING_AUTH classification, RUNBOOKS 20-22). They may pass
+    # (provider reachable + corpus matches), skip (unreachable / bad key), or
+    # warn (retrieve indexed but found no hits) -- but they must NOT fail.
+    KNOWLEDGE_STEPS = {"rag_index_subset", "rag_retrieve_probe"}
+    for name in KNOWLEDGE_STEPS:
+        step = by_name.get(name)
+        if step is not None:
+            assert step["status"] in {"pass", "skip", "warn"}, (
+                f"{name} must skip/warn gracefully on an unreachable/invalid "
+                f"embedding key (#329), got status={step['status']!r} "
+                f"detail={step['detail']!r}"
+            )
+
+    # No step may hard-fail on showcase_rich now: #324 is fixed and the
+    # knowledge phase skips instead of 401/502-failing. Any fail is a regression.
     failed = [s for s in result["steps"] if s["status"] == "fail"]
-    for step in failed:
-        assert step["step_name"] in ENV_DEPENDENT_KNOWLEDGE_STEPS, (
-            f"unexpected showcase_rich failure (not #324, not env-dependent): "
-            f"{step['step_name']!r} detail={step['detail']!r}"
-        )
-    # With no env-dependent failures, the per-step statuses and the overall
-    # status must agree -- the whole pipeline reports pass.
-    if not failed:
-        assert result["overall_status"] == "pass", (
-            f"no failed steps but overall_status={result['overall_status']!r}"
-        )
+    assert not failed, "unexpected showcase_rich failure(s): " + ", ".join(
+        f"{s['step_name']!r} (detail={s['detail']!r})" for s in failed
+    )
+    assert result["overall_status"] == "pass", (
+        f"no failed steps but overall_status={result['overall_status']!r}"
+    )
 
 
 @pytest.mark.integration

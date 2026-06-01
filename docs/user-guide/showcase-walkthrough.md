@@ -156,7 +156,7 @@ run. The Inspect button deep-links to `/chat` where the approved tool
 call is visible in the transcript. See
 [Agents and RAG Guide](./agents-and-rag-guide.md) for the approval gate.
 
-<!-- screenshot: agent-hitl-approve.png -->
+![Agents (HITL) phase — the agent_hitl_flow step card. In this local run the agent answered without calling save_scenario, so the step is skipped by design; the one-click Approve button renders only when the agent triggers the gated save_scenario tool.](./img/agent-hitl-approve.png)
 
 ### Phase: Ops snapshot
 
@@ -168,7 +168,7 @@ endpoints are 200-safe on an empty DB, so the step always reports `pass`
 unless every endpoint fails (then `warn`). The Inspect button deep-links
 to `/ops`.
 
-<!-- screenshot: ops-snapshot-tiles.png -->
+![Ops snapshot step card — the five-tile KPI grid (stale aliases, retraining queue, total runs, total aliases, degrading-health grains) rendered after a green showcase_rich run.](./img/ops-snapshot-tiles.png)
 
 ### Cross-cutting polish
 
@@ -198,9 +198,9 @@ Five chrome-level additions wrap the page:
   phase. Prior behavior pinned the open panel to the running/fallback
   phase.
 
-<!-- screenshot: kpi-strip.png -->
-<!-- screenshot: inspect-artifacts-panel.png -->
-<!-- screenshot: run-history-strip.png -->
+![Showcase KPI strip — five tiles populated after a completed run: runs registered, aliases live, batch items completed, scenario plans saved, RAG chunks indexed.](./img/kpi-strip.png)
+![Inspect-Artifacts panel — the grid of deep-link cards into every dashboard page populated by the run.](./img/inspect-artifacts-panel.png)
+![Run history strip — the most recent runs with scenario, status, wall-clock, and a one-click Replay button.](./img/run-history-strip.png)
 
 ## Performance budgets
 

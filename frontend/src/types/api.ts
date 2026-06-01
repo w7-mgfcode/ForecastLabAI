@@ -624,6 +624,15 @@ export interface ChatMessage {
   timestamp: string
 }
 
+/** Response from POST /agents/sessions/{id}/approve (mirrors backend ApprovalResponse). */
+export interface ApprovalResponse {
+  action_id: string
+  approved: boolean
+  /** Execution result on success, or `{ error, error_type }` when execution failed. */
+  result?: unknown
+  status: 'executed' | 'rejected' | 'expired'
+}
+
 export interface ToolCall {
   tool_name: string
   arguments: Record<string, unknown>
@@ -1178,4 +1187,268 @@ export interface ForecastExplanation {
   agent_summary: string
   as_of_date: string // ISO date
   generated_at: string // ISO datetime
+}
+
+// =============================================================================
+// Model Selection (Champion Selector) — backend slice app/features/model_selection
+// =============================================================================
+//
+// The FULL workflow contract is declared here so Slices B/C add BEHAVIOR, not
+// type definitions. Slice A CONSUMES only `ModelCatalogResponse`,
+// `PairAvailability`, and `SplitConfig` (read-only). Everything tagged
+// DECLARED-FOR-LATER is wired by Slice B (async run + results) and Slice C
+// (train / predict / business summary / override / promotion).
+
+export type ModelSelectionStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'partial'
+  | 'failed'
+  | 'cancelled' // Slice B — async cancel terminal state
+export type CandidateStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+export type RankingMetric = 'wape' | 'smape' | 'mae' | 'bias'
+export type AvailabilityStatus = 'ready' | 'limited' | 'unusable'
+// `ConfidenceLevel` ('high' | 'medium' | 'low') is reused from the
+// Explainability section above — the backend uses the same enum.
+
+// Backtest split config — mirrors `app/features/backtesting/schemas.py`
+// `SplitConfig` EXACTLY (bounds enforced client-side so the assembled run
+// request is always valid for Slice B).
+export type SplitStrategy = 'expanding' | 'sliding'
+export interface SplitConfig {
+  strategy: SplitStrategy // def 'expanding'
+  n_splits: number // 2..20, def 5
+  min_train_size: number // >= 7, def 30
+  gap: number // 0..30, def 0
+  horizon: number // 1..90, def 14; must be > gap; kept === forecast_horizon
+}
+
+// --- CONSUMED in Slice A ---------------------------------------------------
+
+export interface CandidateModelInfo {
+  model_type: string
+  label: string
+  family: ModelFamily
+  feature_aware: boolean
+  /** lightgbm/xgboost — opt-in extra may be absent at runtime. */
+  requires_extra: boolean
+  default_params: Record<string, unknown>
+  /** false for feature-aware models (the predict path rejects them). */
+  supports_auto_predict: boolean
+  description: string
+}
+
+export interface ModelCatalogResponse {
+  models: CandidateModelInfo[]
+  default_candidate_model_types: string[]
+}
+
+export interface PairAvailability {
+  store_id: number
+  product_id: number
+  first_sales_date: string | null
+  last_sales_date: string | null
+  observed_days: number
+  expected_calendar_days: number
+  coverage_ratio: number
+  missing_days: number
+  zero_sale_days: number
+  promotion_days: number | null
+  average_daily_demand: number
+  status: AvailabilityStatus
+  recommended_split_config: SplitConfig
+  warnings: string[]
+}
+
+// --- DECLARED-FOR-LATER (Slices B/C wire behavior on these) ----------------
+
+export interface SelectionWindow {
+  start_date: string // ISO date (inclusive)
+  end_date: string // ISO date (inclusive)
+}
+
+export interface CandidateModelConfig {
+  model_type: string
+  params: Record<string, unknown>
+}
+
+export interface RankingPolicy {
+  minimum_sample_size: number
+  high_confidence_rel_improvement: number
+  max_acceptable_abs_bias: number
+}
+
+export interface ModelSelectionRunRequest {
+  store_id: number
+  product_id: number
+  selection_window: SelectionWindow
+  forecast_horizon: number
+  ranking_metric: RankingMetric
+  split_config: SplitConfig
+  candidate_models: CandidateModelConfig[]
+  feature_frame_version: number // 1 | 2 (Slice A always 1)
+  feature_groups: string[] | null // only valid when feature_frame_version === 2
+  ranking_policy?: RankingPolicy
+  // Slice A sets BOTH false. The async run path (Slice B `POST /runs`) treats
+  // them as NO-OPS, and Slice C owns explicit train/predict — so these two
+  // fields stay false throughout the UI flow and are never surfaced as toggles.
+  auto_train_winner: boolean
+  auto_predict: boolean
+}
+
+export interface ModelRankEntry {
+  rank: number | null
+  model_type: string
+  params: Record<string, unknown>
+  included: boolean
+  exclusion_reason: string | null
+  metrics: Record<string, number> | null
+}
+
+export interface WinnerSummary {
+  model_type: string
+  params: Record<string, unknown>
+  metrics: Record<string, number>
+  rank: number
+}
+
+export interface ModelSelectionChartData {
+  wape_by_model: Record<string, number>
+  bias_by_model: Record<string, number>
+  fold_stability: Record<string, number[]>
+  winner_actual_vs_predicted: unknown[]
+}
+
+export interface ModelSelectionForecastSummary {
+  points: Record<string, unknown>[]
+  total_demand: number
+  average_demand: number
+  horizon: number
+  // Slice C — additive peak/low day (null on legacy snapshots).
+  peak_date?: string | null
+  peak_demand?: number | null
+  low_date?: string | null
+  low_demand?: number | null
+}
+
+// Slice B — live async progress on a selection run.
+export interface CandidateProgress {
+  candidate_id: string
+  ordinal: number
+  model_type: string
+  status: CandidateStatus
+  error: string | null
+  started_at: string | null
+  completed_at: string | null
+  duration_ms: number | null
+}
+
+export interface SelectionProgress {
+  total: number
+  pending: number
+  running: number
+  completed: number
+  failed: number
+  cancelled: number
+}
+
+export interface ModelSelectionRunResponse {
+  selection_id: string
+  store_id: number
+  product_id: number
+  status: ModelSelectionStatus
+  selection_window: SelectionWindow
+  forecast_horizon: number
+  ranking_metric: string
+  availability: PairAvailability | null
+  ranking: ModelRankEntry[]
+  winner: WinnerSummary | null
+  recommendation_confidence: ConfidenceLevel | null
+  confidence_reasons: string[]
+  chart_data: ModelSelectionChartData | null
+  final_model: Record<string, unknown> | null
+  forecast: ModelSelectionForecastSummary | null
+  business_summary: Record<string, unknown> | null
+  error_message: string | null
+  created_at: string // ISO datetime
+  // Slice B — additive async fields (null/empty on a legacy sync `/run` row).
+  started_at?: string | null
+  completed_at: string | null
+  progress?: SelectionProgress | null
+  candidate_progress?: CandidateProgress[]
+}
+
+// Slice B — 202 response from `POST /model-selection/runs` (additive superset).
+export interface SubmitRunResponse extends ModelSelectionRunResponse {
+  monitor_url: string
+  cancel_url: string
+}
+
+// Slice C — forecast decision, override, and promotion contracts.
+
+/** `POST /model-selection/{id}/train-selected` body (override). */
+export interface TrainSelectedRequest {
+  model_type: string
+  override_reason?: string | null
+}
+
+/** Optional `POST /model-selection/{id}/predict` body. */
+export interface ForecastDecisionParams {
+  lead_time_days: number
+  service_level: number
+}
+
+/** Deterministic, labeled inventory-decision heuristic (never feeds ranking). */
+export interface ForecastDecision {
+  method: 'heuristic'
+  lead_time_days: number
+  service_level: number
+  z_value: number
+  sigma_daily_demand: number
+  expected_demand_over_lead_time: number
+  safety_stock: number
+  reorder_point: number
+  bias_risk_text: string
+  caveats: string[]
+}
+
+/** `POST /model-selection/{id}/train-winner` and `/train-selected` response. */
+export interface TrainWinnerResponse {
+  selection_id: string
+  model_type: string
+  model_path: string
+  is_override: boolean
+  override_warning: string | null
+}
+
+/** `POST /model-selection/{id}/predict` response (forecast + decision). */
+export interface PredictWinnerResponse {
+  selection_id: string
+  forecast: ModelSelectionForecastSummary
+  decision: ForecastDecision | null
+}
+
+/** `POST /model-selection/{id}/promote` body (approval-gated). */
+export interface PromoteRequest {
+  alias_name: string
+  approved_by: string
+  acknowledge_non_recommended?: boolean
+  description?: string | null
+}
+
+/** `POST /model-selection/{id}/promote` response. */
+export interface PromoteResponse {
+  selection_id: string
+  alias_name: string
+  run_id: string
+  run_status: string
+  model_type: string
+  is_override: boolean
+  promoted_at: string // ISO datetime
 }
