@@ -134,6 +134,17 @@ class Settings(BaseSettings):
     # are uncancellable mid-call, so a long fit can stall the drain.
     batch_cancel_drain_timeout_seconds: int = 30
 
+    # Model selection (champion selector) async runner (Slice B) — mirrors the
+    # batch runner. Hard upper bound on concurrent candidate backtests across
+    # all active selection runs on this host; sized for the same Postgres pool
+    # (pool_size=5, max_overflow=10). Setting this to 1 makes the runner
+    # sequential. Env override: MODEL_SELECTION_GLOBAL_MAX_PARALLEL=8 (restart).
+    model_selection_global_max_parallel: int = 4
+    # Max seconds DELETE /model-selection/{id} waits for in-flight candidates to
+    # settle before returning RFC 7807 504. In-flight sklearn/LightGBM fits are
+    # uncancellable mid-call, so a long fit can stall the drain.
+    model_selection_cancel_drain_timeout_seconds: int = 30
+
     # RAG Embedding Configuration
     rag_embedding_provider: Literal["openai", "ollama"] = "openai"
     openai_api_key: str = ""

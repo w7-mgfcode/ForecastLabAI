@@ -23,6 +23,15 @@ def test_settings_has_defaults(monkeypatch):
     assert settings.api_port == 8123
 
 
+def test_model_selection_runner_defaults(monkeypatch):
+    """Slice B async-runner settings default to the batch-mirrored values."""
+    monkeypatch.delenv("MODEL_SELECTION_GLOBAL_MAX_PARALLEL", raising=False)
+    monkeypatch.delenv("MODEL_SELECTION_CANCEL_DRAIN_TIMEOUT_SECONDS", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.model_selection_global_max_parallel == 4
+    assert settings.model_selection_cancel_drain_timeout_seconds == 30
+
+
 def test_settings_is_development_property():
     """is_development should return True for development env."""
     settings = Settings(app_env="development")

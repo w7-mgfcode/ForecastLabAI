@@ -69,6 +69,10 @@ vi.mock('@/hooks/use-model-selection', () => ({
     isLoading: false,
     isError: false,
   }),
+  // Slice B — inert async hooks (no run in progress for the shell test).
+  useSubmitSelectionRun: () => ({ mutate: vi.fn(), isPending: false }),
+  useCancelSelectionRun: () => ({ mutate: vi.fn(), isPending: false }),
+  useSelectionRun: () => ({ data: undefined, isLoading: false, isError: false }),
 }))
 
 import ChampionSelectorPage from './champion'

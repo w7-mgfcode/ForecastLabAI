@@ -16,7 +16,7 @@ Error mapping mirrors ``app/features/backtesting/routes.py``: ``ValueError`` →
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +30,7 @@ from app.features.model_selection.schemas import (
     PairAvailabilityResponse,
     PredictWinnerResponse,
     RankingResult,
+    SubmitRunResponse,
     TrainWinnerResponse,
 )
 from app.features.model_selection.service import ModelSelectionService
@@ -80,6 +81,43 @@ async def get_model_catalog() -> ModelCatalogResponse:
 
 
 @router.post(
+    "/runs",
+    response_model=SubmitRunResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Submit an async candidate comparison (fire-and-forget LRO)",
+)
+async def submit_run(
+    request: ModelSelectionRunRequest,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+) -> SubmitRunResponse:
+    """Submit an async selection run — returns 202 with monitor/cancel pointers.
+
+    The candidate backtests run in a detached task; poll
+    ``GET /model-selection/{selection_id}`` for live progress, terminal ranking,
+    and the winner.
+    """
+    logger.info(
+        "model_selection.runs_request_received",
+        store_id=request.store_id,
+        product_id=request.product_id,
+        n_candidates=len(request.candidate_models),
+    )
+    service = ModelSelectionService()
+    try:
+        result = await service.submit_run(db, request)
+        response.headers["Location"] = result.monitor_url
+        response.headers["Retry-After"] = "2"
+        return result
+    except ValueError as exc:
+        raise BadRequestError(message=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise DatabaseError(
+            message="Failed to submit selection run", details={"error": str(exc)}
+        ) from exc
+
+
+@router.post(
     "/run",
     response_model=ModelSelectionRunResponse,
     status_code=status.HTTP_200_OK,
@@ -125,6 +163,41 @@ async def get_selection(
     except SQLAlchemyError as exc:
         raise DatabaseError(
             message="Failed to fetch selection run", details={"error": str(exc)}
+        ) from exc
+
+
+@router.delete(
+    "/{selection_id}",
+    response_model=ModelSelectionRunResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Cancel an in-flight selection run (cooperative drain)",
+    description=(
+        "Cooperatively cancel an async selection run (Slice B). Pending "
+        "candidates skip; running candidates observe ``asyncio.CancelledError`` "
+        "at the next safe yield — sklearn / LightGBM fits are uncancellable "
+        "mid-call, so an in-flight fit may finish first. Returns:\n\n"
+        "- ``200`` settled run on a clean drain\n"
+        "- ``404`` RFC 7807 if the run does not exist\n"
+        "- ``409`` RFC 7807 if the run is already terminal\n"
+        "- ``504`` RFC 7807 if the drain exceeds "
+        "``Settings.model_selection_cancel_drain_timeout_seconds``"
+    ),
+)
+async def cancel_run(
+    selection_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> ModelSelectionRunResponse:
+    """Cancel an in-flight selection run and return its settled record.
+
+    ``NotFoundError`` (404) / ``ConflictError`` (409) / ``GatewayTimeoutError``
+    (504) raised in-service bubble to the global RFC 7807 handler.
+    """
+    service = ModelSelectionService()
+    try:
+        return await service.cancel_run(db, selection_id)
+    except SQLAlchemyError as exc:
+        raise DatabaseError(
+            message="Failed to cancel selection run", details={"error": str(exc)}
         ) from exc
 
 

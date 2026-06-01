@@ -5,12 +5,23 @@
  * availability `enabled` gating. No real backend is exercised.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createElement, type ReactNode } from 'react'
 
-import { useModelCatalog, usePairAvailability } from './use-model-selection'
-import type { ModelCatalogResponse, PairAvailability } from '@/types/api'
+import {
+  useCancelSelectionRun,
+  useModelCatalog,
+  usePairAvailability,
+  useSelectionRun,
+  useSubmitSelectionRun,
+} from './use-model-selection'
+import type {
+  ModelCatalogResponse,
+  ModelSelectionRunRequest,
+  PairAvailability,
+  SubmitRunResponse,
+} from '@/types/api'
 
 function makeWrapper(client: QueryClient) {
   return function Wrapper({ children }: { children: ReactNode }) {
@@ -122,5 +133,141 @@ describe('usePairAvailability', () => {
     // Give TanStack a tick; the disabled query must never call fetch.
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+// --------------------------------------------------------------------- Slice B
+
+const SUBMIT_RESPONSE: SubmitRunResponse = {
+  selection_id: 'sel_b',
+  store_id: 7,
+  product_id: 12,
+  status: 'running',
+  selection_window: { start_date: '2026-01-01', end_date: '2026-05-31' },
+  forecast_horizon: 14,
+  ranking_metric: 'wape',
+  availability: null,
+  ranking: [],
+  winner: null,
+  recommendation_confidence: null,
+  confidence_reasons: [],
+  chart_data: null,
+  final_model: null,
+  forecast: null,
+  business_summary: null,
+  error_message: null,
+  created_at: '2026-06-01T12:00:00Z',
+  started_at: '2026-06-01T12:00:00Z',
+  completed_at: null,
+  progress: { total: 1, pending: 1, running: 0, completed: 0, failed: 0, cancelled: 0 },
+  candidate_progress: [
+    {
+      candidate_id: 'c0',
+      ordinal: 0,
+      model_type: 'naive',
+      status: 'pending',
+      error: null,
+      started_at: null,
+      completed_at: null,
+      duration_ms: null,
+    },
+  ],
+  monitor_url: '/model-selection/sel_b',
+  cancel_url: '/model-selection/sel_b',
+}
+
+const RUN_REQUEST: ModelSelectionRunRequest = {
+  store_id: 7,
+  product_id: 12,
+  selection_window: { start_date: '2026-01-01', end_date: '2026-05-31' },
+  forecast_horizon: 14,
+  ranking_metric: 'wape',
+  split_config: {
+    strategy: 'expanding',
+    n_splits: 5,
+    min_train_size: 30,
+    gap: 0,
+    horizon: 14,
+  },
+  candidate_models: [{ model_type: 'naive', params: {} }],
+  feature_frame_version: 1,
+  feature_groups: null,
+  auto_train_winner: false,
+  auto_predict: false,
+}
+
+describe('useSubmitSelectionRun', () => {
+  it('POSTs to /model-selection/runs and seeds the poll cache', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(SUBMIT_RESPONSE), {
+        status: 202,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const client = makeClient()
+    const { result } = renderHook(() => useSubmitSelectionRun(), {
+      wrapper: makeWrapper(client),
+    })
+    await act(async () => {
+      result.current.mutate(RUN_REQUEST)
+    })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    const call = fetchMock.mock.calls[0]!
+    expect(String(call[0])).toContain('/model-selection/runs')
+    expect((call[1] as RequestInit).method).toBe('POST')
+    // The poll cache is seeded so useSelectionRun starts warm.
+    expect(
+      client.getQueryData(['model-selection', 'run', 'sel_b']),
+    ).toEqual(SUBMIT_RESPONSE)
+  })
+})
+
+describe('useSelectionRun', () => {
+  it('GETs /model-selection/{id} when given a selection id', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ...SUBMIT_RESPONSE, status: 'completed' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useSelectionRun('sel_b'), {
+      wrapper: makeWrapper(makeClient()),
+    })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(String(fetchMock.mock.calls[0]![0])).toContain('/model-selection/sel_b')
+    expect(result.current.data?.status).toBe('completed')
+  })
+
+  it('does NOT fetch without a selection id (enabled gating)', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    renderHook(() => useSelectionRun(null), { wrapper: makeWrapper(makeClient()) })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('useCancelSelectionRun', () => {
+  it('DELETEs /model-selection/{id}', async () => {
+    const cancelled = { ...SUBMIT_RESPONSE, status: 'cancelled' as const }
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(cancelled), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useCancelSelectionRun(), {
+      wrapper: makeWrapper(makeClient()),
+    })
+    await act(async () => {
+      result.current.mutate('sel_b')
+    })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    const call = fetchMock.mock.calls[0]!
+    expect(String(call[0])).toContain('/model-selection/sel_b')
+    expect((call[1] as RequestInit).method).toBe('DELETE')
   })
 })

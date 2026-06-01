@@ -36,6 +36,10 @@ from app.main import app
 
 # Integration test window.
 TEST_START = date(2024, 1, 1)
+# Largest ``n_days`` any seeding fixture below uses (``ready_pair`` = 120). The
+# teardown deletes Calendar over ``[TEST_START, TEST_START + _MAX_SEED_DAYS)``;
+# keep this >= the biggest ``_seed_pair`` call so no seeded calendar row leaks.
+_MAX_SEED_DAYS = 120
 
 
 # =============================================================================
@@ -208,6 +212,19 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
             )
             await session.execute(delete(Product).where(Product.sku.like("TMSEL-%")))
             await session.execute(delete(Store).where(Store.code.like("TMSEL-%")))
+            # Clean up the Calendar rows the fixtures seeded — leaving them
+            # orphaned poisons the shared integration DB: the seeder's
+            # calendar-seed step skips when the calendar is already non-empty,
+            # so downstream phase-2 enrichment (replenishment_event → calendar
+            # FK) fails on dates this partial calendar never covered. The
+            # seeded sales rows above are already gone, so this delete is
+            # FK-safe (scoped to exactly the dates _seed_pair creates).
+            await session.execute(
+                delete(Calendar).where(
+                    Calendar.date >= TEST_START,
+                    Calendar.date <= TEST_START + timedelta(days=_MAX_SEED_DAYS - 1),
+                )
+            )
             await session.commit()
 
     await engine.dispose()
