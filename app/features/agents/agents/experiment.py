@@ -16,6 +16,7 @@ import structlog
 from pydantic_ai import Agent, PromptedOutput, RunContext
 
 from app.features.agents.agents.base import (
+    READ_ONLY_INTENT_GUARD,
     SAFETY_INSTRUCTIONS,
     SYSTEM_PROMPT_HEADER,
     TOOL_USAGE_INSTRUCTIONS,
@@ -67,6 +68,8 @@ CONVERSATIONAL BEHAVIOR:
   objective, reply conversationally in the `summary` field and ask what they
   would like to experiment on. Do NOT call any tools until you have a specific
   objective (a store and product plus a date range, or an explicit request).
+
+{READ_ONLY_INTENT_GUARD}
 
 {TOOL_USAGE_INSTRUCTIONS}
 
