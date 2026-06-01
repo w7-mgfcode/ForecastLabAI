@@ -14,7 +14,7 @@ from typing import Any, cast
 
 import httpx
 import structlog
-from pydantic_ai import ModelRetry
+from pydantic_ai import Agent, ModelRetry
 from pydantic_ai.models import Model
 from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -246,6 +246,40 @@ def build_agent_model_with_fallback() -> Model | str:
     fallback = build_agent_model(fallback_id)
     logger.info("agents.fallback_enabled", primary=primary_id, fallback=fallback_id)
     return FallbackModel(primary, fallback)
+
+
+FINALIZER_SYSTEM_PROMPT = """You are a concise analyst for ForecastLabAI.
+Answer the user's question using ONLY the provided tool data. Be specific and brief
+(2-4 sentences, plain text — no JSON, no preamble).
+- If the user asked for a ranking (lowest/highest WAPE, MAE, RMSE, …), name the
+  specific run/item and its value, and ignore entries whose metric is missing.
+- If the data is empty, say so plainly.
+- Never invent values, run ids, or entities that are not present in the data.
+"""
+
+
+def build_finalizer_agent() -> Agent[None, str]:
+    """Build a tool-less, plain-text agent that salvages an answer from tool data.
+
+    Weak local models (e.g. ``ollama:llama3.1:8b``) reliably call tools and obtain
+    the data, but cannot wrap the result in the primary agent's structured
+    ``PromptedOutput`` schema — they echo the raw tool output and exhaust the
+    output-retry budget (issue #351). This finalizer takes the data already
+    obtained and answers in plain text, which weak models *can* do. It has NO
+    tools (cannot loop) and ``output_type=str`` (cannot fail schema validation),
+    so it degrades gracefully. Cloud models never need it — it only runs on the
+    primary agent's misbehavior path.
+
+    Returns:
+        A configured plain-text :class:`Agent`, primary+fallback model wrapped.
+    """
+    model = build_agent_model_with_fallback()
+    return Agent(
+        model=model,
+        output_type=str,
+        system_prompt=FINALIZER_SYSTEM_PROMPT,
+        **get_model_settings(),
+    )
 
 
 def get_agent_retries() -> int:
