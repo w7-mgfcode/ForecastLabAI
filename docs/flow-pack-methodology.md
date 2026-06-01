@@ -87,7 +87,7 @@ Agent B (Best Practices), Agent C (Dependencies) — then synthesize into the sc
 
 1. Creates the umbrella GitHub issue with the **7-field body contract** (see § Umbrella contract).
 2. Attaches labels `umbrella` + `flow` and the project milestone.
-3. Dry-run echos the issue body; waits for approval before writing.
+3. Dry-run echoes the issue body; waits for approval before writing.
 4. Prints gate + next-command pointer: `→ Next: /flow-epics`.
 
 ### /flow-epics — epic issues
@@ -118,7 +118,7 @@ Agent B (Best Practices), Agent C (Dependencies) — then synthesize into the sc
 
 ## Invariants
 
-Every flow: command and every agent enforces these; violations must be flagged, not silently
+Every flow: command and every agent enforce these; violations must be flagged, not silently
 bypassed:
 
 1. **Read-only until approval.** No GitHub write (issue create, label, sub-issue link) before an

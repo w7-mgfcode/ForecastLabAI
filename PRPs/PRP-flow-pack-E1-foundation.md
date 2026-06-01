@@ -220,7 +220,7 @@ diff -q docs/flow-pack/commands/flow-prime.md .claude/commands/flow/flow-prime.m
 # In a Claude Code session, run the command and confirm it produces the two artifacts:
 #   - a current-workflow-map (existing commands/skills/rules/workflows)
 #   - a you-are-here snapshot (branch, version, open issues, gap)
-# and writes/append .flow/state.md. Confirm it ends by printing the next-command pointer.
+# and writes or appends to `.flow/state.md`. Confirm it ends by printing the next-command pointer.
 # (No automated assertion — this is an interactive command; verify the output sections exist.)
 ```
 
