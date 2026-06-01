@@ -1,5 +1,59 @@
 # Changelog
 
+## [0.2.21](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.20...v0.2.21) (2026-06-01)
+
+
+### Features
+
+* **api,db,ui:** forecast champion selector slice B — async comparison & results ([2168b61](https://github.com/w7-mgfcode/ForecastLabAI/commit/2168b61d80802b594caf5f92e139191d6c24819e))
+* **api,db,ui:** forecast champion selector slice C — forecast decision, business summary & promotion ([#362](https://github.com/w7-mgfcode/ForecastLabAI/issues/362)) ([0602a86](https://github.com/w7-mgfcode/ForecastLabAI/commit/0602a866d4f46bc55026505319c0d6ce53c9b897))
+* **api,db:** add forecast champion selector backend ([#353](https://github.com/w7-mgfcode/ForecastLabAI/issues/353)) ([6c3f8d4](https://github.com/w7-mgfcode/ForecastLabAI/commit/6c3f8d4cb80b7c12f2046d5014dc7cf66d923bbe))
+* **api,db:** add forecast champion selector backend ([#353](https://github.com/w7-mgfcode/ForecastLabAI/issues/353)) ([645047e](https://github.com/w7-mgfcode/ForecastLabAI/commit/645047e3cafe9926bef5dba8c0c6d6aa8ba0108f))
+* **api,db:** forecast champion selector slice B — async comparison & results ([#360](https://github.com/w7-mgfcode/ForecastLabAI/issues/360)) ([cf2cb47](https://github.com/w7-mgfcode/ForecastLabAI/commit/cf2cb47809cadbcd76fb6539e58bf39bcc551cdf))
+* **api,db:** forecast champion selector slice C — forecast decision & promotion ([#362](https://github.com/w7-mgfcode/ForecastLabAI/issues/362)) ([20e9689](https://github.com/w7-mgfcode/ForecastLabAI/commit/20e9689a8396deb447cecc2006a2c459fb187380))
+* **ui:** add forecast champion selector foundation ([e7f4db7](https://github.com/w7-mgfcode/ForecastLabAI/commit/e7f4db7b6fac6e715966ded3b8d1c48af360830a))
+* **ui:** add forecast champion selector foundation ([#356](https://github.com/w7-mgfcode/ForecastLabAI/issues/356)) ([f1bb4ed](https://github.com/w7-mgfcode/ForecastLabAI/commit/f1bb4edb6bad824ce766060a5a6bece1fcc19c7a))
+
+
+### Bug Fixes
+
+* **agents,ui:** Ollama chat HITL — null-content, pending-approval salvage, and approval report ([7cced50](https://github.com/w7-mgfcode/ForecastLabAI/commit/7cced502466ba2072e66ec91f673d38a4a5fca76))
+* **agents:** cast finalizer compact result to fix mypy index error ([#355](https://github.com/w7-mgfcode/ForecastLabAI/issues/355)) ([0d1c119](https://github.com/w7-mgfcode/ForecastLabAI/commit/0d1c119f17a472465f7fb30294056f3d8227c7da))
+* **agents:** compact tool data for finalizer to fix metric ranking ([#351](https://github.com/w7-mgfcode/ForecastLabAI/issues/351)) ([ae25be8](https://github.com/w7-mgfcode/ForecastLabAI/commit/ae25be87baf5a7dc499d6a3015f186e3b8c63407))
+* **agents:** constrain experiment read-only queries ([79c33c0](https://github.com/w7-mgfcode/ForecastLabAI/commit/79c33c0732485caa97b49a135608237b90f1a0fa))
+* **agents:** constrain read-only experiment queries ([#347](https://github.com/w7-mgfcode/ForecastLabAI/issues/347)) ([ba6da82](https://github.com/w7-mgfcode/ForecastLabAI/commit/ba6da8294156ac9f02cc220bb801dc6c58a57932))
+* **agents:** non-streaming fallback for Ollama agent chat ([de97ecd](https://github.com/w7-mgfcode/ForecastLabAI/commit/de97ecdedd52bf02a1c1058ed4da94fbac4a8a7a))
+* **agents:** non-streaming fallback for ollama agent chat ([#342](https://github.com/w7-mgfcode/ForecastLabAI/issues/342)) ([535946c](https://github.com/w7-mgfcode/ForecastLabAI/commit/535946c1deb338273256d186bd2419a3c5970224))
+* **agents:** persist pending_action for gated tool calls ([e896fc6](https://github.com/w7-mgfcode/ForecastLabAI/commit/e896fc620d9be9255ed2427f7930c58229ed48d5))
+* **agents:** persist pending_action for gated tool calls ([#336](https://github.com/w7-mgfcode/ForecastLabAI/issues/336)) ([d832b70](https://github.com/w7-mgfcode/ForecastLabAI/commit/d832b70a433aac3ce126f7f1a393bb2f7c58d4cc))
+* **agents:** preserve pending approval when ollama model misbehaves ([#344](https://github.com/w7-mgfcode/ForecastLabAI/issues/344)) ([cc72f89](https://github.com/w7-mgfcode/ForecastLabAI/commit/cc72f89e1fbdf686964635bdb8eddc4810dae9e8))
+* **agents:** salvage experiment answer when weak model fails structured output ([1b4c3f3](https://github.com/w7-mgfcode/ForecastLabAI/commit/1b4c3f30f418a588cc7fac01f91878440a6b2700))
+* **agents:** salvage plain-text answer when structured output fails ([#351](https://github.com/w7-mgfcode/ForecastLabAI/issues/351)) ([57cc894](https://github.com/w7-mgfcode/ForecastLabAI/commit/57cc8948f1572313161c45191f7ccd9e91198111))
+* **agents:** sanitize null content for ollama chat requests ([#344](https://github.com/w7-mgfcode/ForecastLabAI/issues/344)) ([5fff334](https://github.com/w7-mgfcode/ForecastLabAI/commit/5fff33421b1442b026e1cd34fe118f467ca001b8))
+* **agents:** stop experiment read-only tool-call loop ([082391d](https://github.com/w7-mgfcode/ForecastLabAI/commit/082391d97ee88af59d7c21c520d6812d20570ed3))
+* **agents:** stop read-only tool-call loop in experiment guard ([#349](https://github.com/w7-mgfcode/ForecastLabAI/issues/349)) ([bcb80de](https://github.com/w7-mgfcode/ForecastLabAI/commit/bcb80dee4e1c2eb8bc39d92f64bbc08537090a1e))
+* **agents:** validate scenario proposal entity ids ([#347](https://github.com/w7-mgfcode/ForecastLabAI/issues/347)) ([0e05ec2](https://github.com/w7-mgfcode/ForecastLabAI/commit/0e05ec204de795311f4d5aac5ffa698fa7d10243))
+* **api:** add embedding-auth problem type and exception ([#329](https://github.com/w7-mgfcode/ForecastLabAI/issues/329)) ([65edb2f](https://github.com/w7-mgfcode/ForecastLabAI/commit/65edb2fcde6a55130c7daa8d276ae2fdb7898388))
+* **api:** honor feature_frame_version &gt;= 3 in ops + registry ([0c9c3a4](https://github.com/w7-mgfcode/ForecastLabAI/commit/0c9c3a48bfed1e905d8cde9515c848efbd6c8436))
+* **api:** honor feature_frame_version &gt;= 3 in ops + registry ([#338](https://github.com/w7-mgfcode/ForecastLabAI/issues/338)) ([5af7e26](https://github.com/w7-mgfcode/ForecastLabAI/commit/5af7e26f2af9cb0d4e923b07eb288feb2f8567ae))
+* **api:** showcase agent step runs on local Ollama (no API key needed) ([ac1af1b](https://github.com/w7-mgfcode/ForecastLabAI/commit/ac1af1b224a7a7c1bf36d8b3d996cd0704fecb66))
+* **api:** skip showcase knowledge phase on embedding auth failure ([f44db5b](https://github.com/w7-mgfcode/ForecastLabAI/commit/f44db5bc6ad5120a440cc0c0df42c5caf0a54ac3))
+* **api:** skip showcase knowledge phase on embedding auth failure ([#329](https://github.com/w7-mgfcode/ForecastLabAI/issues/329)) ([6fc5501](https://github.com/w7-mgfcode/ForecastLabAI/commit/6fc5501ee4a4d529291bcb528031dd09de8bc467))
+* **api:** treat ollama agent provider as key-present in showcase ([#340](https://github.com/w7-mgfcode/ForecastLabAI/issues/340)) ([985ef8e](https://github.com/w7-mgfcode/ForecastLabAI/commit/985ef8e6e0453e52d0e22d5a3f3517489677477c))
+* **rag:** classify embedding provider auth failures ([#329](https://github.com/w7-mgfcode/ForecastLabAI/issues/329)) ([1f93cf0](https://github.com/w7-mgfcode/ForecastLabAI/commit/1f93cf065165ac1279d0a3c66dbfc7c2dfe438ca))
+* **ui:** avoid setState-in-effect in RunHistoryStrip to unblock lint ([#357](https://github.com/w7-mgfcode/ForecastLabAI/issues/357)) ([4d4c471](https://github.com/w7-mgfcode/ForecastLabAI/commit/4d4c4718d31c947b51bb224ee5aa253149c455e0))
+* **ui:** avoid setState-in-effect in RunHistoryStrip to unblock lint ([#357](https://github.com/w7-mgfcode/ForecastLabAI/issues/357)) ([5a49fe3](https://github.com/w7-mgfcode/ForecastLabAI/commit/5a49fe323be919e7ae255fbc5cad83680e8715d8))
+* **ui:** surface approved-action execution report for all outcomes ([#346](https://github.com/w7-mgfcode/ForecastLabAI/issues/346)) ([c4b532e](https://github.com/w7-mgfcode/ForecastLabAI/commit/c4b532e19bd4dd269d07548685b51a9a73484402))
+
+
+### Documentation
+
+* add forecast champion selector backend PRP and research ([#353](https://github.com/w7-mgfcode/ForecastLabAI/issues/353)) ([b719184](https://github.com/w7-mgfcode/ForecastLabAI/commit/b719184c8e41874b2336c28bfcbdb0bab907b336))
+* add forecast champion selector slice A/B/C PRPs ([#360](https://github.com/w7-mgfcode/ForecastLabAI/issues/360)) ([45b7a70](https://github.com/w7-mgfcode/ForecastLabAI/commit/45b7a7043232c57ce7af37ac9055b6a19377b98a))
+* **docs:** complete showcase dogfood screenshots ([c47aa02](https://github.com/w7-mgfcode/ForecastLabAI/commit/c47aa021e4845d7df3ab6fce70ef8e3cc701941f))
+* **docs:** complete showcase dogfood screenshots ([#331](https://github.com/w7-mgfcode/ForecastLabAI/issues/331)) ([ff6ebbf](https://github.com/w7-mgfcode/ForecastLabAI/commit/ff6ebbfa1836231f3a987a37f5fd086a6d14c383))
+* **docs:** document showcase knowledge auth skip ([#329](https://github.com/w7-mgfcode/ForecastLabAI/issues/329)) ([582e62f](https://github.com/w7-mgfcode/ForecastLabAI/commit/582e62f815564664beba3430b20577b5d6ca44c2))
+
 ## [0.2.20](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.19...v0.2.20) (2026-05-31)
 
 
