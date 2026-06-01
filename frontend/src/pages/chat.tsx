@@ -16,8 +16,15 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { api } from '@/lib/api'
+import { formatApprovalReport } from '@/lib/approval-report'
 import { WS_URL, ROUTES } from '@/lib/constants'
-import type { ChatMessage as ChatMessageType, AgentStreamEvent, AgentType, AgentSession } from '@/types/api'
+import type {
+  ChatMessage as ChatMessageType,
+  AgentStreamEvent,
+  AgentType,
+  AgentSession,
+  ApprovalResponse,
+} from '@/types/api'
 
 export default function ChatPage() {
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -142,37 +149,41 @@ export default function ChatPage() {
     send({ session_id: sessionId, message: content })
   }
 
-  const handleApprove = async () => {
+  const appendAssistantMessage = (content: string) => {
+    setMessages((prev) => [
+      ...prev,
+      { role: 'assistant', content, timestamp: new Date().toISOString() },
+    ])
+  }
+
+  // Approve or reject a pending action, then ALWAYS surface the execution
+  // report — for every outcome (executed / failed / rejected / expired). The
+  // handlers previously discarded the /approve response, so a click left the
+  // user with no feedback ("nothing returned").
+  const decideAction = async (approved: boolean) => {
     if (!sessionId || !pendingAction?.actionId) return
+    const actionLabel = pendingAction.action
     setIsApproving(true)
     try {
-      await api(`/agents/sessions/${sessionId}/approve`, {
+      const res = await api<ApprovalResponse>(`/agents/sessions/${sessionId}/approve`, {
         method: 'POST',
-        body: { action_id: pendingAction.actionId, approved: true },
+        body: { action_id: pendingAction.actionId, approved },
       })
       setPendingAction(null)
+      appendAssistantMessage(formatApprovalReport(actionLabel, res))
     } catch (error) {
-      console.error('Failed to approve:', error)
+      console.error(approved ? 'Failed to approve:' : 'Failed to reject:', error)
+      setPendingAction(null)
+      const verb = approved ? 'approve' : 'reject'
+      const detail = error instanceof Error ? error.message : 'request failed'
+      appendAssistantMessage(`Error: could not ${verb} \`${actionLabel}\` — ${detail}`)
     } finally {
       setIsApproving(false)
     }
   }
 
-  const handleReject = async () => {
-    if (!sessionId || !pendingAction?.actionId) return
-    setIsApproving(true)
-    try {
-      await api(`/agents/sessions/${sessionId}/approve`, {
-        method: 'POST',
-        body: { action_id: pendingAction.actionId, approved: false },
-      })
-      setPendingAction(null)
-    } catch (error) {
-      console.error('Failed to reject:', error)
-    } finally {
-      setIsApproving(false)
-    }
-  }
+  const handleApprove = () => decideAction(true)
+  const handleReject = () => decideAction(false)
 
   const handleNewSession = () => {
     setSessionId(null)

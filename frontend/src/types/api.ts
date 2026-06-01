@@ -624,6 +624,15 @@ export interface ChatMessage {
   timestamp: string
 }
 
+/** Response from POST /agents/sessions/{id}/approve (mirrors backend ApprovalResponse). */
+export interface ApprovalResponse {
+  action_id: string
+  approved: boolean
+  /** Execution result on success, or `{ error, error_type }` when execution failed. */
+  result?: unknown
+  status: 'executed' | 'rejected' | 'expired'
+}
+
 export interface ToolCall {
   tool_name: string
   arguments: Record<string, unknown>
