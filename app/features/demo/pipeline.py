@@ -280,15 +280,21 @@ def _model_config_payload(model_type: str) -> dict[str, Any]:
 
 
 def _llm_key_present() -> bool:
-    """Return True when the configured agent model's provider API key is set.
+    """Return True when the configured agent model's provider can be used.
 
     Matches the provider prefix of ``agent_default_model`` so the agent step
     skips gracefully when its provider is unreachable. Logs key PRESENCE only,
     never the value (port of run_demo.py:317-335; see security-patterns.md).
+
+    The local ``ollama`` provider needs no API key (#340), so it always returns
+    True — the agent step still degrades gracefully if Ollama is unreachable
+    (the chat round-trip fails and the step skips via its error path).
     """
     settings = get_settings()
     model = settings.agent_default_model
     provider = model.split(":", 1)[0] if ":" in model else ""
+    if provider == "ollama":
+        return True
     if provider == "anthropic":
         return bool(settings.anthropic_api_key)
     if provider == "openai":

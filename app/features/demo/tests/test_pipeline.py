@@ -1801,6 +1801,41 @@ def _make_hitl_client(
     return _HitlClient(event_sink=intermediate), intermediate
 
 
+def test_llm_key_present_ollama_needs_no_key(monkeypatch):
+    """#340 — the local ollama provider needs no API key, so the gate is True.
+
+    Without this, a local-Ollama stack (agent_default_model=ollama:*) makes the
+    showcase agent_hitl_flow / agent steps skip with "no API key matching
+    agent_default_model provider" even though Ollama is reachable.
+    """
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: SimpleNamespace(
+            agent_default_model="ollama:qwen3:8b",
+            anthropic_api_key="",
+            openai_api_key="",
+            google_api_key="",
+        ),
+    )
+    assert pipeline._llm_key_present() is True
+
+
+def test_llm_key_present_cloud_still_requires_key(monkeypatch):
+    """Regression guard for #340 — a cloud provider still requires its key."""
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: SimpleNamespace(
+            agent_default_model="openai:gpt-4.1-mini",
+            anthropic_api_key="",
+            openai_api_key="",
+            google_api_key="",
+        ),
+    )
+    assert pipeline._llm_key_present() is False
+
+
 async def test_agent_hitl_flow_happy_path(monkeypatch, tmp_path):
     """PRP-41 — full HITL round-trip: chat -> intermediate -> approve -> pass."""
     monkeypatch.setattr(
