@@ -67,6 +67,29 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest.fixture
+async def existing_grain(db_session: AsyncSession) -> AsyncGenerator[tuple[int, int], None]:
+    """Insert the Store + Product dimension rows for the test grain; clean up after.
+
+    ``propose_scenario`` now rejects a grain whose store/product do not exist
+    (#347). ``TEST_STORE_ID`` / ``TEST_PRODUCT_ID`` are deliberately high IDs no
+    seeder uses, so a read-only proposal for them needs the dimension rows seeded
+    explicitly. Removed on teardown so the grain stays absent for the
+    rejection-path tests.
+    """
+    from app.features.data_platform.models import Product, Store
+
+    db_session.add(Store(id=TEST_STORE_ID, code=f"S{TEST_STORE_ID}", name="Test Store"))
+    db_session.add(Product(id=TEST_PRODUCT_ID, sku=f"SKU{TEST_PRODUCT_ID}", name="Test Product"))
+    await db_session.commit()
+    try:
+        yield (TEST_STORE_ID, TEST_PRODUCT_ID)
+    finally:
+        await db_session.execute(delete(Product).where(Product.id == TEST_PRODUCT_ID))
+        await db_session.execute(delete(Store).where(Store.id == TEST_STORE_ID))
+        await db_session.commit()
+
+
+@pytest.fixture
 async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     """Create a test client with the database dependency overridden."""
 
