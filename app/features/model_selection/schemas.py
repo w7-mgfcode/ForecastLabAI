@@ -46,7 +46,10 @@ ModelType = Literal[
 ]
 
 RankingMetric = Literal["wape", "smape", "mae", "bias"]
-SelectionStatusLiteral = Literal["pending", "running", "completed", "partial", "failed"]
+SelectionStatusLiteral = Literal[
+    "pending", "running", "completed", "partial", "failed", "cancelled"
+]
+CandidateStatusLiteral = Literal["pending", "running", "completed", "failed", "cancelled"]
 ConfidenceLevel = Literal["high", "medium", "low"]
 AvailabilityStatus = Literal["ready", "limited", "unusable"]
 
@@ -264,8 +267,40 @@ class ForecastSummary(BaseModel):
     horizon: int
 
 
+class CandidateProgress(BaseModel):
+    """One candidate's live execution state (Slice B async run).
+
+    Output-only. Empty list on a legacy synchronous ``/run`` row (no children).
+    """
+
+    candidate_id: str
+    ordinal: int
+    model_type: str
+    status: CandidateStatusLiteral
+    error: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    duration_ms: int | None = None
+
+
+class SelectionProgress(BaseModel):
+    """Per-status candidate counts for an async selection run (Slice B)."""
+
+    total: int
+    pending: int
+    running: int
+    completed: int
+    failed: int
+    cancelled: int
+
+
 class ModelSelectionRunResponse(BaseModel):
-    """``POST /model-selection/run`` and ``GET /model-selection/{id}`` contract."""
+    """``POST /model-selection/run`` and ``GET /model-selection/{id}`` contract.
+
+    Slice B adds ``started_at`` / ``progress`` / ``candidate_progress`` as
+    ADDITIVE fields with safe defaults — a legacy synchronous ``/run`` row has
+    ``progress=None`` and ``candidate_progress=[]``.
+    """
 
     selection_id: str
     store_id: int
@@ -285,7 +320,21 @@ class ModelSelectionRunResponse(BaseModel):
     business_summary: dict[str, Any] | None
     error_message: str | None
     created_at: datetime
+    started_at: datetime | None = None
     completed_at: datetime | None
+    progress: SelectionProgress | None = None
+    candidate_progress: list[CandidateProgress] = Field(default_factory=list)
+
+
+class SubmitRunResponse(ModelSelectionRunResponse):
+    """``POST /model-selection/runs`` 202 response — an additive superset.
+
+    Carries the LRO status-monitor pointers (the frontend drives the UI from
+    these body fields, not the ``Location``/``Retry-After`` headers).
+    """
+
+    monitor_url: str
+    cancel_url: str
 
 
 class CandidateModelInfo(BaseModel):

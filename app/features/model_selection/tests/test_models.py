@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from datetime import date
 
-from app.features.model_selection.models import ModelSelectionRun, ModelSelectionStatus
+from app.features.model_selection.models import (
+    TERMINAL_SELECTION_STATES,
+    CandidateStatus,
+    ModelSelectionCandidate,
+    ModelSelectionRun,
+    ModelSelectionStatus,
+)
 
 
 def test_status_enum_values() -> None:
@@ -19,7 +25,24 @@ def test_status_enum_values() -> None:
         "completed",
         "partial",
         "failed",
+        "cancelled",
     }
+
+
+def test_candidate_status_enum_values() -> None:
+    assert {s.value for s in CandidateStatus} == {
+        "pending",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+    }
+
+
+def test_terminal_selection_states() -> None:
+    assert TERMINAL_SELECTION_STATES == {"completed", "partial", "failed", "cancelled"}
+    assert "running" not in TERMINAL_SELECTION_STATES
+    assert "pending" not in TERMINAL_SELECTION_STATES
 
 
 def test_model_selection_run_construction_defaults() -> None:
@@ -39,3 +62,19 @@ def test_model_selection_run_construction_defaults() -> None:
     assert row.status == "running"
     assert row.winner_model_type is None
     assert row.final_model_path is None
+
+
+def test_model_selection_candidate_construction() -> None:
+    cand = ModelSelectionCandidate(
+        candidate_id="cand1",
+        selection_id="abc123",
+        ordinal=0,
+        model_type="naive",
+        params={},
+        status=CandidateStatus.PENDING.value,
+    )
+    assert cand.candidate_id == "cand1"
+    assert cand.selection_id == "abc123"
+    assert cand.status == "pending"
+    assert cand.result is None
+    assert cand.error_message is None

@@ -1205,6 +1205,13 @@ export type ModelSelectionStatus =
   | 'completed'
   | 'partial'
   | 'failed'
+  | 'cancelled' // Slice B — async cancel terminal state
+export type CandidateStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
 export type RankingMetric = 'wape' | 'smape' | 'mae' | 'bias'
 export type AvailabilityStatus = 'ready' | 'limited' | 'unusable'
 // `ConfidenceLevel` ('high' | 'medium' | 'low') is reused from the
@@ -1325,6 +1332,27 @@ export interface ModelSelectionForecastSummary {
   horizon: number
 }
 
+// Slice B — live async progress on a selection run.
+export interface CandidateProgress {
+  candidate_id: string
+  ordinal: number
+  model_type: string
+  status: CandidateStatus
+  error: string | null
+  started_at: string | null
+  completed_at: string | null
+  duration_ms: number | null
+}
+
+export interface SelectionProgress {
+  total: number
+  pending: number
+  running: number
+  completed: number
+  failed: number
+  cancelled: number
+}
+
 export interface ModelSelectionRunResponse {
   selection_id: string
   store_id: number
@@ -1344,5 +1372,15 @@ export interface ModelSelectionRunResponse {
   business_summary: Record<string, unknown> | null
   error_message: string | null
   created_at: string // ISO datetime
+  // Slice B — additive async fields (null/empty on a legacy sync `/run` row).
+  started_at?: string | null
   completed_at: string | null
+  progress?: SelectionProgress | null
+  candidate_progress?: CandidateProgress[]
+}
+
+// Slice B — 202 response from `POST /model-selection/runs` (additive superset).
+export interface SubmitRunResponse extends ModelSelectionRunResponse {
+  monitor_url: string
+  cancel_url: string
 }

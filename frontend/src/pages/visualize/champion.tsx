@@ -1,10 +1,16 @@
 import { useMemo, useState } from 'react'
 import { format } from 'date-fns'
 import { DateRange } from 'react-day-picker'
-import { Trophy } from 'lucide-react'
+import { Loader2, Trophy } from 'lucide-react'
 import { useStores } from '@/hooks/use-stores'
 import { useProducts } from '@/hooks/use-products'
-import { useModelCatalog, usePairAvailability } from '@/hooks/use-model-selection'
+import {
+  useCancelSelectionRun,
+  useModelCatalog,
+  usePairAvailability,
+  useSelectionRun,
+  useSubmitSelectionRun,
+} from '@/hooks/use-model-selection'
 import { DateRangePicker } from '@/components/common/date-range-picker'
 import { ErrorDisplay } from '@/components/common/error-display'
 import { AvailabilityPanel } from '@/components/champion-selector/availability-panel'
@@ -12,12 +18,20 @@ import { BacktestSettingsForm } from '@/components/champion-selector/backtest-se
 import { splitConfigErrors } from '@/components/champion-selector/split-config'
 import { CandidateModelPicker } from '@/components/champion-selector/candidate-model-picker'
 import { SearchableEntitySelect } from '@/components/champion-selector/searchable-entity-select'
-import { RUN_COMPARISON_PENDING } from '@/components/champion-selector/copy'
 import { assembleRunRequest } from '@/components/champion-selector/run-request'
+import { RunProgressPanel } from '@/components/champion-selector/results/run-progress-panel'
+import { RankingTable } from '@/components/champion-selector/results/ranking-table'
+import { WinnerCard } from '@/components/champion-selector/results/winner-card'
+import { ComparisonCharts } from '@/components/champion-selector/results/comparison-charts'
+import { ModelDetailDrawer } from '@/components/champion-selector/results/model-detail-drawer'
+import { CancelRunDialog } from '@/components/champion-selector/results/cancel-run-dialog'
+import { isTerminalSelectionStatus } from '@/components/champion-selector/results/constants'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { getErrorMessage } from '@/lib/api'
 import type {
+  ModelRankEntry,
   ModelSelectionRunRequest,
   SplitConfig,
 } from '@/types/api'
@@ -53,6 +67,12 @@ export default function ChampionSelectorPage() {
   // `null` means "the user hasn't edited the selection yet" — fall back to the
   // catalog's default candidate set (derived below, no effect needed).
   const [editedModels, setEditedModels] = useState<string[] | null>(null)
+
+  // Slice B — the in-flight/terminal async run + the detail-drawer selection.
+  const [selectionId, setSelectionId] = useState<string | null>(null)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [drawerEntry, setDrawerEntry] = useState<ModelRankEntry | null>(null)
+  const [drawerOpen, setDrawerOpen] = useState(false)
 
   // /dimensions/{stores,products} both cap page_size at 100 (client-filtered).
   const storesQuery = useStores({ page: 1, pageSize: 100 })
@@ -107,9 +127,8 @@ export default function ChampionSelectorPage() {
     selectedModels.length >= 1 &&
     splitConfigErrors(effectiveSplit).length === 0
 
-  // The assembled request — typed but NOT sent in Slice A (the CTA is disabled).
-  // `auto_train_winner`/`auto_predict` are pinned false by `assembleRunRequest`.
-  // Built defensively so it is valid the moment Slice B wires the mutation.
+  // The assembled request — `auto_train_winner`/`auto_predict` pinned false by
+  // `assembleRunRequest` (no-ops in the async path; Slice C owns train/predict).
   const runRequest: ModelSelectionRunRequest | null =
     formReady && dateRange?.from && dateRange?.to
       ? assembleRunRequest({
@@ -123,6 +142,28 @@ export default function ChampionSelectorPage() {
           selectedModels,
         })
       : null
+
+  // Slice B — async submit → poll → cancel.
+  const submitRun = useSubmitSelectionRun()
+  const cancelRun = useCancelSelectionRun()
+  const runQuery = useSelectionRun(selectionId)
+  const run = runQuery.data
+  const isRunning = !!run && !isTerminalSelectionStatus(run.status)
+  const isTerminal = !!run && isTerminalSelectionStatus(run.status)
+
+  function handleRunComparison() {
+    if (!runRequest) return
+    setSubmitError(null)
+    submitRun.mutate(runRequest, {
+      onSuccess: (data) => setSelectionId(data.selection_id),
+      onError: (err) => setSubmitError(getErrorMessage(err)),
+    })
+  }
+
+  function handleSelectModel(entry: ModelRankEntry) {
+    setDrawerEntry(entry)
+    setDrawerOpen(true)
+  }
 
   return (
     <div className="space-y-6">
@@ -260,34 +301,75 @@ export default function ChampionSelectorPage() {
         </CardContent>
       </Card>
 
-      {/* Run CTA (disabled until Slice B) */}
+      {/* Run CTA (Slice B — submit the async comparison) */}
       <Card>
         <CardContent className="flex flex-col gap-3 pt-6 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-sm text-muted-foreground">
             {formReady
               ? `Ready to compare ${selectedModels.length} model${
                   selectedModels.length === 1 ? '' : 's'
-                }. ${RUN_COMPARISON_PENDING}`
+                }.`
               : 'Pick a store, product, time period, horizon and at least one model to continue.'}
+            {submitError && (
+              <span className="ml-2 text-destructive">{submitError}</span>
+            )}
           </div>
-          <Button
-            type="button"
-            disabled
-            data-testid="run-comparison-cta"
-            // Intentionally inert in Slice A — Slice B wires the POST mutation.
-            title={RUN_COMPARISON_PENDING}
-          >
-            <Trophy className="mr-2 h-4 w-4" />
-            Run comparison
-          </Button>
+          <div className="flex items-center gap-2">
+            {isRunning && (
+              <CancelRunDialog
+                onConfirm={() => selectionId && cancelRun.mutate(selectionId)}
+                isCancelling={cancelRun.isPending}
+              />
+            )}
+            <Button
+              type="button"
+              disabled={!formReady || submitRun.isPending || isRunning}
+              data-testid="run-comparison-cta"
+              onClick={handleRunComparison}
+            >
+              {submitRun.isPending || isRunning ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Trophy className="mr-2 h-4 w-4" />
+              )}
+              {isRunning ? 'Running…' : 'Run comparison'}
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
-      {/* Dev-only assurance that a valid request is assembled (not sent). */}
-      {runRequest && (
-        <p className="sr-only" data-testid="assembled-run-request">
-          {JSON.stringify(runRequest)}
-        </p>
+      {/* Live progress + results (Slice B) */}
+      {run && (
+        <RunProgressPanel
+          status={run.status}
+          progress={run.progress ?? null}
+          candidates={run.candidate_progress ?? []}
+        />
+      )}
+
+      {isTerminal && run && (
+        <>
+          <WinnerCard
+            winner={run.winner}
+            confidence={run.recommendation_confidence}
+            reasons={run.confidence_reasons}
+            businessSummary={run.business_summary}
+          />
+          {run.chart_data && (
+            <ComparisonCharts
+              chartData={run.chart_data}
+              winnerModelType={run.winner?.model_type}
+            />
+          )}
+          {run.ranking.length > 0 && (
+            <RankingTable ranking={run.ranking} onSelectModel={handleSelectModel} />
+          )}
+          <ModelDetailDrawer
+            entry={drawerEntry}
+            open={drawerOpen}
+            onOpenChange={setDrawerOpen}
+          />
+        </>
       )}
     </div>
   )

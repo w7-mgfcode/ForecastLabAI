@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -218,5 +218,150 @@ async def test_response_uses_recommendation_confidence_key(
 async def test_get_selection_missing_raises_not_found() -> None:
     db = AsyncMock()
     db.scalar = AsyncMock(return_value=None)
+    db.execute = AsyncMock()
     with pytest.raises(NotFoundError):
         await ModelSelectionService().get_selection(db, uuid4().hex)
+
+
+# -----------------------------------------------------------------------------
+# Slice B — async submit / settle / cancel (worker mocked or DB-free units)
+# -----------------------------------------------------------------------------
+
+from datetime import UTC, datetime  # noqa: E402
+
+from app.core.exceptions import ConflictError  # noqa: E402
+from app.features.model_selection import runner as _runner  # noqa: E402
+from app.features.model_selection.models import (  # noqa: E402
+    ModelSelectionCandidate,
+    ModelSelectionRun,
+    ModelSelectionStatus,
+)
+
+
+def _submit_mock_db() -> AsyncMock:
+    """Mock ``AsyncSession`` whose ``refresh`` stamps ``created_at`` on the run."""
+    db = AsyncMock()
+    added: list[Any] = []
+
+    def _add(obj: Any) -> None:
+        added.append(obj)
+
+    async def _refresh(obj: Any) -> None:
+        if isinstance(obj, ModelSelectionRun) and obj.created_at is None:
+            obj.created_at = datetime.now(UTC)
+
+    db.add = MagicMock(side_effect=_add)
+    db.commit = AsyncMock()
+    db.refresh = AsyncMock(side_effect=_refresh)
+    db._added = added  # expose for assertions
+    return db
+
+
+async def test_submit_run_inserts_running_parent_and_pending_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_availability(monkeypatch, "ready")
+    # Stub the detached worker so create_task schedules a harmless no-op.
+    monkeypatch.setattr(ModelSelectionService, "_run_in_background", AsyncMock())
+
+    request = _request(
+        candidate_models=[
+            {"model_type": "naive", "params": {}},
+            {"model_type": "seasonal_naive", "params": {"season_length": 7}},
+        ]
+    )
+    db = _submit_mock_db()
+    response = await ModelSelectionService().submit_run(db, request)
+
+    assert response.status == "running"
+    assert response.monitor_url == f"/model-selection/{response.selection_id}"
+    assert response.cancel_url == f"/model-selection/{response.selection_id}"
+    assert response.progress is not None
+    assert response.progress.total == 2
+    assert response.progress.pending == 2
+    assert len(response.candidate_progress) == 2
+    assert {c.status for c in response.candidate_progress} == {"pending"}
+
+    parents = [o for o in db._added if isinstance(o, ModelSelectionRun)]
+    children = [o for o in db._added if isinstance(o, ModelSelectionCandidate)]
+    assert len(parents) == 1
+    assert parents[0].status == ModelSelectionStatus.RUNNING.value
+    assert parents[0].started_at is not None
+    assert parents[0].total_candidates == 2
+    assert len(children) == 2
+    assert {c.status for c in children} == {"pending"}
+    assert [c.ordinal for c in children] == [0, 1]
+
+
+async def test_submit_run_unusable_availability_raises_400(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_availability(monkeypatch, "unusable")
+    monkeypatch.setattr(ModelSelectionService, "_run_in_background", AsyncMock())
+    db = _submit_mock_db()
+    with pytest.raises(BadRequestError):
+        await ModelSelectionService().submit_run(db, _request())
+    # The parent was persisted as failed; no children were inserted.
+    parents = [o for o in db._added if isinstance(o, ModelSelectionRun)]
+    children = [o for o in db._added if isinstance(o, ModelSelectionCandidate)]
+    assert parents[0].status == ModelSelectionStatus.FAILED.value
+    assert children == []
+
+
+def test_terminal_status_rule() -> None:
+    svc = ModelSelectionService()
+    f = svc._terminal_status
+    assert f({"completed": 3, "failed": 0, "cancelled": 0}) is ModelSelectionStatus.COMPLETED
+    assert f({"completed": 0, "failed": 3, "cancelled": 0}) is ModelSelectionStatus.FAILED
+    assert f({"completed": 0, "failed": 0, "cancelled": 3}) is ModelSelectionStatus.CANCELLED
+    assert f({"completed": 2, "failed": 1, "cancelled": 0}) is ModelSelectionStatus.PARTIAL
+    assert f({"completed": 1, "failed": 0, "cancelled": 1}) is ModelSelectionStatus.PARTIAL
+
+
+async def test_cancel_run_404_when_missing() -> None:
+    db = AsyncMock()
+    db.scalar = AsyncMock(return_value=None)
+    with pytest.raises(NotFoundError):
+        await ModelSelectionService().cancel_run(db, uuid4().hex)
+
+
+async def test_cancel_run_409_when_terminal() -> None:
+    row = ModelSelectionRun(
+        selection_id="sel_terminal",
+        status=ModelSelectionStatus.COMPLETED.value,
+        store_id=1,
+        product_id=1,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 5, 31),
+        forecast_horizon=14,
+        ranking_metric="wape",
+        candidate_models=[],
+        policy_snapshot={},
+    )
+    db = AsyncMock()
+    db.scalar = AsyncMock(return_value=row)
+    with pytest.raises(ConflictError):
+        await ModelSelectionService().cancel_run(db, "sel_terminal")
+
+
+async def test_cancel_run_409_when_settle_races_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the worker settled (no handle) between load and cancel → 409."""
+    row = ModelSelectionRun(
+        selection_id="sel_race",
+        status=ModelSelectionStatus.RUNNING.value,
+        store_id=1,
+        product_id=1,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 5, 31),
+        forecast_horizon=14,
+        ranking_metric="wape",
+        candidate_models=[],
+        policy_snapshot={},
+    )
+    db = AsyncMock()
+    db.scalar = AsyncMock(return_value=row)
+    monkeypatch.setattr(_runner, "cancel_selection", lambda _sid: False)
+    with pytest.raises(ConflictError):
+        await ModelSelectionService().cancel_run(db, "sel_race")
