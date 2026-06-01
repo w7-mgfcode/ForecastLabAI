@@ -13,8 +13,12 @@ import {
   useCancelSelectionRun,
   useModelCatalog,
   usePairAvailability,
+  usePredictWinner,
+  usePromoteChampion,
   useSelectionRun,
   useSubmitSelectionRun,
+  useTrainSelected,
+  useTrainWinner,
 } from './use-model-selection'
 import type {
   ModelCatalogResponse,
@@ -269,5 +273,92 @@ describe('useCancelSelectionRun', () => {
     const call = fetchMock.mock.calls[0]!
     expect(String(call[0])).toContain('/model-selection/sel_b')
     expect((call[1] as RequestInit).method).toBe('DELETE')
+  })
+})
+
+// --------------------------------------------------------------- Slice C hooks
+
+function jsonResponse(body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
+describe('useTrainWinner', () => {
+  it('POSTs /train-winner (no body) and invalidates the run query', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ selection_id: 'sel_c', model_type: 'naive', model_path: 'p', is_override: false, override_warning: null }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useTrainWinner('sel_c'), {
+      wrapper: makeWrapper(makeClient()),
+    })
+    await act(async () => {
+      result.current.mutate()
+    })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    const call = fetchMock.mock.calls[0]!
+    expect(String(call[0])).toContain('/model-selection/sel_c/train-winner')
+    expect((call[1] as RequestInit).method).toBe('POST')
+  })
+})
+
+describe('useTrainSelected', () => {
+  it('POSTs /train-selected with the override body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ selection_id: 'sel_c', model_type: 'seasonal_naive', model_path: 'p', is_override: true, override_warning: 'w' }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useTrainSelected('sel_c'), {
+      wrapper: makeWrapper(makeClient()),
+    })
+    await act(async () => {
+      result.current.mutate({ model_type: 'seasonal_naive', override_reason: 'domain' })
+    })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    const call = fetchMock.mock.calls[0]!
+    expect(String(call[0])).toContain('/model-selection/sel_c/train-selected')
+    expect((call[1] as RequestInit).method).toBe('POST')
+    expect(String((call[1] as RequestInit).body)).toContain('seasonal_naive')
+  })
+})
+
+describe('usePredictWinner', () => {
+  it('POSTs /predict with the decision params body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ selection_id: 'sel_c', forecast: { points: [], total_demand: 0, average_demand: 0, horizon: 14 }, decision: null }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => usePredictWinner('sel_c'), {
+      wrapper: makeWrapper(makeClient()),
+    })
+    await act(async () => {
+      result.current.mutate({ lead_time_days: 7, service_level: 0.95 })
+    })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    const call = fetchMock.mock.calls[0]!
+    expect(String(call[0])).toContain('/model-selection/sel_c/predict')
+    expect((call[1] as RequestInit).method).toBe('POST')
+  })
+})
+
+describe('usePromoteChampion', () => {
+  it('POSTs /promote with the promote body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ selection_id: 'sel_c', alias_name: 'champion-x', run_id: 'r', run_status: 'success', model_type: 'naive', is_override: false, promoted_at: '2026-06-01T00:00:00Z' }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => usePromoteChampion('sel_c'), {
+      wrapper: makeWrapper(makeClient()),
+    })
+    await act(async () => {
+      result.current.mutate({ alias_name: 'champion-x', approved_by: 'gabor' })
+    })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    const call = fetchMock.mock.calls[0]!
+    expect(String(call[0])).toContain('/model-selection/sel_c/promote')
+    expect((call[1] as RequestInit).method).toBe('POST')
+    expect(String((call[1] as RequestInit).body)).toContain('champion-x')
   })
 })

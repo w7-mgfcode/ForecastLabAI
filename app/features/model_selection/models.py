@@ -15,7 +15,16 @@ import datetime as _dt
 from enum import Enum
 from typing import Any
 
-from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, String
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -109,6 +118,24 @@ class ModelSelectionRun(TimestampMixin, Base):
     cancelled_candidates: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     completed_at: Mapped[_dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    # Slice C (forecast decision + operationalization) — all additive.
+    # ``trained_model_type`` records which model the final bundle holds (the
+    # ranked winner, or a user override); ``is_override`` flags a non-recommended
+    # choice; the promotion columns capture the approval-gated registry handoff.
+    trained_model_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    is_override: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    override_reason: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    champion_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    promoted_alias: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    promotion_decision: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # M1 — V2 promotion support: the request's feature_frame_version persisted at
+    # run-creation so train/promote carry the REAL version end-to-end. The
+    # server_default '1' backfills legacy rows ONLY (it is not a code hardcode).
+    feature_frame_version: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1", nullable=False
     )
 
     __table_args__ = (

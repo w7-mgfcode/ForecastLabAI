@@ -164,6 +164,49 @@ class AvailabilityQuery(BaseModel):
     forecast_horizon: int = Field(default=14, ge=1, le=90)
 
 
+class TrainSelectedRequest(BaseModel):
+    """``POST /model-selection/{id}/train-selected`` body (Slice C).
+
+    Trains a USER-CHOSEN candidate (override). Only ``str``/``None`` fields so
+    ``ConfigDict(strict=True)`` needs no ``Field(strict=False)`` override (no
+    date/uuid/decimal field) — keeps ``test_strict_mode_policy`` green.
+    """
+
+    model_config = ConfigDict(strict=True)
+
+    model_type: ModelType
+    override_reason: str | None = Field(default=None, max_length=2000)
+
+
+class ForecastDecisionParams(BaseModel):
+    """Optional ``POST /model-selection/{id}/predict`` body (Slice C).
+
+    Drives the deterministic safety-stock heuristic in ``decision.py``. All
+    fields are JSON-native (``int``/``float``) → no ``Field(strict=False)``.
+    """
+
+    model_config = ConfigDict(strict=True)
+
+    lead_time_days: int = Field(default=7, ge=1, le=365)
+    service_level: float = Field(default=0.95, ge=0.5, lt=1.0)
+
+
+class PromoteRequest(BaseModel):
+    """``POST /model-selection/{id}/promote`` body (Slice C).
+
+    Approval-gated promotion of a trained champion to a registry alias.
+    ``alias_name`` mirrors the registry regex so a bad name 422s at the schema
+    boundary. ``approved_by`` is required — promotion is never automatic.
+    """
+
+    model_config = ConfigDict(strict=True)
+
+    alias_name: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9\-_]*$")
+    approved_by: str = Field(..., min_length=1, max_length=100)
+    acknowledge_non_recommended: bool = False
+    description: str | None = Field(default=None, max_length=500)
+
+
 # =============================================================================
 # Intermediate models (service-internal; embedded in JSONB snapshots)
 # =============================================================================
@@ -259,12 +302,41 @@ class PairAvailabilityResponse(BaseModel):
 
 
 class ForecastSummary(BaseModel):
-    """Forecast output rolled up for the response."""
+    """Forecast output rolled up for the response.
+
+    Slice C adds ``peak_*`` / ``low_*`` as ADDITIVE Optional fields (default
+    ``None``) so legacy JSONB snapshots written by the Slice A/B auto-predict
+    path still validate on reload.
+    """
 
     points: list[dict[str, Any]]
     total_demand: float
     average_demand: float
     horizon: int
+    peak_date: date | None = None
+    peak_demand: float | None = None
+    low_date: date | None = None
+    low_demand: float | None = None
+
+
+class ForecastDecision(BaseModel):
+    """Deterministic, CLEARLY-LABELED inventory-decision heuristic (Slice C).
+
+    Computed by ``decision.compute_forecast_decision`` from the forecast points
+    + lead time + service level. ``method`` is fixed ``"heuristic"`` and every
+    use carries a caveat — this NEVER feeds ranking (LOCKED #3).
+    """
+
+    method: Literal["heuristic"] = "heuristic"
+    lead_time_days: int
+    service_level: float
+    z_value: float
+    sigma_daily_demand: float
+    expected_demand_over_lead_time: float
+    safety_stock: float
+    reorder_point: float
+    bias_risk_text: str
+    caveats: list[str]
 
 
 class CandidateProgress(BaseModel):
@@ -364,15 +436,40 @@ class ModelCatalogResponse(BaseModel):
 
 
 class TrainWinnerResponse(BaseModel):
-    """``POST /model-selection/{id}/train-winner`` response."""
+    """``POST /model-selection/{id}/train-winner`` and ``/train-selected``.
+
+    Slice C adds ``is_override`` / ``override_warning`` as ADDITIVE fields with
+    back-compatible defaults — ``train-winner`` still returns
+    ``is_override=False`` + ``override_warning=None`` (its shape is unchanged for
+    existing callers/tests).
+    """
 
     selection_id: str
     model_type: str
     model_path: str
+    is_override: bool = False
+    override_warning: str | None = None
 
 
 class PredictWinnerResponse(BaseModel):
-    """``POST /model-selection/{id}/predict`` response."""
+    """``POST /model-selection/{id}/predict`` response.
+
+    Slice C adds ``decision`` (the labeled safety-stock heuristic) as an
+    ADDITIVE Optional field; ``forecast`` now also carries peak/low.
+    """
 
     selection_id: str
     forecast: ForecastSummary
+    decision: ForecastDecision | None = None
+
+
+class PromoteResponse(BaseModel):
+    """``POST /model-selection/{id}/promote`` response (Slice C)."""
+
+    selection_id: str
+    alias_name: str
+    run_id: str
+    run_status: str
+    model_type: str
+    is_override: bool
+    promoted_at: datetime

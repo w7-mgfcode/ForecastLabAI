@@ -19,7 +19,8 @@ import asyncio
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -31,12 +32,17 @@ from app.core.exceptions import (
     ConflictError,
     GatewayTimeoutError,
     NotFoundError,
+    UnprocessableEntityError,
 )
 from app.core.logging import get_logger
 from app.features.backtesting.schemas import SplitConfig
 from app.features.data_platform.models import Product, Promotion, SalesDaily, Store
 from app.features.model_selection import runner
 from app.features.model_selection.capabilities import build_model_catalog
+from app.features.model_selection.decision import (
+    compute_forecast_decision,
+    forecast_peak_low,
+)
 from app.features.model_selection.explanations import explain_winner
 from app.features.model_selection.models import (
     TERMINAL_SELECTION_STATES,
@@ -53,11 +59,14 @@ from app.features.model_selection.schemas import (
     CandidateResult,
     ChartData,
     FoldChart,
+    ForecastDecision,
     ForecastSummary,
     ModelCatalogResponse,
     ModelSelectionRunRequest,
     ModelSelectionRunResponse,
     PairAvailabilityResponse,
+    PromoteRequest,
+    PromoteResponse,
     RankingResult,
     SelectionProgress,
     SelectionWindow,
@@ -269,6 +278,7 @@ class ModelSelectionService:
             ranking_metric=request.ranking_metric,
             candidate_models=[c.model_dump() for c in request.candidate_models],
             policy_snapshot=request.ranking_policy.model_dump(mode="json"),
+            feature_frame_version=request.feature_frame_version,
         )
         db.add(row)
         await db.flush()
@@ -463,6 +473,7 @@ class ModelSelectionService:
             availability_snapshot=availability.model_dump(mode="json"),
             started_at=now,
             total_candidates=len(request.candidate_models),
+            feature_frame_version=request.feature_frame_version,
         )
         db.add(row)
         # Flush the parent INSERT before the children — there is no ORM
@@ -920,8 +931,15 @@ class ModelSelectionService:
             row.start_date,
             row.end_date,
             cfg,  # type: ignore[arg-type]
+            feature_frame_version=row.feature_frame_version,  # M1 — train as configured (V1/V2)
         )
         row.final_model_path = train.model_path
+        # Slice C — additive: the winner is the trained model and is NOT an
+        # override. The response shape is unchanged (is_override/override_warning
+        # default to False/None).
+        row.trained_model_type = ranking.winner.model_type
+        row.is_override = False
+        row.override_reason = None
         await db.flush()
         logger.info(
             "model_selection.winner_trained",
@@ -934,8 +952,87 @@ class ModelSelectionService:
             model_path=train.model_path,
         )
 
-    async def predict_winner(self, db: AsyncSession, selection_id: str) -> ForecastSummary:
-        """Forecast with the trained winning model (requires train-winner first)."""
+    async def train_selected(
+        self,
+        db: AsyncSession,
+        selection_id: str,
+        model_type: str,
+        override_reason: str | None,
+    ) -> TrainWinnerResponse:
+        """Train a USER-CHOSEN candidate (override) — Slice C.
+
+        ``model_type`` must be one of the run's CONFIGURED candidates
+        (``candidate_models``), NOT only the ranked/included entries: a candidate
+        that FAILED its backtest is still override-trainable (training is
+        independent of backtesting). A model never offered as a candidate → 400.
+        """
+        from pydantic import TypeAdapter  # lazy
+
+        from app.features.forecasting.schemas import ModelConfig  # lazy
+        from app.features.forecasting.service import ForecastingService  # lazy
+
+        row = await self._load(db, selection_id)
+        ranking = self._load_ranking(row)
+
+        configured = {
+            str(c.get("model_type")) for c in (row.candidate_models or []) if c.get("model_type")
+        }
+        if model_type not in configured:
+            raise BadRequestError(
+                message=(
+                    f"Model '{model_type}' was not a candidate in this selection. "
+                    f"Candidates: {sorted(configured)}."
+                )
+            )
+
+        params = self._params_for_trained_type(row, model_type)
+        adapter: TypeAdapter[object] = TypeAdapter(ModelConfig)
+        cfg = adapter.validate_python({"model_type": model_type, **params})
+        train = await ForecastingService().train_model(
+            db,
+            row.store_id,
+            row.product_id,
+            row.start_date,
+            row.end_date,
+            cfg,  # type: ignore[arg-type]
+            feature_frame_version=row.feature_frame_version,  # M1 — V1/V2 as configured
+        )
+        row.final_model_path = train.model_path
+        row.trained_model_type = model_type
+        winner_type = ranking.winner.model_type if ranking.winner else None
+        row.is_override = (model_type != winner_type) if winner_type is not None else True
+        row.override_reason = override_reason
+        await db.flush()
+
+        warning = self._override_warning(model_type, ranking) if row.is_override else None
+        logger.info(
+            "model_selection.winner_selected_override",
+            selection_id=row.selection_id,
+            model_type=model_type,
+            is_override=row.is_override,
+        )
+        return TrainWinnerResponse(
+            selection_id=row.selection_id,
+            model_type=model_type,
+            model_path=train.model_path,
+            is_override=row.is_override,
+            override_warning=warning,
+        )
+
+    async def predict_winner(
+        self,
+        db: AsyncSession,
+        selection_id: str,
+        lead_time_days: int,
+        service_level: float,
+    ) -> tuple[ForecastSummary, ForecastDecision | None]:
+        """Forecast with the trained model + compute the decision heuristic.
+
+        Returns a ``(forecast, decision)`` tuple — the ROUTE assembles the
+        ``PredictWinnerResponse``. ``decision`` (safety stock etc.) NEVER feeds
+        ranking. A feature-aware model 400s inside ``ForecastingService.predict``
+        (bubbles as ``ValueError`` → 400).
+        """
         from app.features.forecasting.service import ForecastingService  # lazy
 
         row = await self._load(db, selection_id)
@@ -947,14 +1044,131 @@ class ModelSelectionService:
             row.store_id, row.product_id, row.forecast_horizon, row.final_model_path
         )
         summary = self._forecast_summary(prediction, row.forecast_horizon)
+        winner_bias: float | None = None
+        if row.winner_metrics is not None and row.winner_metrics.get("bias") is not None:
+            winner_bias = float(row.winner_metrics["bias"])
+        decision = compute_forecast_decision(
+            summary.points,
+            summary.average_demand,
+            lead_time_days,
+            service_level,
+            winner_bias,
+        )
         row.forecast_result = summary.model_dump(mode="json")
         await db.flush()
         logger.info(
             "model_selection.winner_predicted",
             selection_id=row.selection_id,
             horizon=row.forecast_horizon,
+            lead_time_days=lead_time_days,
         )
-        return summary
+        return summary, decision
+
+    async def promote(
+        self, db: AsyncSession, selection_id: str, req: PromoteRequest
+    ) -> PromoteResponse:
+        """Approval-gated, audited promotion of a trained champion (Slice C).
+
+        Orchestrates the registry in ONE request transaction (create_run →
+        RUNNING → register artifact → SUCCESS → create_alias), then persists the
+        audit record on ``model_selection_run``. Promotion is NEVER automatic and
+        performs NO comparison.
+        """
+        from app.features.registry.schemas import (  # lazy
+            AliasCreate,
+            RunCreate,
+            RunStatus,
+            RunUpdate,
+        )
+        from app.features.registry.service import RegistryService  # lazy
+
+        row = await self._load(db, selection_id)
+        if not row.final_model_path or not row.trained_model_type:
+            raise UnprocessableEntityError(message="Train the model before promoting.")
+        if row.is_override and not req.acknowledge_non_recommended:
+            raise UnprocessableEntityError(
+                message=(
+                    "Promoting a non-recommended model requires acknowledge_non_recommended=true."
+                )
+            )
+
+        registry = RegistryService()
+        params = self._params_for_trained(row)
+        # ``RunCreate``/``RunUpdate`` use Pydantic ``Field(None, ...)`` defaults +
+        # the ``model_config`` alias; mypy's pydantic plugin resolves these but
+        # pyright (no plugin) cannot — mirror the established
+        # ``registry_tools.py`` suppression. ``model_config_data=`` is the field
+        # name (populate_by_name=True), NOT the ``model_config`` ConfigDict alias.
+        run = await registry.create_run(
+            db,
+            RunCreate(  # pyright: ignore[reportCallIssue]
+                model_type=row.trained_model_type,
+                model_config_data={  # pyright: ignore[reportCallIssue]
+                    "model_type": row.trained_model_type,
+                    **params,
+                },
+                data_window_start=row.start_date,
+                data_window_end=row.end_date,
+                store_id=row.store_id,
+                product_id=row.product_id,
+                runtime_info_extras={"feature_frame_version": row.feature_frame_version},
+            ),
+        )
+        await registry.update_run(
+            db,
+            run.run_id,
+            RunUpdate(status=RunStatus.RUNNING),  # pyright: ignore[reportCallIssue]
+        )
+        artifact_uri, artifact_hash, artifact_size = self._register_artifact(
+            row.final_model_path, run.run_id
+        )
+        await registry.update_run(
+            db,
+            run.run_id,
+            RunUpdate(  # pyright: ignore[reportCallIssue]
+                status=RunStatus.SUCCESS,
+                metrics=row.winner_metrics,
+                artifact_uri=artifact_uri,
+                artifact_hash=artifact_hash,
+                artifact_size_bytes=artifact_size,
+            ),
+        )
+        alias = await registry.create_alias(
+            db,
+            AliasCreate(alias_name=req.alias_name, run_id=run.run_id, description=req.description),
+        )
+
+        promoted_at = datetime.now(UTC)
+        row.champion_run_id = run.run_id
+        row.promoted_alias = alias.alias_name
+        row.promotion_decision = {
+            "decision_id": uuid.uuid4().hex,
+            "alias": alias.alias_name,
+            "champion_run_id": run.run_id,
+            "approved_by": req.approved_by,
+            "approved_at": promoted_at.isoformat(),
+            "decision": "promoted",
+            "reason": req.description,
+            "trained_model_type": row.trained_model_type,
+            "is_override": row.is_override,
+        }
+        await db.flush()
+        logger.info(
+            "model_selection.champion_promoted",
+            selection_id=row.selection_id,
+            alias=alias.alias_name,
+            run_id=run.run_id,
+            approved_by=req.approved_by,
+        )
+        return PromoteResponse(
+            selection_id=row.selection_id,
+            alias_name=alias.alias_name,
+            run_id=run.run_id,
+            run_status=alias.run_status.value,
+            model_type=row.trained_model_type,
+            is_override=row.is_override,
+            promoted_at=promoted_at,
+        )
 
     # -------------------------------------------------------------------------
     # Pure mappers
@@ -1001,9 +1215,77 @@ class ModelSelectionService:
         points = [point.model_dump(mode="json") for point in prediction.forecasts]
         total = float(sum(point.forecast for point in prediction.forecasts))
         average = total / len(prediction.forecasts) if prediction.forecasts else 0.0
+        peak_date, peak_demand, low_date, low_demand = forecast_peak_low(points)
         return ForecastSummary(
-            points=points, total_demand=total, average_demand=average, horizon=horizon
+            points=points,
+            total_demand=total,
+            average_demand=average,
+            horizon=horizon,
+            peak_date=peak_date,
+            peak_demand=peak_demand,
+            low_date=low_date,
+            low_demand=low_demand,
         )
+
+    @staticmethod
+    def _params_for_trained_type(row: ModelSelectionRun, model_type: str) -> dict[str, Any]:
+        """Return the configured params for a candidate ``model_type`` (or {})."""
+        for candidate in row.candidate_models or []:
+            if candidate.get("model_type") == model_type:
+                params = candidate.get("params") or {}
+                return dict(params)
+        return {}
+
+    def _params_for_trained(self, row: ModelSelectionRun) -> dict[str, Any]:
+        """Return the params of the model actually trained on this run."""
+        if row.trained_model_type is None:
+            return {}
+        return self._params_for_trained_type(row, row.trained_model_type)
+
+    @staticmethod
+    def _override_warning(chosen_type: str, ranking: RankingResult) -> str:
+        """Deterministic warning copy when a non-recommended model is trained."""
+        winner = ranking.winner
+        if winner is None:
+            return f"You trained '{chosen_type}', but no model was recommended for this selection."
+        chosen_entry = next(
+            (e for e in ranking.entries if e.model_type == chosen_type and e.included),
+            None,
+        )
+        winner_wape = (winner.metrics or {}).get("wape")
+        if chosen_entry and chosen_entry.metrics and winner_wape is not None:
+            chosen_wape = chosen_entry.metrics.get("wape")
+            if chosen_wape is not None:
+                gap = chosen_wape - winner_wape
+                return (
+                    f"You trained '{chosen_type}' instead of the recommended "
+                    f"'{winner.model_type}'. Its backtest WAPE is {chosen_wape:.1f}% "
+                    f"vs the recommended {winner_wape:.1f}% "
+                    f"(a {gap:+.1f} percentage-point gap)."
+                )
+        return (
+            f"You trained '{chosen_type}' instead of the recommended "
+            f"'{winner.model_type}'. '{chosen_type}' was not successfully evaluated "
+            "in the backtest, so no WAPE comparison is available."
+        )
+
+    @staticmethod
+    def _register_artifact(final_model_path: str, run_id: str) -> tuple[str, str, int]:
+        """Copy the trained bundle into registry storage and return (uri, hash, size).
+
+        Mirrors the demo pipeline's register step (``demo/pipeline.py``): the
+        forecasting bundle lives under ``forecast_model_artifacts_dir``; copying
+        it into ``registry_artifact_root`` makes the promoted run's artifact
+        verifiable via ``GET /registry/runs/{id}/verify``.
+        """
+        from app.features.registry.storage import LocalFSProvider  # lazy
+
+        source = Path(final_model_path)
+        if not source.exists():
+            raise BadRequestError(message=f"Trained artifact missing at {final_model_path}")
+        artifact_uri = f"champion-selector/{run_id}-{source.name}"
+        file_hash, file_size = LocalFSProvider().save(source, artifact_uri)
+        return artifact_uri, file_hash, file_size
 
     async def _load(self, db: AsyncSession, selection_id: str) -> ModelSelectionRun:
         row = await db.scalar(

@@ -161,3 +161,94 @@ def test_submit_run_response_carries_monitor_and_cancel_urls() -> None:
     assert submit.progress is not None
     assert submit.progress.pending == 1
     assert submit.candidate_progress[0].model_type == "naive"
+
+
+# =============================================================================
+# Slice C — decision + promotion schemas
+# =============================================================================
+
+from app.features.model_selection.schemas import (  # noqa: E402
+    ForecastDecisionParams,
+    ForecastSummary,
+    PredictWinnerResponse,
+    PromoteRequest,
+    TrainSelectedRequest,
+    TrainWinnerResponse,
+)
+
+
+def test_train_selected_request_accepts_model_type() -> None:
+    req = TrainSelectedRequest.model_validate(
+        {"model_type": "seasonal_naive", "override_reason": "domain"}
+    )
+    assert req.model_type == "seasonal_naive"
+    assert req.override_reason == "domain"
+
+
+def test_train_selected_request_rejects_unknown_model_type() -> None:
+    with pytest.raises(ValidationError):
+        TrainSelectedRequest.model_validate({"model_type": "not_a_model"})
+
+
+def test_forecast_decision_params_defaults() -> None:
+    params = ForecastDecisionParams()
+    assert params.lead_time_days == 7
+    assert params.service_level == 0.95
+
+
+@pytest.mark.parametrize("service_level", [0.49, 1.0, 1.5])
+def test_forecast_decision_params_rejects_out_of_bound_service_level(service_level: float) -> None:
+    with pytest.raises(ValidationError):
+        ForecastDecisionParams.model_validate({"service_level": service_level})
+
+
+def test_forecast_decision_params_validate_python_path() -> None:
+    """Exercise the validate_python path (matches FastAPI's body coercion)."""
+    params = ForecastDecisionParams.model_validate({"lead_time_days": 14, "service_level": 0.99})
+    assert params.lead_time_days == 14
+
+
+@pytest.mark.parametrize("alias", ["Bad Alias", "UPPER", "-leading", "has space"])
+def test_promote_request_rejects_bad_alias_name(alias: str) -> None:
+    with pytest.raises(ValidationError):
+        PromoteRequest.model_validate({"alias_name": alias, "approved_by": "gabor"})
+
+
+def test_promote_request_accepts_valid_alias_and_defaults() -> None:
+    req = PromoteRequest.model_validate({"alias_name": "champion-store5", "approved_by": "gabor"})
+    assert req.alias_name == "champion-store5"
+    assert req.acknowledge_non_recommended is False
+    assert req.description is None
+
+
+def test_promote_request_requires_approved_by() -> None:
+    with pytest.raises(ValidationError):
+        PromoteRequest.model_validate({"alias_name": "champion-x"})
+
+
+def test_train_winner_response_back_compat_defaults() -> None:
+    """train-winner callers that omit the Slice C fields still validate."""
+    resp = TrainWinnerResponse.model_validate(
+        {"selection_id": "s", "model_type": "naive", "model_path": "p"}
+    )
+    assert resp.is_override is False
+    assert resp.override_warning is None
+
+
+def test_forecast_summary_peak_low_optional() -> None:
+    """Legacy ForecastSummary (no peak/low) still validates."""
+    summary = ForecastSummary.model_validate(
+        {"points": [], "total_demand": 0.0, "average_demand": 0.0, "horizon": 14}
+    )
+    assert summary.peak_date is None
+    assert summary.peak_demand is None
+
+
+def test_predict_winner_response_decision_optional() -> None:
+    resp = PredictWinnerResponse.model_validate(
+        {
+            "selection_id": "s",
+            "forecast": {"points": [], "total_demand": 0.0, "average_demand": 0.0, "horizon": 14},
+        }
+    )
+    assert resp.decision is None

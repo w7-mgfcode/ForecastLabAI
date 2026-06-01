@@ -228,3 +228,180 @@ async def test_models_route_not_captured_by_selection_id(
         response = await ac.get("/model-selection/models")
     assert response.status_code == 200
     assert "models" in response.json()
+
+
+# =============================================================================
+# Slice C — train-selected / predict-with-decision / promote routes
+# =============================================================================
+
+from app.core.exceptions import UnprocessableEntityError  # noqa: E402
+from app.features.model_selection.schemas import (  # noqa: E402
+    ForecastDecision,
+    ForecastSummary,
+    PromoteResponse,
+    TrainWinnerResponse,
+)
+
+
+def _forecast_summary() -> ForecastSummary:
+    return ForecastSummary(
+        points=[{"date": "2026-06-01", "forecast": 10.0}],
+        total_demand=10.0,
+        average_demand=10.0,
+        horizon=14,
+        peak_date=date(2026, 6, 1),
+        peak_demand=10.0,
+        low_date=date(2026, 6, 1),
+        low_demand=10.0,
+    )
+
+
+def _forecast_decision() -> ForecastDecision:
+    return ForecastDecision(
+        lead_time_days=7,
+        service_level=0.95,
+        z_value=1.6449,
+        sigma_daily_demand=0.0,
+        expected_demand_over_lead_time=70.0,
+        safety_stock=0.0,
+        reorder_point=70.0,
+        bias_risk_text="bias text",
+        caveats=["heuristic"],
+    )
+
+
+async def test_train_selected_returns_200(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        ModelSelectionService,
+        "train_selected",
+        AsyncMock(
+            return_value=TrainWinnerResponse(
+                selection_id="sel123",
+                model_type="seasonal_naive",
+                model_path="artifacts/models/model_x.joblib",
+                is_override=True,
+                override_warning="you overrode the recommendation",
+            )
+        ),
+    )
+    async with _client() as ac:
+        response = await ac.post(
+            "/model-selection/sel123/train-selected",
+            json={"model_type": "seasonal_naive", "override_reason": "domain"},
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["is_override"] is True
+    assert body["override_warning"]
+
+
+async def test_train_selected_bad_model_type_returns_400(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        ModelSelectionService,
+        "train_selected",
+        AsyncMock(side_effect=BadRequestError(message="not a candidate")),
+    )
+    async with _client() as ac:
+        response = await ac.post(
+            "/model-selection/sel123/train-selected",
+            json={"model_type": "naive"},
+        )
+    assert response.status_code == 400
+    _assert_problem_detail(response.json(), 400)
+
+
+async def test_predict_no_body_uses_defaults_returns_200(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Empty body → ForecastDecisionParams defaults → 200 with a decision."""
+    predict_mock = AsyncMock(return_value=(_forecast_summary(), _forecast_decision()))
+    monkeypatch.setattr(ModelSelectionService, "predict_winner", predict_mock)
+    async with _client() as ac:
+        response = await ac.post("/model-selection/sel123/predict")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision"]["lead_time_days"] == 7
+    assert body["forecast"]["peak_demand"] == 10.0
+    # service called with the default lead time + service level
+    assert predict_mock.await_args is not None
+    assert predict_mock.await_args.args[2] == 7
+    assert predict_mock.await_args.args[3] == 0.95
+
+
+async def test_predict_with_body_returns_200(monkeypatch: pytest.MonkeyPatch) -> None:
+    predict_mock = AsyncMock(return_value=(_forecast_summary(), _forecast_decision()))
+    monkeypatch.setattr(ModelSelectionService, "predict_winner", predict_mock)
+    async with _client() as ac:
+        response = await ac.post(
+            "/model-selection/sel123/predict",
+            json={"lead_time_days": 14, "service_level": 0.99},
+        )
+    assert response.status_code == 200
+    assert predict_mock.await_args is not None
+    assert predict_mock.await_args.args[2] == 14
+    assert predict_mock.await_args.args[3] == 0.99
+
+
+async def test_predict_feature_aware_returns_400(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        ModelSelectionService,
+        "predict_winner",
+        AsyncMock(side_effect=ValueError("Feature-aware models forecast through /scenarios")),
+    )
+    async with _client() as ac:
+        response = await ac.post("/model-selection/sel123/predict")
+    assert response.status_code == 400
+    _assert_problem_detail(response.json(), 400)
+
+
+async def test_promote_returns_200(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        ModelSelectionService,
+        "promote",
+        AsyncMock(
+            return_value=PromoteResponse(
+                selection_id="sel123",
+                alias_name="champion-test",
+                run_id="run_abc",
+                run_status="success",
+                model_type="naive",
+                is_override=False,
+                promoted_at=datetime(2026, 6, 1, tzinfo=UTC),
+            )
+        ),
+    )
+    async with _client() as ac:
+        response = await ac.post(
+            "/model-selection/sel123/promote",
+            json={"alias_name": "champion-test", "approved_by": "gabor"},
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["alias_name"] == "champion-test"
+    assert body["run_status"] == "success"
+
+
+async def test_promote_bad_alias_name_returns_422() -> None:
+    """A bad alias_name is rejected by the schema regex (422) before the service."""
+    async with _client() as ac:
+        response = await ac.post(
+            "/model-selection/sel123/promote",
+            json={"alias_name": "Bad Alias!", "approved_by": "gabor"},
+        )
+    assert response.status_code == 422
+    _assert_problem_detail(response.json(), 422)
+
+
+async def test_promote_before_train_returns_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        ModelSelectionService,
+        "promote",
+        AsyncMock(
+            side_effect=UnprocessableEntityError(message="Train the model before promoting.")
+        ),
+    )
+    async with _client() as ac:
+        response = await ac.post(
+            "/model-selection/sel123/promote",
+            json={"alias_name": "champion-test", "approved_by": "gabor"},
+        )
+    assert response.status_code == 422
+    _assert_problem_detail(response.json(), 422)

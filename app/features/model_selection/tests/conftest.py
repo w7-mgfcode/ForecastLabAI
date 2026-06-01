@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
@@ -32,6 +32,7 @@ from app.features.model_selection.schemas import (
     FoldChart,
     PairAvailabilityResponse,
 )
+from app.features.registry.models import DeploymentAlias, ModelRun
 from app.main import app
 
 # Integration test window.
@@ -204,6 +205,18 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
         finally:
             store_ids = _registered_store_ids()
             if store_ids:
+                # Slice C — clean up registry runs/aliases a promote() created
+                # (cross-slice teardown). Delete aliases first (FK to
+                # model_run.id), then the runs, scoped to the seeded store ids.
+                run_id_rows = await session.execute(
+                    select(ModelRun.id).where(ModelRun.store_id.in_(store_ids))
+                )
+                run_ids = [r[0] for r in run_id_rows]
+                if run_ids:
+                    await session.execute(
+                        delete(DeploymentAlias).where(DeploymentAlias.run_id.in_(run_ids))
+                    )
+                    await session.execute(delete(ModelRun).where(ModelRun.id.in_(run_ids)))
                 await session.execute(
                     delete(ModelSelectionRun).where(ModelSelectionRun.store_id.in_(store_ids))
                 )

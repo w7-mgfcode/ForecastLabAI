@@ -2,18 +2,24 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { isTerminalSelectionStatus } from '@/components/champion-selector/results/constants'
 import type {
+  ForecastDecisionParams,
   ModelCatalogResponse,
   ModelSelectionRunRequest,
   ModelSelectionRunResponse,
   PairAvailability,
+  PredictWinnerResponse,
+  PromoteRequest,
+  PromoteResponse,
   SubmitRunResponse,
+  TrainSelectedRequest,
+  TrainWinnerResponse,
 } from '@/types/api'
 
 /**
  * Model-selection query hooks (Champion Selector).
  *
  * Slice A: catalog + availability GETs. Slice B: async submit / poll / cancel.
- * Train/predict/promotion are owned by Slice C.
+ * Slice C: train (winner / override) / predict (decision) / promote.
  */
 
 /**
@@ -116,5 +122,69 @@ export function useCancelSelectionRun() {
         queryKey: ['model-selection', 'run', data.selection_id],
       })
     },
+  })
+}
+
+/**
+ * Invalidate the polled run query so a terminal run re-fetches the new
+ * `final_model_path` / `forecast` / promotion after a Slice C mutation.
+ */
+function invalidateRun(
+  queryClient: ReturnType<typeof useQueryClient>,
+  selectionId: string,
+) {
+  void queryClient.invalidateQueries({
+    queryKey: ['model-selection', 'run', selectionId],
+  })
+}
+
+/** Train the ranked winner (`POST /{id}/train-winner`, no body). */
+export function useTrainWinner(selectionId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () =>
+      api<TrainWinnerResponse>(`/model-selection/${selectionId}/train-winner`, {
+        method: 'POST',
+      }),
+    onSuccess: () => invalidateRun(queryClient, selectionId),
+  })
+}
+
+/** Train a user-chosen candidate (`POST /{id}/train-selected`, override). */
+export function useTrainSelected(selectionId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: TrainSelectedRequest) =>
+      api<TrainWinnerResponse>(`/model-selection/${selectionId}/train-selected`, {
+        method: 'POST',
+        body,
+      }),
+    onSuccess: () => invalidateRun(queryClient, selectionId),
+  })
+}
+
+/** Forecast with the trained model + decision (`POST /{id}/predict`). */
+export function usePredictWinner(selectionId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: ForecastDecisionParams) =>
+      api<PredictWinnerResponse>(`/model-selection/${selectionId}/predict`, {
+        method: 'POST',
+        body,
+      }),
+    onSuccess: () => invalidateRun(queryClient, selectionId),
+  })
+}
+
+/** Promote the trained champion to a registry alias (`POST /{id}/promote`). */
+export function usePromoteChampion(selectionId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: PromoteRequest) =>
+      api<PromoteResponse>(`/model-selection/${selectionId}/promote`, {
+        method: 'POST',
+        body,
+      }),
+    onSuccess: () => invalidateRun(queryClient, selectionId),
   })
 }

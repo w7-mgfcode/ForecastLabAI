@@ -1330,6 +1330,11 @@ export interface ModelSelectionForecastSummary {
   total_demand: number
   average_demand: number
   horizon: number
+  // Slice C — additive peak/low day (null on legacy snapshots).
+  peak_date?: string | null
+  peak_demand?: number | null
+  low_date?: string | null
+  low_demand?: number | null
 }
 
 // Slice B — live async progress on a selection run.
@@ -1383,4 +1388,67 @@ export interface ModelSelectionRunResponse {
 export interface SubmitRunResponse extends ModelSelectionRunResponse {
   monitor_url: string
   cancel_url: string
+}
+
+// Slice C — forecast decision, override, and promotion contracts.
+
+/** `POST /model-selection/{id}/train-selected` body (override). */
+export interface TrainSelectedRequest {
+  model_type: string
+  override_reason?: string | null
+}
+
+/** Optional `POST /model-selection/{id}/predict` body. */
+export interface ForecastDecisionParams {
+  lead_time_days: number
+  service_level: number
+}
+
+/** Deterministic, labeled inventory-decision heuristic (never feeds ranking). */
+export interface ForecastDecision {
+  method: 'heuristic'
+  lead_time_days: number
+  service_level: number
+  z_value: number
+  sigma_daily_demand: number
+  expected_demand_over_lead_time: number
+  safety_stock: number
+  reorder_point: number
+  bias_risk_text: string
+  caveats: string[]
+}
+
+/** `POST /model-selection/{id}/train-winner` and `/train-selected` response. */
+export interface TrainWinnerResponse {
+  selection_id: string
+  model_type: string
+  model_path: string
+  is_override: boolean
+  override_warning: string | null
+}
+
+/** `POST /model-selection/{id}/predict` response (forecast + decision). */
+export interface PredictWinnerResponse {
+  selection_id: string
+  forecast: ModelSelectionForecastSummary
+  decision: ForecastDecision | null
+}
+
+/** `POST /model-selection/{id}/promote` body (approval-gated). */
+export interface PromoteRequest {
+  alias_name: string
+  approved_by: string
+  acknowledge_non_recommended?: boolean
+  description?: string | null
+}
+
+/** `POST /model-selection/{id}/promote` response. */
+export interface PromoteResponse {
+  selection_id: string
+  alias_name: string
+  run_id: string
+  run_status: string
+  model_type: string
+  is_override: boolean
+  promoted_at: string // ISO datetime
 }
