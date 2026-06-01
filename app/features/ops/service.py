@@ -154,7 +154,10 @@ def _run_feature_frame_version(run: ModelRun) -> int:
     """
     info = run.runtime_info or {}
     value = info.get("feature_frame_version")
-    if isinstance(value, int) and value in (1, 2):
+    # Honor any positive int V (feature_frame_version is an opaque incrementing
+    # integer per docs/_base/DOMAIN_MODEL.md). bool is excluded because it
+    # subclasses int. Missing / invalid value -> V=1 back-compat (#338).
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
         return value
     return 1
 

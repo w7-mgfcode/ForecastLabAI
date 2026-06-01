@@ -165,10 +165,19 @@ class TestRegistryServiceFeatureFrameVersion:
         """Explicit feature_frame_version=2 round-trips."""
         assert RegistryService._extract_feature_frame_version({"feature_frame_version": 2}) == 2
 
-    def test_extract_feature_frame_version_rejects_unsupported_value(self) -> None:
-        """Unknown int (e.g. 3) and non-int (e.g. '2') fall back to V1."""
-        assert RegistryService._extract_feature_frame_version({"feature_frame_version": 3}) == 1
+    def test_extract_feature_frame_version_honors_any_positive_int(self) -> None:
+        """Any positive int V is honored (e.g. 3); non-int / non-positive / bool -> V1.
+
+        Regression for #338: feature_frame_version is an opaque incrementing
+        integer, so V>=3 must not be clamped to 1 (the showcase
+        stale_alias_trigger step registers a V=3 run).
+        """
+        assert RegistryService._extract_feature_frame_version({"feature_frame_version": 3}) == 3
+        assert RegistryService._extract_feature_frame_version({"feature_frame_version": 7}) == 7
+        # Non-int / non-positive / bool all fall back to V1.
         assert RegistryService._extract_feature_frame_version({"feature_frame_version": "2"}) == 1
+        assert RegistryService._extract_feature_frame_version({"feature_frame_version": 0}) == 1
+        assert RegistryService._extract_feature_frame_version({"feature_frame_version": True}) == 1
 
 
 class TestRegistryServiceConfigDiff:
