@@ -41,6 +41,7 @@ artifacts/
 
 # Local session artifacts (plans, handoffs, current session notes)
 .agents/
+.flow/
 .handoffs/
 HANDOFF.md
 
