@@ -85,6 +85,29 @@ def test_guard_forbids_new_tools_on_validation_retry() -> None:
     assert "summary: Field required" in guard
 
 
+def test_guard_forbids_tool_call_loops() -> None:
+    """The guard tells the model to finish in one pass and never re-call a tool (#349).
+
+    Regression for the observed failure where a weak 8B model called
+    ``tool_list_runs`` four times in a row — even though it already had the data —
+    and blew the output-retry budget (``Exceeded maximum output retries (3)``).
+    """
+    guard = READ_ONLY_INTENT_GUARD
+    assert "FINISH IN ONE PASS" in guard
+    assert "AT MOST ONCE" in guard
+    assert "NEVER call a tool again that has already returned" in guard
+    assert "STOP calling tools" in guard
+
+
+def test_guard_handles_empty_tool_result() -> None:
+    """An empty read result is reported in the summary, not retried (#349)."""
+    guard = READ_ONLY_INTENT_GUARD
+    assert "EMPTY result" in guard
+    assert "do NOT retry the tool" in guard
+    # The wrapped example phrase, newlines/indent collapsed.
+    assert "No model runs found." in " ".join(guard.split())
+
+
 def test_guard_requires_clarification_for_ambiguous_top_products() -> None:
     """An ambiguous "top products" ranking gets a clarifying question, not a guess."""
     guard = READ_ONLY_INTENT_GUARD

@@ -403,6 +403,16 @@ For a READ-ONLY request you MUST:
   to create, save, promote, archive, run a backtest, or run an experiment.
 - Answer directly in the ExperimentReport `summary` field, grounded in tool output.
 
+FINISH IN ONE PASS — do not loop:
+- Call each read-only tool AT MOST ONCE per question.
+- The MOMENT a read tool returns, STOP calling tools and write your
+  ExperimentReport `summary` from what it returned — you already have the answer.
+- NEVER call a tool again that has already returned. Re-running the same tool
+  (e.g. tool_list_runs twice) is the most common failure: it burns the retry
+  budget until the run is killed. Use the data you already received.
+- If a read tool returns an EMPTY result, say so in the `summary` (e.g. "No model
+  runs found.") — do NOT retry the tool hoping for different data.
+
 OUTPUT-FORMAT RETRIES:
 - If your previous reply failed schema validation (e.g. "summary: Field required"),
   DO NOT call any new tool. Only reformat the data you already obtained into a
