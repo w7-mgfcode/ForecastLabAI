@@ -48,3 +48,6 @@ HANDOFF.md
 # Local CI / dogfood logs and screenshots (per-session, never committed)
 .ci-logs/
 docs/manual_hun/
+
+# Understand-Anything knowledge-graph generator state (local-only, multi-MB)
+.understand-anything/
