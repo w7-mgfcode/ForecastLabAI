@@ -46,7 +46,7 @@ Gather the five GitHub categories:
 
 !`gh issue list --state open --limit 20 --json number,title,labels --jq '.[] | "#\(.number): \(.title) [\(.labels | map(.name) | join(","))]"'`
 
-!`gh milestone list --json number,title,state --jq '.[] | "#\(.number) \(.title) (\(.state))"'`
+!`gh api repos/{owner}/{repo}/milestones --jq '.[] | "#\(.number) \(.title) (\(.state))"'`
 
 !`gh label list --json name --jq '[.[].name] | sort | join(", ")'`
 

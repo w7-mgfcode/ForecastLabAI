@@ -6,7 +6,7 @@
 
 ## System at a Glance
 
-ForecastLabAI is a portfolio-grade, single-host retail-demand-forecasting system. One developer maintains it; one `docker-compose up` brings it up. The backend is FastAPI + SQLAlchemy 2.0 async against PostgreSQL 16 + pgvector; the frontend is React 19 + Vite + Tailwind 4 + shadcn/ui. Eleven vertical slices under `app/features/` cover the full lifecycle (data platform → ingest → features → forecasting → backtesting → registry → RAG → agents → dashboard surfaces). Pre-1.0; release-please drives SemVer; merges flow `dev` → `main`.
+ForecastLabAI is a portfolio-grade, single-host retail-demand-forecasting system. One developer maintains it; one `docker-compose up` brings it up. The backend is FastAPI + SQLAlchemy 2.0 async against PostgreSQL 16 + pgvector; the frontend is React 19 + Vite + Tailwind 4 + shadcn/ui. Nineteen vertical slices under `app/features/` cover the full lifecycle (data platform → ingest → features → forecasting → backtesting → registry → RAG → agents → dashboard surfaces). Pre-1.0; release-please drives SemVer; merges flow `dev` → `main`.
 
 ## Document Index
 
