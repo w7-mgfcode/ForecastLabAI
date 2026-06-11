@@ -301,6 +301,33 @@ class CompleteEvent(BaseModel):
     tool_calls_count: int
 
 
+FailureReason = Literal[
+    "model_not_found",
+    "quota_exhausted",
+    "auth_error",
+    "provider_unavailable",
+    "provider_error",
+    "response_rejected",
+    "unknown",
+]
+
+
+class ModelFailureDetail(BaseModel):
+    """One classified per-model failure from a FallbackModel chain (issue #335).
+
+    Args:
+        model_name: Provider-prefixed model identifier that failed.
+        status_code: HTTP status from the provider, when the failure was HTTP.
+        reason: Machine-readable failure classification.
+        detail: Sanitized + truncated provider message — NEVER the raw body.
+    """
+
+    model_name: str
+    status_code: int | None = None
+    reason: FailureReason
+    detail: str = ""
+
+
 class ErrorEvent(BaseModel):
     """Error event.
 
@@ -308,11 +335,14 @@ class ErrorEvent(BaseModel):
         error: Error message.
         error_type: Type of error.
         recoverable: Whether the session can continue.
+        failures: Classified per-model failures when ``error_type`` is
+            ``fallback_exhausted`` (issue #335); ``None`` otherwise.
     """
 
     error: str
     error_type: str
     recoverable: bool = True
+    failures: list[ModelFailureDetail] | None = None
 
 
 # =============================================================================
