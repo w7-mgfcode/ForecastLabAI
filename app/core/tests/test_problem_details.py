@@ -8,6 +8,13 @@ through the log-only `details` attribute.
 import json
 from typing import Any
 
+import pytest
+from fastapi import Request
+
+from app.core.exceptions import (
+    AgentFallbackExhaustedError,
+    forecastlab_exception_handler,
+)
 from app.core.problem_details import problem_response
 
 
@@ -75,3 +82,29 @@ def test_problem_response_extensions_cannot_override_reserved() -> None:
     assert body["type"] == "/errors/agent-fallback-exhausted"
     assert body["title"] == "Agent Fallback Exhausted"
     assert body["safe_key"] == "kept"
+
+
+@pytest.mark.asyncio
+async def test_exception_handler_propagates_extensions() -> None:
+    """The full exception → handler → problem+json path carries extensions.
+
+    Guards the wiring: ForecastLabError.extensions must reach the response
+    body via forecastlab_exception_handler's pass-through (issue #335).
+    """
+    failures = [
+        {"model_name": "m1", "status_code": 404, "reason": "model_not_found", "detail": ""},
+        {"model_name": "m2", "status_code": 429, "reason": "quota_exhausted", "detail": ""},
+    ]
+    exc = AgentFallbackExhaustedError("All configured agent models failed", failures=failures)
+    request = Request(scope={"type": "http", "method": "POST", "path": "/", "headers": []})
+
+    response = await forecastlab_exception_handler(request, exc)
+
+    body = _body(response)
+    assert response.status_code == 502
+    assert body["status"] == 502
+    assert body["code"] == "AGENT_FALLBACK_EXHAUSTED"
+    assert body["type"] == "/errors/agent-fallback-exhausted"
+    assert body["title"] == "Agent Fallback Exhausted"
+    assert body["detail"] == "All configured agent models failed"
+    assert body["failures"] == failures

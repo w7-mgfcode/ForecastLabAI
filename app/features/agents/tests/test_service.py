@@ -534,6 +534,8 @@ class TestAgentServiceStreamChat:
         assert events[0].data["recoverable"] is True
         assert events[0].data["error_type"] == "model_behavior_error"
         assert "exceeded max retries" not in events[0].data["error"]
+        # failures is exclusive to fallback_exhausted events (#335).
+        assert "failures" not in events[0].data
 
     @pytest.mark.asyncio
     async def test_stream_chat_fallback_exhausted_yields_classified_error(

@@ -73,6 +73,26 @@ class TestClassifyModelFailures:
         assert [f.model_name for f in failures] == ["outer:model", "inner:model"]
         assert [f.reason for f in failures] == ["model_not_found", "quota_exhausted"]
 
+    def test_mixed_group_classifies_unknown_members(self) -> None:
+        """A group mixing known and unexpected members flattens in order,
+        classifying the unexpected member as unknown."""
+        group = FallbackExceptionGroup(
+            "All models from FallbackModel failed",
+            [
+                ModelHTTPError(404, "google-gla:gemini-3-flash-preview"),
+                RuntimeError("boom"),
+            ],
+        )
+
+        failures = classify_model_failures(group)
+
+        assert len(failures) == 2
+        assert failures[0].model_name == "google-gla:gemini-3-flash-preview"
+        assert failures[0].reason == "model_not_found"
+        assert failures[1].reason == "unknown"
+        assert failures[1].status_code is None
+        assert "boom" in failures[1].detail
+
     def test_bare_model_api_error_is_provider_error(self) -> None:
         """A non-HTTP ModelAPIError (connection failure) → provider_error, no status."""
         failures = classify_model_failures(
