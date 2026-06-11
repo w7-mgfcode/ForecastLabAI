@@ -8,6 +8,7 @@ const STORAGE_KEY = 'forecastlab.showcase.runs.v1'
 afterEach(() => {
   cleanup()
   window.localStorage.clear()
+  vi.unstubAllGlobals()
 })
 
 beforeEach(() => {
@@ -81,6 +82,29 @@ describe('RunHistoryStrip', () => {
     fireEvent.click(replayBtn!)
     expect(onReplay).toHaveBeenCalledWith(
       expect.objectContaining({ scenario: 'showcase_rich', skip_seed: true, reset: false }),
+    )
+  })
+
+  it('appends a history entry without crashing when crypto.randomUUID is unavailable (#332)', () => {
+    // Non-secure contexts (plain-HTTP LAN origins) expose getRandomValues but
+    // NOT randomUUID. jsdom's crypto has randomUUID, so the LAN shape must be
+    // stubbed explicitly — an unstubbed render passes even against the bug.
+    const realGetRandomValues = globalThis.crypto.getRandomValues.bind(globalThis.crypto)
+    vi.stubGlobal('crypto', {
+      getRandomValues: realGetRandomValues,
+    } as unknown as Crypto)
+
+    const { container } = render(
+      <RunHistoryStrip onReplay={() => {}} summary={summary} scenario="showcase_rich" />,
+    )
+
+    expect(container.textContent).toContain('showcase_rich')
+    const stored = window.localStorage.getItem(STORAGE_KEY)
+    expect(stored).not.toBeNull()
+    const items = JSON.parse(stored!)
+    expect(items).toHaveLength(1)
+    expect(items[0].id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     )
   })
 
