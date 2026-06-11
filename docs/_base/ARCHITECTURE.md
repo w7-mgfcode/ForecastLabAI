@@ -87,10 +87,15 @@ When a feature slice needs to call a service method or read a schema from a
 
 Existing precedents:
 - `app/features/explainability/service.py:57` — read-only `ModelRun` import
-- `app/features/forecasting/service.py` — lazy `RegistryService` / `JobService` /
-  `RunStatus` imports inside `get_feature_metadata_for_*` methods (added by
-  PRP-31; required because `RunResponse.model_family` computed_field closes
-  the cycle at alembic cold-boot)
+- `app/features/forecasting/service.py` ↔ `app/features/jobs/service.py` — mutually lazy
+  service pair (each lazily imports the other at call time; at least one side must stay
+  lazy). The former ModelFamily-driven cycle here was RESOLVED by #268.
+
+Resolved cycle (reference case):
+- #268 moved `ModelFamily` + `model_family_for` to `app/shared/model_taxonomy.py`; the
+  registry→forecasting eager edge disappeared and the registry-related lazy imports were
+  promoted to module scope. When a cycle is caused by a shared *type*, relocate the type
+  to `app/shared/` instead of adding lazy imports.
 
 ## Deployment Flow (Causal Chain)
 

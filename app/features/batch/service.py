@@ -2,8 +2,8 @@
 
 Submits one ``batch_job`` and N ``batch_job_item`` rows in one transaction,
 then loops a partial-index-backed picker (``FOR UPDATE SKIP LOCKED``) and
-delegates each item to ``JobService.create_job`` via a lazy in-method
-import. The metrics JSONB is pinned to the exact five-key shape
+delegates each item to ``JobService.create_job``. The metrics JSONB is
+pinned to the exact five-key shape
 ``{wape, smape, mae, bias, sample_size}`` — every downstream PRP
 (parallel-execution, priority-queue, export-and-retry,
 champion-and-heatmap) consumes this shape directly. ``sample_size`` is
@@ -48,8 +48,11 @@ from app.features.batch.schemas import (
 
 # data_platform is the de-facto shared ORM layer (see the
 # data-platform-shared-orm-layer memory) — module-scope import for scope
-# expansion is permitted; cross-slice *service* calls stay lazy.
+# expansion is permitted.
 from app.features.data_platform.models import Product, SalesDaily, Store
+from app.features.jobs.models import JobStatus
+from app.features.jobs.schemas import JobCreate
+from app.features.jobs.service import JobService
 
 if TYPE_CHECKING:
     from app.features.jobs.schemas import JobResponse
@@ -284,15 +287,7 @@ class BatchService:
         return (await db.execute(stmt)).scalar_one_or_none()
 
     async def _execute_item(self, db: AsyncSession, item: BatchJobItem) -> None:
-        """Run one item: delegate to ``JobService.create_job`` and capture metrics.
-
-        Lazy cross-slice imports break the alembic cold-boot cycle
-        (precedent: ``app/features/forecasting/service.py:786-787``).
-        """
-        from app.features.jobs.models import JobStatus
-        from app.features.jobs.schemas import JobCreate
-        from app.features.jobs.service import JobService
-
+        """Run one item: delegate to ``JobService.create_job`` and capture metrics."""
         item.status = BatchItemStatus.RUNNING.value
         item.started_at = datetime.now(UTC)
         await db.commit()

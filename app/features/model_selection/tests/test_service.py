@@ -623,8 +623,10 @@ def _patch_registry(monkeypatch: pytest.MonkeyPatch) -> dict[str, AsyncMock]:
     create_run = AsyncMock(return_value=run_resp)
     update_run = AsyncMock(return_value=run_resp)
     create_alias = AsyncMock(return_value=alias_resp)
+    # Patch the binding promote() actually uses — module-scope since #268
+    # promoted the registry imports out of the method body.
     monkeypatch.setattr(
-        "app.features.registry.service.RegistryService",
+        "app.features.model_selection.service.RegistryService",
         lambda: SimpleNamespace(
             create_run=create_run, update_run=update_run, create_alias=create_alias
         ),

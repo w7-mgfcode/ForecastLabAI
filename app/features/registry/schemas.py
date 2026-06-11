@@ -17,14 +17,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
-# Pydantic v2 resolves a ``@computed_field``'s return-type annotation at
-# validation time, so ``ModelFamily`` must be a real runtime import here.
-# To avoid the cycle this introduces with the forecasting slice (whose
-# ``service.py`` imports ``RegistryService``), the forecasting slice's
-# cross-slice imports of ``RegistryService`` / ``JobService`` / status enums
-# are LAZY (inside the methods that use them). See
-# ``app/features/forecasting/service.py`` for the matching contract.
-from app.features.forecasting.schemas import ModelFamily
+# ``ModelFamily`` / ``model_family_for`` live in ``app/shared/model_taxonomy``
+# (#268) so this module never imports from another feature slice. Pydantic v2
+# resolves a ``@computed_field``'s return-type annotation at schema-build time,
+# so ``ModelFamily`` must be a real runtime import (never TYPE_CHECKING-gated).
+from app.shared.model_taxonomy import ModelFamily, model_family_for
 
 
 class RunStatus(str, Enum):
@@ -131,9 +128,8 @@ class RunResponse(BaseModel):
 
     ``model_family`` is a computed field derived from ``model_type`` at
     serialization time — no DB column, no Alembic migration, no backfill.
-    See ``app/features/forecasting/feature_metadata.py:model_family_for`` for
-    the canonical map. Unknown model types log a warning and return
-    ``ModelFamily.BASELINE``.
+    See ``app/shared/model_taxonomy.py`` for the canonical map. Unknown model
+    types log a warning and return ``ModelFamily.BASELINE``.
     """
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
@@ -166,14 +162,7 @@ class RunResponse(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def model_family(self) -> ModelFamily:
-        """Computed family label derived from ``model_type``.
-
-        Imported lazily to avoid a hard cycle between
-        ``registry.schemas`` and ``forecasting.feature_metadata`` at module
-        import time.
-        """
-        from app.features.forecasting.feature_metadata import model_family_for
-
+        """Computed family label derived from ``model_type``."""
         return model_family_for(self.model_type)
 
     @computed_field  # type: ignore[prop-decorator]

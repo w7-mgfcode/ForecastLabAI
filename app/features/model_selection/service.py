@@ -74,6 +74,13 @@ from app.features.model_selection.schemas import (
     TrainWinnerResponse,
     WinnerSummary,
 )
+from app.features.registry.schemas import (
+    AliasCreate,
+    RunCreate,
+    RunStatus,
+    RunUpdate,
+)
+from app.features.registry.service import RegistryService
 
 if TYPE_CHECKING:
     from app.features.backtesting.schemas import BacktestResponse
@@ -1074,14 +1081,6 @@ class ModelSelectionService:
         audit record on ``model_selection_run``. Promotion is NEVER automatic and
         performs NO comparison.
         """
-        from app.features.registry.schemas import (  # lazy
-            AliasCreate,
-            RunCreate,
-            RunStatus,
-            RunUpdate,
-        )
-        from app.features.registry.service import RegistryService  # lazy
-
         row = await self._load(db, selection_id)
         if not row.final_model_path or not row.trained_model_type:
             raise UnprocessableEntityError(message="Train the model before promoting.")

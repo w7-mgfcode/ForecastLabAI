@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import hashlib
 from datetime import date as date_type
-from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.shared.feature_frames import FeatureGroup
+
+# Back-compat re-export (#268): downstream modules and tests import ModelFamily
+# from this module; the redundant alias makes the re-export explicit for
+# mypy/pyright/ruff.
+from app.shared.model_taxonomy import ModelFamily as ModelFamily
 
 # =============================================================================
 # Model Configuration Schemas
@@ -610,23 +614,9 @@ class PredictResponse(BaseModel):
 
 
 # =============================================================================
-# Model Family + Feature Metadata Schemas (MLZOO-D / PRP-31)
+# Feature Metadata Schemas (MLZOO-D / PRP-31; ModelFamily moved to
+# app/shared/model_taxonomy — #268)
 # =============================================================================
-
-
-class ModelFamily(str, Enum):
-    """Classifier for advanced-model UI surfacing.
-
-    Derived from ``model_type``; not persisted in the DB. Surfaced on
-    ``RunResponse`` via a computed field and consumed by the dashboard for the
-    family Badge and the feature-importance panel routing. Unknown model types
-    classify as ``BASELINE`` (forward-compatible for new families before the
-    map in ``feature_metadata.py`` is updated).
-    """
-
-    BASELINE = "baseline"  # naive, seasonal_naive, moving_average
-    TREE = "tree"  # regression (HistGBR), lightgbm, xgboost
-    ADDITIVE = "additive"  # prophet_like (Ridge pipeline)
 
 
 class FeatureImportanceItem(BaseModel):
