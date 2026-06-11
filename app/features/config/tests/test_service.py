@@ -194,6 +194,49 @@ class TestUpdateConfig:
 
 
 # =============================================================================
+# Unit tests — apply_overrides_on_startup
+# =============================================================================
+
+
+class TestApplyOverridesOnStartup:
+    """Tests for the startup override loader's model-id guard (issue #334)."""
+
+    @pytest.mark.asyncio
+    async def test_startup_skips_invalid_model_id_override(self):
+        """A malformed persisted model id is skipped with a warning; valid keys apply."""
+        settings = get_settings()
+        # Snapshot mutated fields and restore in finally so the mutation never
+        # leaks into another test (settings-singleton precedent, 24ed5cd).
+        original_model = settings.agent_default_model
+        original_temperature = settings.agent_temperature
+        try:
+            with (
+                patch(
+                    "app.features.config.service._load_overrides",
+                    new=AsyncMock(
+                        return_value={
+                            "agent_default_model": "google-gla:google-gla:x",
+                            "agent_temperature": 0.5,
+                        }
+                    ),
+                ),
+                patch.object(service.logger, "warning") as mock_warning,
+            ):
+                await service.apply_overrides_on_startup(_mock_db())
+
+            # Malformed model id skipped — env/default value stays in effect.
+            assert settings.agent_default_model == original_model
+            # Valid keys in the same batch are still applied.
+            assert settings.agent_temperature == 0.5
+            mock_warning.assert_called_once()
+            assert mock_warning.call_args.args[0] == "config.override_invalid_model_id"
+            assert mock_warning.call_args.kwargs["key"] == "agent_default_model"
+        finally:
+            settings.agent_default_model = original_model
+            settings.agent_temperature = original_temperature
+
+
+# =============================================================================
 # Unit tests — provider health + ollama models
 # =============================================================================
 

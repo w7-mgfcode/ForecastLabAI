@@ -42,6 +42,44 @@ class TestValidateModelIdentifier:
         with pytest.raises(ValueError, match="Unknown provider"):
             validate_model_identifier("pinecone:model")
 
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "google-gla:google-gla:gemini-3-flash-preview",
+            "anthropic:anthropic:claude-sonnet-4-5",
+            "openai:openai:gpt-4o",
+            "google-vertex:google-vertex:gemini-2.0",
+            "ollama:ollama:llama3.1",
+        ],
+    )
+    def test_rejects_doubled_provider_prefix(self, identifier):
+        """A doubled provider prefix inside the model name is rejected (issue #334)."""
+        with pytest.raises(ValueError, match="Nested provider prefix"):
+            validate_model_identifier(identifier)
+
+    def test_rejects_mixed_provider_prefix(self):
+        """A different known provider nested in the model name is also rejected."""
+        with pytest.raises(ValueError, match="Nested provider prefix"):
+            validate_model_identifier("openai:anthropic:claude-x")
+
+    def test_error_message_suggests_correction(self):
+        """The rejection message tells the operator the likely intended id."""
+        with pytest.raises(ValueError) as exc:
+            validate_model_identifier("google-gla:google-gla:gemini-3-flash-preview")
+        assert "Did you mean 'google-gla:gemini-3-flash-preview'?" in str(exc.value)
+
+    @pytest.mark.parametrize(
+        "identifier",
+        ["ollama:llama3.1:8b", "ollama:gemma4:e2b", "ollama:qwen3:8b"],
+    )
+    def test_accepts_ollama_tag_identifiers(self, identifier):
+        """Multi-colon Ollama name:tag identifiers stay valid."""
+        assert validate_model_identifier(identifier) == identifier
+
+    def test_accepts_model_named_like_provider(self):
+        """A model literally named like a provider (no colon after it) stays valid."""
+        assert validate_model_identifier("ollama:openai") == "ollama:openai"
+
 
 class TestAIModelConfigUpdate:
     """Tests for the PATCH /config/ai request body."""
@@ -92,6 +130,18 @@ class TestAIModelConfigUpdate:
         )
         assert upd.agent_temperature == 0.5
         assert upd.agent_default_model == "ollama:llama3.1"
+
+    def test_rejects_doubled_prefix_via_model_validate(self):
+        """A doubled prefix fails through the validate_python (JSON) path too."""
+        with pytest.raises(ValidationError, match="Nested provider prefix"):
+            AIModelConfigUpdate.model_validate({"agent_default_model": "google-gla:google-gla:x"})
+
+    def test_fallback_model_also_guarded(self):
+        """The fallback-model field is guarded by the same nested-prefix rule."""
+        with pytest.raises(ValidationError, match="Nested provider prefix"):
+            AIModelConfigUpdate.model_validate(
+                {"agent_fallback_model": "anthropic:anthropic:claude-sonnet-4-5"}
+            )
 
 
 class TestResponseSchemas:

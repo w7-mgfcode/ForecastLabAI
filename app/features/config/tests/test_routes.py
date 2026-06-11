@@ -117,6 +117,18 @@ class TestUpdateAIConfig:
         response = client.patch("/config/ai", json={"agent_default_model": "nope"})
         assert response.status_code == 422
 
+    def test_patch_rejects_doubled_provider_prefix(self, client):
+        """A doubled provider prefix is a 422 problem+json naming the field (#334)."""
+        response = client.patch(
+            "/config/ai",
+            json={"agent_default_model": "google-gla:google-gla:gemini-3-flash-preview"},
+        )
+        assert response.status_code == 422
+        body = response.json()
+        assert body["code"] == "VALIDATION_ERROR"
+        assert body["errors"][0]["field"] == "agent_default_model"
+        assert "Nested provider prefix" in body["errors"][0]["message"]
+
     def test_patch_surfaces_dimension_conflict(self, client):
         """A 409 from the dimension guard propagates to the caller."""
         with patch(
