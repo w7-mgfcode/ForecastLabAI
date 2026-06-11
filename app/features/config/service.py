@@ -24,7 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from app.core.config import get_settings, validate_model_identifier
 from app.core.logging import get_logger
 from app.features.agents.agents.base import reset_agent_caches
 from app.features.config.models import AppConfig
@@ -45,6 +45,10 @@ logger = get_logger(__name__)
 
 # Scalar types an ``app_config`` override value may hold.
 OverrideValue = str | int | float | bool
+
+# Override keys holding a "provider:model-name" identifier — re-validated at
+# startup so a malformed persisted row never goes live (issue #334).
+_MODEL_ID_KEYS = frozenset({"agent_default_model", "agent_fallback_model"})
 
 
 # =============================================================================
@@ -190,6 +194,18 @@ async def apply_overrides_on_startup(db: AsyncSession) -> None:
     for key, value in overrides.items():
         if key not in ALLOWED_OVERRIDE_KEYS:
             continue
+        if key in _MODEL_ID_KEYS and isinstance(value, str):
+            try:
+                validate_model_identifier(value)
+            except ValueError as exc:
+                # Skip-and-warn: leave the env/default value in effect — the
+                # function's no-crash-on-startup contract stands.
+                logger.warning(
+                    "config.override_invalid_model_id",
+                    key=key,
+                    error=str(exc),
+                )
+                continue
         setattr(settings, key, value)
         if key in SECRET_KEYS and isinstance(value, str):
             os.environ[SECRET_ENV_NAMES[key]] = value

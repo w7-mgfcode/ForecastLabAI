@@ -32,8 +32,12 @@ def validate_model_identifier(v: str) -> str:
         The validated model identifier, unchanged.
 
     Raises:
-        ValueError: If the format is invalid, the model name is blank, or the
-            provider is not in :data:`VALID_MODEL_PROVIDERS`.
+        ValueError: If the format is invalid, the model name is blank, the
+            provider is not in :data:`VALID_MODEL_PROVIDERS`, or the model
+            name nests another provider prefix (e.g.
+            ``google-gla:google-gla:gemini-3-flash-preview``). Multi-colon
+            Ollama tag identifiers stay valid (``ollama:llama3.1:8b`` —
+            ``llama3.1`` is not a provider).
     """
     if ":" not in v:
         raise ValueError(
@@ -56,6 +60,19 @@ def validate_model_identifier(v: str) -> str:
         raise ValueError(
             f"Unknown provider '{provider}'. Valid providers: {list(VALID_MODEL_PROVIDERS)}"
         )
+
+    # Reject a nested/doubled provider prefix inside the model name
+    # (issue #334: 'google-gla:google-gla:gemini-…' → Gemini 404 at run time).
+    # Ollama tags ('ollama:llama3.1:8b') stay valid: 'llama3.1' is not a provider.
+    if ":" in model_name:
+        nested = model_name.split(":", 1)[0]
+        if nested in VALID_MODEL_PROVIDERS:
+            suggested = f"{provider}:{model_name.split(':', 1)[1]}"
+            raise ValueError(
+                f"Nested provider prefix '{nested}:' inside the model name of '{v}'. "
+                f"Did you mean '{suggested}'? "
+                "Expected format: 'provider:model-name' with the provider given once."
+            )
     return v
 
 

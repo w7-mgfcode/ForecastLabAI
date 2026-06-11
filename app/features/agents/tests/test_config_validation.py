@@ -38,6 +38,19 @@ class TestModelIdentifierValidation:
         with pytest.raises(ValidationError, match="Unknown provider"):
             Settings(agent_default_model=":model-name")
 
+    def test_doubled_prefix_rejected_at_settings_boot(self):
+        """A doubled provider prefix fails Settings construction (issue #334)."""
+        with pytest.raises(ValidationError, match="Nested provider"):
+            Settings(
+                agent_default_model="anthropic:anthropic:claude-sonnet-4-5",
+                _env_file=None,
+            )
+
+    def test_ollama_tag_accepted_at_settings_boot(self):
+        """A multi-colon Ollama name:tag identifier constructs Settings fine."""
+        settings = Settings(agent_default_model="ollama:llama3.1:8b", _env_file=None)
+        assert settings.agent_default_model == "ollama:llama3.1:8b"
+
 
 class TestAPIKeyValidation:
     """Test API key validation for models."""
