@@ -52,7 +52,7 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 | rag | DELETE | `/rag/sources/{source_id}` | Delete source + cascaded chunks |
 | agents | POST | `/agents/sessions` | Create session (`agent_type`: `experiment` or `rag_assistant`) |
 | agents | GET | `/agents/sessions/{session_id}` | Status + message history (Postgres JSONB) |
-| agents | POST | `/agents/sessions/{session_id}/chat` | Send user message; returns full response |
+| agents | POST | `/agents/sessions/{session_id}/chat` | Send user message; returns full response. **#335** — when every model in the agent's fallback chain fails with a provider error, returns **502** `application/problem+json` with `code="AGENT_FALLBACK_EXHAUSTED"`, `type=/errors/agent-fallback-exhausted`, and an additive `failures: [{model_name, status_code, reason, detail}]` extension member (secret-scrubbed, 300-char-capped details) |
 | agents | POST | `/agents/sessions/{session_id}/approve` | Approve/reject a pending tool call (HITL gate) |
 | agents | DELETE | `/agents/sessions/{session_id}` | Close session |
 | agents | WS | `/agents/stream` | Token-by-token streaming + tool-call events |
@@ -77,7 +77,7 @@ Verified against `app/features/agents/websocket.py` and `app/features/agents/sch
   - `tool_call_end` — `data: {"tool_name": str, "tool_call_id": str, "result": Any, "duration_ms": float}` (`ToolCallEndEvent`)
   - `approval_required` — emitted when a tool in `agent_require_approval` is pending; the chat REST `/agents/sessions/{id}/approve` endpoint releases it
   - `complete` — `data: {"message": str, "tokens_used": int, "tool_calls_count": int}` (`CompleteEvent`)
-  - `error` — `data: {"error": str, "error_type": str, "recoverable": bool}` (`ErrorEvent`). On `recoverable: false` (e.g., `session_not_found`, `session_expired`), the client should close.
+  - `error` — `data: {"error": str, "error_type": str, "recoverable": bool}` (`ErrorEvent`). On `recoverable: false` (e.g., `session_not_found`, `session_expired`), the client should close. **#335** — when every model in the agent's fallback chain fails with a provider error, the event carries `error_type="fallback_exhausted"`, `recoverable=true`, a human-actionable per-leg summary in `error`, and an additive Optional `failures: [{model_name, status_code: int|null, reason, detail}]` key (`reason` ∈ `model_not_found` / `quota_exhausted` / `auth_error` / `provider_unavailable` / `provider_error` / `response_rejected` / `unknown`; `detail` is secret-scrubbed and 300-char-capped).
 
 ## WebSocket Events (`/demo/stream`)
 

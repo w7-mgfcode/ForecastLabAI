@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 
 from app.core.logging import get_logger
 from app.core.problem_details import (
+    AGENT_FALLBACK_EXHAUSTED_CODE,
     EMBEDDING_AUTH_CODE,
     ERROR_TYPES,
     ProblemDetailResponse,
@@ -40,6 +41,7 @@ class ForecastLabError(Exception):
         code: str = "INTERNAL_ERROR",
         status_code: int = 500,
         details: dict[str, Any] | None = None,
+        extensions: dict[str, Any] | None = None,
     ) -> None:
         """Initialize application error.
 
@@ -47,13 +49,19 @@ class ForecastLabError(Exception):
             message: Human-readable error message.
             code: Machine-readable error code.
             status_code: HTTP status code.
-            details: Additional error context.
+            details: Additional error context. LOG-ONLY — the exception
+                handler never copies it into the response body (it may carry
+                internals).
+            extensions: RFC 7807 extension members the handler DOES merge
+                into the problem+json response body (#335). Only put
+                client-safe, already-sanitized data here.
         """
         super().__init__(message)
         self.message = message
         self.code = code
         self.status_code = status_code
         self.details = details or {}
+        self.extensions = extensions or {}
 
     @property
     def title(self) -> str:
@@ -254,6 +262,41 @@ class EmbeddingProviderAuthError(ForecastLabError):
         )
 
 
+class AgentFallbackExhaustedError(ForecastLabError):
+    """502 — every model in the agent's fallback chain failed (issue #335).
+
+    Raised when the PydanticAI ``FallbackModel`` chain (or a single configured
+    model) fails with provider-API errors on every leg. Mirrors
+    :class:`EmbeddingProviderAuthError`: keeps the public status at 502 (an
+    upstream failure from the caller's perspective) and emits a
+    *machine-readable* ``AGENT_FALLBACK_EXHAUSTED`` problem ``type``/``code``
+    so clients can classify it. The per-model classified failures ride the
+    response-visible ``extensions`` channel as a ``failures`` member —
+    ``details`` stays log-only by design.
+    """
+
+    error_type_uri: str = ERROR_TYPES[AGENT_FALLBACK_EXHAUSTED_CODE]
+
+    def __init__(
+        self,
+        message: str,
+        failures: list[dict[str, Any]],
+    ) -> None:
+        """Initialize with the human summary and classified per-model legs.
+
+        Args:
+            message: Human-actionable summary (already secret-safe).
+            failures: Serialized ``ModelFailureDetail`` dicts — sanitized
+                upstream by the classifier; surfaced verbatim to the client.
+        """
+        super().__init__(
+            message=message,
+            code=AGENT_FALLBACK_EXHAUSTED_CODE,
+            status_code=502,
+            extensions={"failures": failures},
+        )
+
+
 # =============================================================================
 # Exception Handlers (RFC 7807)
 # =============================================================================
@@ -287,6 +330,7 @@ async def forecastlab_exception_handler(
         title=exc.title,
         detail=exc.message,
         error_code=exc.code,
+        extensions=exc.extensions or None,
     )
 
 
