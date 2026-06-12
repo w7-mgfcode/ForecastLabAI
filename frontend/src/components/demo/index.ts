@@ -7,3 +7,6 @@ export * from './ReplayConfirmDialog'
 export * from './WorkspaceEditDialog'
 export * from './WorkspaceLineageStrip'
 export * from './workspace-name'
+// E3 (#409) — advanced seed config + focus-pair selection.
+export * from './SeedConfigPanel'
+export * from './ScopeSelector'

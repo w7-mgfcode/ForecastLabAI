@@ -774,6 +774,25 @@ export interface StepEvent {
   phase_total?: number | null
 }
 
+// E3 (#409) — curated, allow-listed seed overrides (7 knobs; unknown keys 422
+// server-side via extra='forbid'). Requires skip_seed=false on the start frame.
+export interface SeedOverrides {
+  stores?: number
+  products?: number
+  window_days?: number
+  sparsity?: number
+  promotion_intensity?: number
+  stockout_intensity?: number
+  noise_sigma?: number
+}
+
+// E3 (#409) — operator-selected focus pair (REAL ids from /dimensions —
+// sequences never reset, so ids are not 1-based).
+export interface UserScope {
+  store_id: number
+  product_id: number
+}
+
 // Start frame for WS /demo/stream and request body for POST /demo/run.
 export interface DemoRunRequest {
   seed?: number
@@ -787,6 +806,9 @@ export interface DemoRunRequest {
   workspace_name?: string
   // E1 (#407) — replay provenance: the source workspace_id a Replay re-runs.
   replayed_from_workspace_id?: string
+  // E3 (#409) — advanced seed config + focus pair; omit both for legacy runs.
+  seed_overrides?: SeedOverrides
+  user_scope?: UserScope
 }
 
 // Aggregate result returned by the synchronous POST /demo/run.
@@ -820,6 +842,10 @@ export interface WorkspaceListItem {
   pinned: boolean
   tags: string[]
   replayed_from_workspace_id: string | null
+  // E3 (#409) — replay-relevant story slots (on the LIST item: replay reads
+  // list rows); null on runs without them.
+  seed_overrides: SeedOverrides | null
+  user_scope: UserScope | null
 }
 
 // Full row from GET /demo/workspaces/{workspace_id}.

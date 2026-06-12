@@ -32,6 +32,8 @@ const fullWorkspace: WorkspaceDetail = {
   pinned: false,
   tags: [],
   replayed_from_workspace_id: null,
+  seed_overrides: null,
+  user_scope: null,
   notes: null,
   config_schema_version: 1,
 }
