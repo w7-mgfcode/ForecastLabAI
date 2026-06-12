@@ -77,4 +77,6 @@ async def run_pipeline_sync(app: FastAPI, req: DemoRunRequest) -> DemoRunResult:
         winning_run_id=final.data.get("winning_run_id"),
         alias=final.data.get("alias"),
         wall_clock_s=float(wall_clock) if isinstance(wall_clock, (int, float)) else 0.0,
+        # E1 (#390) -- additive; mirrors the winning_run_id passthrough.
+        workspace_id=final.data.get("workspace_id"),
     )

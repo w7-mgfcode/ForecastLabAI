@@ -16,6 +16,7 @@ from app.features.agents import models as agents_models  # noqa: F401
 from app.features.batch import models as batch_models  # noqa: F401
 from app.features.config import models as config_models  # noqa: F401
 from app.features.data_platform import models as data_platform_models  # noqa: F401
+from app.features.demo import models as demo_models  # noqa: F401
 from app.features.explainability import models as explainability_models  # noqa: F401
 from app.features.jobs import models as jobs_models  # noqa: F401
 from app.features.model_selection import models as model_selection_models  # noqa: F401
