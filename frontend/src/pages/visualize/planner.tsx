@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { AlertTriangle, BarChart3, Download, Loader2, Play, Save, Trash2 } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { AlertTriangle, BarChart3, Download, Loader2, Play, Save, Trash2, X } from 'lucide-react'
 import { useJob } from '@/hooks/use-jobs'
 import {
   useCompareScenarios,
@@ -12,6 +13,7 @@ import {
 import { MultiSeriesChart } from '@/components/charts/multi-series-chart'
 import { TimeSeriesChart } from '@/components/charts/time-series-chart'
 import { JobPicker } from '@/components/common/job-picker'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -34,6 +36,7 @@ import {
 } from '@/components/ui/table'
 import { downloadCsv, toCsv } from '@/lib/csv-export'
 import { formatCurrency, formatNumber, getErrorMessage } from '@/lib/api'
+import { parseTagsParam } from '@/lib/url-params'
 import {
   assumptionDateErrors,
   buildMultiSeries,
@@ -120,6 +123,14 @@ export default function WhatIfPlannerPage() {
   const [runError, setRunError] = useState<string | null>(null)
   const [reloadId, setReloadId] = useState('')
 
+  // -- Saved-plans tag filter (E3, #392) ----------------------------------
+  // Read ?tags= ONCE for initial state; React state stays canonical and is
+  // mirrored back to the URL on every change so the filter is deep-linkable.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [tagFilter, setTagFilter] = useState<string[]>(() =>
+    parseTagsParam(searchParams.getAll('tags')),
+  )
+
   // -- Multi-scenario comparison state -----------------------------------
   const [selectedPlanIds, setSelectedPlanIds] = useState<Set<string>>(new Set())
   const [multiComparison, setMultiComparison] = useState<MultiScenarioComparison | null>(null)
@@ -129,8 +140,27 @@ export default function WhatIfPlannerPage() {
   const createScenario = useCreateScenario()
   const deleteScenario = useDeleteScenario()
   const compareScenarios = useCompareScenarios()
-  const scenariosQuery = useScenarios()
+  const scenariosQuery = useScenarios(tagFilter)
   const reloadedPlan = useScenario(reloadId, !!reloadId)
+
+  // Mirror the active tag filter to the URL ({ replace: true } keeps chip
+  // toggles out of the browser history).
+  function applyTagFilter(next: string[]) {
+    setTagFilter(next)
+    setSearchParams(
+      (prev) => {
+        const params = new URLSearchParams(prev)
+        params.delete('tags')
+        next.forEach((tag) => params.append('tags', tag))
+        return params
+      },
+      { replace: true },
+    )
+  }
+  const addTag = (tag: string) => {
+    if (!tagFilter.includes(tag)) applyTagFilter([...tagFilter, tag])
+  }
+  const removeTag = (tag: string) => applyTagFilter(tagFilter.filter((t) => t !== tag))
 
   // The comparison on screen is either a fresh simulation result or, when a
   // saved plan has been reloaded, that plan's embedded snapshot. Deriving it
@@ -674,8 +704,22 @@ export default function WhatIfPlannerPage() {
               <CardTitle>Saved plans</CardTitle>
               <CardDescription>
                 Reload a plan to re-render its comparison, or select 2-5 plans to
-                compare them side by side.
+                compare them side by side. Click a tag to filter to plans carrying
+                every selected tag.
               </CardDescription>
+              {tagFilter.length > 0 && (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  {tagFilter.map((tag) => (
+                    <Badge key={tag} className="cursor-pointer" onClick={() => removeTag(tag)}>
+                      {tag}
+                      <X className="h-3 w-3" />
+                    </Badge>
+                  ))}
+                  <Button variant="ghost" size="sm" onClick={() => applyTagFilter([])}>
+                    Clear
+                  </Button>
+                </div>
+              )}
             </div>
             <Button
               variant="outline"
@@ -721,7 +765,22 @@ export default function WhatIfPlannerPage() {
                       </TableCell>
                       <TableCell className="font-medium">{plan.name}</TableCell>
                       <TableCell className="text-xs text-muted-foreground">
-                        {plan.tags.length > 0 ? plan.tags.join(', ') : '—'}
+                        {plan.tags.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {plan.tags.map((tag) => (
+                              <Badge
+                                key={tag}
+                                variant={tagFilter.includes(tag) ? 'default' : 'secondary'}
+                                className="cursor-pointer"
+                                onClick={() => addTag(tag)}
+                              >
+                                {tag}
+                              </Badge>
+                            ))}
+                          </div>
+                        ) : (
+                          '—'
+                        )}
                       </TableCell>
                       <TableCell className="text-right">
                         {formatDelta(plan.units_delta)}
@@ -753,6 +812,13 @@ export default function WhatIfPlannerPage() {
                 })}
               </TableBody>
             </Table>
+          ) : tagFilter.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm text-muted-foreground">No plans match the selected tags.</p>
+              <Button variant="ghost" size="sm" onClick={() => applyTagFilter([])}>
+                Clear
+              </Button>
+            </div>
           ) : (
             <p className="text-sm text-muted-foreground">
               No saved plans yet. Run a simulation and save it above.
