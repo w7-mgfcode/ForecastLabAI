@@ -39,6 +39,7 @@ from app.shared.seeder.generators import (
     ReturnsGenerator,
     SalesDailyGenerator,
     StoreGenerator,
+    build_price_lookup,
 )
 from app.shared.seeder.generators.exogenous import WEATHER_SIGNAL_NAME
 
@@ -431,6 +432,14 @@ class DataSeeder:
             if weather_lookup and self.config.exogenous.weather_temperature_sensitivity != 0.0
             else None
         )
+        # Price/sales coupling (issue #237): thread the generated price
+        # windows (incl. Phase 2 markdowns merged above) into the sales
+        # generator so unit_price follows price_history and demand responds
+        # via retail.price_elasticity. None preserves the legacy path
+        # byte-for-byte — same gating convention as weather_lookup_for_sales.
+        price_lookup_for_sales = (
+            build_price_lookup(price_records) if self.config.retail.price_sales_coupling else None
+        )
         sales_gen = SalesDailyGenerator(
             self.rng,
             self.config.time_series,
@@ -453,6 +462,7 @@ class DataSeeder:
             promo_dates,
             stockout_dates,
             product_lifecycle_data=product_lifecycle_data,
+            price_lookup=price_lookup_for_sales,
         )
 
         logger.info(

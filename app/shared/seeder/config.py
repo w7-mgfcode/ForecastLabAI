@@ -82,6 +82,10 @@ class RetailPatternConfig:
         promotion_lift: Sales multiplier during promotions.
         stockout_behavior: How to handle stockouts (zero sales or backlog).
         price_elasticity: % demand change per % price change (negative = inverse).
+        price_sales_coupling: When True, sales_daily.unit_price follows the
+            generated price_history windows (incl. markdowns) and demand
+            responds via price_elasticity. When False, legacy behavior:
+            unit_price = base_price always.
         new_product_ramp_days: Days to reach full demand for new products.
         weekend_spike: Additional weekend multiplier on top of weekly seasonality.
         promotion_probability: Probability of a product having a promotion per period.
@@ -91,6 +95,7 @@ class RetailPatternConfig:
     promotion_lift: float = 1.3
     stockout_behavior: Literal["zero", "backlog"] = "zero"
     price_elasticity: float = -0.5
+    price_sales_coupling: bool = True
     new_product_ramp_days: int = 30
     weekend_spike: float = 1.0  # Already in weekly_seasonality, this is additional
     promotion_probability: float = 0.05
