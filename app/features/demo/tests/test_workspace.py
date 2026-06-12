@@ -164,3 +164,21 @@ async def test_list_workspaces_newest_first_limit_offset(db_session: AsyncSessio
 async def test_get_workspace_missing_returns_none(db_session: AsyncSession) -> None:
     """get_workspace returns None for an unknown id."""
     assert await workspace.get_workspace(db_session, "0" * 32) is None
+
+
+async def test_delete_workspace_removes_only_target_row(db_session: AsyncSession) -> None:
+    """delete_workspace removes exactly the matching metadata row."""
+    id_a = await workspace.create_workspace(_keep_request(workspace_name="it-del-a"))
+    id_b = await workspace.create_workspace(_keep_request(workspace_name="it-del-b"))
+    assert id_a is not None and id_b is not None
+
+    assert await workspace.delete_workspace(db_session, id_a) is True
+
+    assert await workspace.get_workspace(db_session, id_a) is None
+    remaining = await workspace.list_workspaces(db_session)
+    assert [r.workspace_id for r in remaining] == [id_b]
+
+
+async def test_delete_workspace_missing_returns_false(db_session: AsyncSession) -> None:
+    """delete_workspace returns False (no raise) for an unknown id."""
+    assert await workspace.delete_workspace(db_session, "0" * 32) is False

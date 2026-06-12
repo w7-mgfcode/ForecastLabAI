@@ -317,6 +317,41 @@ async def test_get_workspace_success(client, monkeypatch):
 
 
 # =============================================================================
+# DELETE /demo/workspaces/{workspace_id} (unit)
+# =============================================================================
+
+
+async def test_delete_workspace_204(client, monkeypatch):
+    """A deleted workspace row yields 204 with an empty body."""
+    seen: dict[str, str] = {}
+
+    async def fake_delete(_db, workspace_id: str) -> bool:
+        seen["workspace_id"] = workspace_id
+        return True
+
+    monkeypatch.setattr(workspace, "delete_workspace", fake_delete)
+
+    resp = await client.delete("/demo/workspaces/" + "c" * 32)
+    assert resp.status_code == 204
+    assert resp.content == b""
+    assert seen["workspace_id"] == "c" * 32
+
+
+async def test_delete_workspace_404(client, monkeypatch):
+    """An unknown workspace_id is a 404 problem+json."""
+
+    async def fake_delete(_db, _workspace_id: str) -> bool:
+        return False
+
+    monkeypatch.setattr(workspace, "delete_workspace", fake_delete)
+
+    resp = await client.delete("/demo/workspaces/" + "0" * 32)
+    assert resp.status_code == 404
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    assert "Workspace not found" in resp.json()["detail"]
+
+
+# =============================================================================
 # E4 (#393) -- workspace GET routes against real Postgres (integration)
 # =============================================================================
 
@@ -368,3 +403,64 @@ async def test_get_workspace_integration_round_trip(client, db_session: AsyncSes
     missing = await client.get("/demo/workspaces/" + "f" * 32)
     assert missing.status_code == 404
     assert missing.headers["content-type"].startswith("application/problem+json")
+
+
+@pytest.mark.integration
+async def test_delete_workspace_integration_round_trip(client, db_session: AsyncSession):
+    """DELETE removes exactly the target metadata row; a re-delete is 404."""
+    kept = await workspace.create_workspace(
+        DemoRunRequest.model_validate({"preservation": "keep", "workspace_name": "del-kept"})
+    )
+    target = await workspace.create_workspace(
+        DemoRunRequest.model_validate({"preservation": "keep", "workspace_name": "del-target"})
+    )
+    assert kept is not None and target is not None
+
+    resp = await client.delete(f"/demo/workspaces/{target}")
+    assert resp.status_code == 204
+
+    # The deleted row is gone; the sibling row is untouched.
+    assert (await client.get(f"/demo/workspaces/{target}")).status_code == 404
+    survivors = await client.get("/demo/workspaces")
+    assert [w["workspace_id"] for w in survivors.json()["workspaces"]] == [kept]
+
+    # Deleting again is a 404 problem+json (no idempotent 204).
+    again = await client.delete(f"/demo/workspaces/{target}")
+    assert again.status_code == 404
+    assert again.headers["content-type"].startswith("application/problem+json")
+
+
+@pytest.mark.integration
+async def test_delete_workspace_integration_keeps_created_objects(client, db_session: AsyncSession):
+    """Deleting a workspace never deletes (or resolves) its soft references.
+
+    The workspace references one REAL cross-slice object (an agent session)
+    plus one dangling run id -- the delete must succeed without touching the
+    former or resolving the latter (no-FK soft-reference contract).
+    """
+    session_resp = await client.post("/agents/sessions", json={"agent_type": "experiment"})
+    assert session_resp.status_code == 201
+    agent_session_id = session_resp.json()["session_id"]
+    try:
+        workspace_id = await workspace.create_workspace(
+            DemoRunRequest.model_validate({"preservation": "keep", "workspace_name": "del-softref"})
+        )
+        assert workspace_id is not None
+        row = await workspace.get_workspace(db_session, workspace_id)
+        assert row is not None
+        row.created_objects = {
+            "agent_session_id": agent_session_id,
+            "winning_run_id": "run-dangling-never-created",
+        }
+        await db_session.commit()
+
+        resp = await client.delete(f"/demo/workspaces/{workspace_id}")
+        assert resp.status_code == 204
+
+        # The metadata row is gone...
+        assert (await client.get(f"/demo/workspaces/{workspace_id}")).status_code == 404
+        # ...but the soft-referenced agent session still exists.
+        still_there = await client.get(f"/agents/sessions/{agent_session_id}")
+        assert still_there.status_code == 200
+    finally:
+        await client.delete(f"/agents/sessions/{agent_session_id}")

@@ -14,7 +14,8 @@ demo pipeline. :func:`create_workspace` returns ``None`` on any error;
 
 :func:`get_workspace` / :func:`list_workspaces` / :func:`count_workspaces` are
 routed since E4 (epic #393) by ``GET /demo/workspaces`` and
-``GET /demo/workspaces/{workspace_id}`` in ``app/features/demo/routes.py``.
+``GET /demo/workspaces/{workspace_id}`` in ``app/features/demo/routes.py``;
+:func:`delete_workspace` backs ``DELETE /demo/workspaces/{workspace_id}``.
 """
 
 from __future__ import annotations
@@ -193,6 +194,31 @@ async def list_workspaces(
         .offset(offset)
     )
     return list(result.scalars().all())
+
+
+async def delete_workspace(db: AsyncSession, workspace_id: str) -> bool:
+    """Delete a workspace METADATA row; return ``True`` when a row was removed.
+
+    Deletes ONLY the ``showcase_workspace`` row. Everything the run created --
+    model runs, scenario plans, aliases, jobs, agent sessions, artifacts -- is
+    carried as OPAQUE SOFT REFERENCES in ``created_objects`` (no ForeignKeys
+    by design, see ``app/features/demo/models.py``) and is deliberately left
+    untouched: the workspace is an audit record, never an ownership root.
+
+    Args:
+        db: An open async session (caller-owned).
+        workspace_id: The external id of the row to delete.
+
+    Returns:
+        ``True`` when a row was deleted, ``False`` when none matched.
+    """
+    row = await get_workspace(db, workspace_id)
+    if row is None:
+        return False
+    await db.delete(row)
+    await db.commit()
+    logger.info("demo.workspace_deleted", workspace_id=workspace_id)
+    return True
 
 
 async def count_workspaces(db: AsyncSession) -> int:
