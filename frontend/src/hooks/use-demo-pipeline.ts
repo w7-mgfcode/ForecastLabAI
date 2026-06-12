@@ -30,6 +30,8 @@ export interface DemoSummary {
   wallClockS: number
   /** PRP-41 — populated when the SHOWCASE_RICH v2_train step registered a run. */
   v2RunId: string | null
+  /** E4 (#393) — populated when the run was kept as a showcase workspace. */
+  workspaceId: string | null
 }
 
 export interface DemoPipelineState {
@@ -123,6 +125,7 @@ export function applyEvent(state: DemoPipelineState, event: StepEvent): DemoPipe
         alias: toStringOrNull(event.data.alias),
         wallClockS: toNumber(event.data.wall_clock_s) ?? 0,
         v2RunId: toStringOrNull(event.data.v2_run_id),
+        workspaceId: toStringOrNull(event.data.workspace_id),
       }
       return { ...state, phase: 'done', summary }
     }

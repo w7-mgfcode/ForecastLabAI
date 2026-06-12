@@ -25,6 +25,7 @@ const baseSummary: DemoSummary = {
   alias: 'demo-production',
   wallClockS: 180,
   v2RunId: 'v2-456',
+  workspaceId: null,
 }
 
 describe('InspectArtifactsPanel', () => {
