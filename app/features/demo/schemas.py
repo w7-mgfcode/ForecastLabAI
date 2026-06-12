@@ -314,3 +314,49 @@ class WorkspaceListResponse(BaseModel):
         ..., description="Saved workspaces for the current page; empty when none."
     )
     total: int = Field(..., ge=0, description="Total saved workspaces.")
+
+
+# E2 (#408) -- link-health classification of one probed soft reference.
+RefHealthStatus = Literal["alive", "dead", "unknown"]
+# E2 (#408) -- kind of soft-referenced object a workspace can record.
+RefType = Literal["model_run", "scenario_plan", "alias", "batch", "agent_session", "job"]
+
+
+class WorkspaceRefHealth(BaseModel):
+    """Liveness of one soft reference recorded on a workspace (E2, #408).
+
+    Response model -- plain ``BaseModel``, NOT strict (``StepEvent``
+    precedent above; strict mode is request-body-only policy).
+    """
+
+    key: str = Field(
+        ...,
+        description="created_objects key, e.g. 'winning_run_id' or 'scenario_plan_ids[0]'.",
+    )
+    ref_type: RefType = Field(..., description="Kind of referenced object.")
+    ref_id: str = Field(..., description="The recorded soft-reference id.")
+    status: RefHealthStatus = Field(
+        ..., description="alive (2xx) / dead (404) / unknown (anything else)."
+    )
+    probe_path: str = Field(..., description="The public API path probed.")
+
+
+class WorkspaceHealthResponse(BaseModel):
+    """Per-workspace link-health summary (E2, #408).
+
+    Response model -- plain ``BaseModel``, NOT strict.
+    """
+
+    workspace_id: str = Field(..., description="The probed workspace's external id.")
+    workspace_status: str = Field(..., description="running / completed / failed.")
+    partial_run: bool = Field(
+        ..., description="True when workspace_status != 'completed' (the run never settled)."
+    )
+    references: list[WorkspaceRefHealth] = Field(
+        default_factory=list,
+        description="Per-reference probe results; empty when nothing was recorded.",
+    )
+    alive: int = Field(..., ge=0, description="Count of references that probed alive.")
+    dead: int = Field(..., ge=0, description="Count of references that probed dead (404).")
+    unknown: int = Field(..., ge=0, description="Count of references whose probe was inconclusive.")
+    checked_at: datetime = Field(default_factory=_utc_now, description="When the probes ran (UTC).")

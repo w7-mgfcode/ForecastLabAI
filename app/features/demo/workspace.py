@@ -17,8 +17,11 @@ routed since E4 (epic #393) by ``GET /demo/workspaces`` and
 ``GET /demo/workspaces/{workspace_id}`` in ``app/features/demo/routes.py``;
 :func:`delete_workspace` backs ``DELETE /demo/workspaces/{workspace_id}``;
 :func:`update_workspace` backs ``PATCH /demo/workspaces/{workspace_id}``
-(E1, #407). The request-scoped helpers take a caller-owned session and raise
-normally -- the warn-and-continue contract is pipeline-only.
+(E1, #407). E2 (#408) adds server-side list filters (``q`` name search,
+``tags`` containment, ``include_archived``) and an allow-listed sort with
+unconditional pinned-first ordering. The request-scoped helpers take a
+caller-owned session and raise normally -- the warn-and-continue contract is
+pipeline-only.
 """
 
 from __future__ import annotations
@@ -26,8 +29,9 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
 
 from app.core.database import get_session_maker
 from app.core.logging import get_logger
@@ -44,6 +48,43 @@ if TYPE_CHECKING:
     from app.features.demo.pipeline import DemoContext
 
 logger = get_logger(__name__)
+
+# E2 (#408) -- allow-listed sort columns for GET /demo/workspaces. sort_by is
+# user input; unknown values fall back to the default order (created_at desc)
+# rather than erroring (dimensions precedent, app/features/dimensions/service.py).
+_SORT_COLUMNS: dict[str, InstrumentedAttribute[Any]] = {
+    "created_at": ShowcaseWorkspace.created_at,
+    "name": ShowcaseWorkspace.name,
+    "seed": ShowcaseWorkspace.seed,
+    "status": ShowcaseWorkspace.status,
+}
+
+
+def _apply_filters[SelectT: Select[Any]](
+    stmt: SelectT,
+    *,
+    q: str | None = None,
+    tags: list[str] | None = None,
+    include_archived: bool = False,
+) -> SelectT:
+    """Apply the E2 list filters to a select statement.
+
+    Shared by :func:`list_workspaces` and :func:`count_workspaces` so the
+    page's ``total`` always respects the active filters (scenarios precedent:
+    ``app/features/scenarios/service.py`` applies the same ``.where`` chain to
+    both the count and rows statements).
+    """
+    if not include_archived:
+        stmt = stmt.where(ShowcaseWorkspace.archived.is_(False))
+    if q:
+        # Case-insensitive name search (dimensions ILIKE precedent). NAME only
+        # -- workspace_id prefixes are copy-paste handles, not search terms.
+        stmt = stmt.where(ShowcaseWorkspace.name.ilike(f"%{q}%"))
+    if tags:
+        # JSONB @> containment -- a workspace matches when it carries every
+        # listed tag (scenario_plan.tags precedent; GIN-indexed since E1 #407).
+        stmt = stmt.where(ShowcaseWorkspace.tags.contains(tags))
+    return stmt
 
 
 async def create_workspace(req: DemoRunRequest) -> str | None:
@@ -217,20 +258,44 @@ async def list_workspaces(
     *,
     limit: int = 50,
     offset: int = 0,
+    q: str | None = None,
+    tags: list[str] | None = None,
+    include_archived: bool = False,
+    sort_by: str | None = None,
+    sort_order: str = "desc",
 ) -> list[ShowcaseWorkspace]:
-    """List workspace rows, newest first (tie-broken by id, descending).
+    """List workspace rows with E2 (#408) filters; pinned rows always first.
+
+    Default order is newest first (tie-broken by id, descending). ``sort_by``
+    is allow-listed (created_at / name / seed / status); unknown values fall
+    back to the default order. ``name`` sorts NULLS LAST so unnamed rows sink.
+    Pinned rows order first regardless of the active sort.
 
     Args:
         db: An open async session (caller-owned).
         limit: Maximum rows to return.
-        offset: Rows to skip from the newest end.
+        offset: Rows to skip from the sorted front.
+        q: Case-insensitive name search (ILIKE substring).
+        tags: Tag containment filter -- a row must carry every listed tag.
+        include_archived: Include archived rows (hidden by default).
+        sort_by: Allow-listed sort column; unknown values use the default order.
+        sort_order: Sort direction ("asc" or "desc").
 
     Returns:
-        The matching rows, newest first.
+        The matching rows in the requested order.
     """
+    sort_column = _SORT_COLUMNS.get(sort_by) if sort_by else None
+    if sort_column is not None:
+        order_expr = sort_column.desc() if sort_order == "desc" else sort_column.asc()
+        if sort_by == "name":
+            order_expr = order_expr.nulls_last()
+    else:
+        order_expr = ShowcaseWorkspace.created_at.desc()
+    stmt = _apply_filters(
+        select(ShowcaseWorkspace), q=q, tags=tags, include_archived=include_archived
+    )
     result = await db.execute(
-        select(ShowcaseWorkspace)
-        .order_by(ShowcaseWorkspace.created_at.desc(), ShowcaseWorkspace.id.desc())
+        stmt.order_by(ShowcaseWorkspace.pinned.desc(), order_expr, ShowcaseWorkspace.id.desc())
         .limit(limit)
         .offset(offset)
     )
@@ -262,14 +327,31 @@ async def delete_workspace(db: AsyncSession, workspace_id: str) -> bool:
     return True
 
 
-async def count_workspaces(db: AsyncSession) -> int:
-    """Count all workspace rows (E4, issue #393).
+async def count_workspaces(
+    db: AsyncSession,
+    *,
+    q: str | None = None,
+    tags: list[str] | None = None,
+    include_archived: bool = False,
+) -> int:
+    """Count workspace rows matching the active filters (E4 #393, E2 #408).
+
+    Applies the SAME filter chain as :func:`list_workspaces` (via
+    :func:`_apply_filters`) so a filtered page's ``total`` stays honest.
 
     Args:
         db: An open async session (caller-owned).
+        q: Case-insensitive name search (ILIKE substring).
+        tags: Tag containment filter -- a row must carry every listed tag.
+        include_archived: Include archived rows (hidden by default).
 
     Returns:
-        The total number of saved workspaces.
+        The number of saved workspaces matching the filters.
     """
-    count_stmt = select(func.count()).select_from(ShowcaseWorkspace)
+    count_stmt = _apply_filters(
+        select(func.count()).select_from(ShowcaseWorkspace),
+        q=q,
+        tags=tags,
+        include_archived=include_archived,
+    )
     return int(await db.scalar(count_stmt) or 0)
