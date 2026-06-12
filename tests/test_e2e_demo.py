@@ -531,6 +531,89 @@ def test_run_demo_showcase_rich_full_epic(
     )
 
 
+# E4 (#393) — wall-clock budget per demo_minimal replay run (11 steps, the
+# fastest preset; reset+seed dominates). Two sequential runs share one test.
+REPLAY_RUN_TIMEOUT_S: float = 240.0
+
+
+def _post_demo_run(body_dict: dict[str, object], timeout_s: float) -> dict[str, object]:
+    """POST /demo/run with a JSON body; return the parsed DemoRunResult."""
+    import json
+
+    body = json.dumps(body_dict).encode("utf-8")
+    req = urllib.request.Request(  # noqa: S310 — http://127.0.0.1 internal URL
+        f"{DEMO_API_URL}/demo/run",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:  # noqa: S310
+            payload = resp.read()
+            assert resp.status == 200, f"POST /demo/run -> {resp.status}"
+    except urllib.error.HTTPError as exc:
+        raise AssertionError(f"POST /demo/run failed: HTTP {exc.code} body={exc.read()!r}") from exc
+    result: dict[str, object] = json.loads(payload)
+    return result
+
+
+@pytest.mark.integration
+def test_demo_replay_same_config_twice(
+    uvicorn_subprocess: subprocess.Popen[bytes],
+) -> None:
+    """E4 (#393) — replaying the IDENTICAL config stays green (no 409/500).
+
+    The umbrella #389 replay-regression guard: the same ``preservation="keep"``
+    body runs twice sequentially — the harshest path (re-seed + re-register
+    over the first run's accumulated model_run rows) must survive the #146
+    (`_find_duplicate` multi-match 500) and #324 (safer-promote alias
+    corruption) fixes. Asserts both runs pass with DISTINCT workspace ids and
+    that ``GET /demo/workspaces`` lists both rows as completed.
+    """
+    import json
+
+    body_dict: dict[str, object] = {
+        "seed": 42,
+        "reset": True,
+        "skip_seed": False,
+        "scenario": "demo_minimal",
+        "preservation": "keep",
+        "workspace_name": "replay-regression",
+    }
+
+    first = _post_demo_run(body_dict, REPLAY_RUN_TIMEOUT_S)
+    assert first["overall_status"] == "pass", (
+        f"first run did not pass: "
+        f"steps={[(s['step_name'], s['status'], s['detail']) for s in first['steps']]}"  # type: ignore[index]
+    )
+    assert first["workspace_id"], "first keep-run surfaced no workspace_id"
+
+    # Replay: the IDENTICAL body (verbatim semantics — incl. reset=true).
+    second = _post_demo_run(body_dict, REPLAY_RUN_TIMEOUT_S)
+    assert second["overall_status"] == "pass", (
+        f"replay did not pass (replay regression — #146/#324 guard): "
+        f"steps={[(s['step_name'], s['status'], s['detail']) for s in second['steps']]}"  # type: ignore[index]
+    )
+    assert second["workspace_id"], "replay keep-run surfaced no workspace_id"
+    assert first["workspace_id"] != second["workspace_id"], (
+        "replay must create a NEW workspace row, not reuse the original"
+    )
+
+    # Both rows are listed (newest first) and settled to completed.
+    with urllib.request.urlopen(  # noqa: S310 — http://127.0.0.1 internal URL
+        f"{DEMO_API_URL}/demo/workspaces?limit=100", timeout=10.0
+    ) as resp:
+        assert resp.status == 200
+        page = json.loads(resp.read())
+    replay_rows = [w for w in page["workspaces"] if w["name"] == "replay-regression"]
+    assert len(replay_rows) >= 2, f"expected >=2 replay-regression rows, got {len(replay_rows)}"
+    listed_ids = {w["workspace_id"] for w in replay_rows}
+    assert {first["workspace_id"], second["workspace_id"]} <= listed_ids
+    for row in replay_rows:
+        if row["workspace_id"] in {first["workspace_id"], second["workspace_id"]}:
+            assert row["status"] == "completed"
+
+
 @pytest.mark.integration
 def test_run_demo_precondition_failure_exits_2() -> None:
     """A bogus API URL surfaces as a precondition failure with exit 2.

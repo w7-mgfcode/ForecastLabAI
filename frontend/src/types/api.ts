@@ -781,6 +781,10 @@ export interface DemoRunRequest {
   skip_seed?: boolean
   // PRP-38 — optional scenario picker; default is 'demo_minimal' (back-compat).
   scenario?: ScenarioPreset
+  // E4 (#393) — preservation policy (E1 backend fields, first UI exposure).
+  // Omit both to keep the legacy ephemeral behavior byte-identical.
+  preservation?: 'ephemeral' | 'keep'
+  workspace_name?: string
 }
 
 // Aggregate result returned by the synchronous POST /demo/run.
@@ -792,6 +796,38 @@ export interface DemoRunResult {
   winning_run_id: string | null
   alias: string | null
   wall_clock_s: number
+  // E4 (#393) — non-null on preservation='keep' runs.
+  workspace_id: string | null
+}
+
+// === Showcase Workspaces (E4, #393) ===
+
+// A compact row from GET /demo/workspaces.
+export interface WorkspaceListItem {
+  workspace_id: string
+  name: string | null
+  status: 'running' | 'completed' | 'failed'
+  seed: number
+  scenario: ScenarioPreset
+  reset: boolean
+  skip_seed: boolean
+  result_summary: Record<string, unknown> | null
+  created_at: string
+}
+
+// Full row from GET /demo/workspaces/{workspace_id}.
+export interface WorkspaceDetail extends WorkspaceListItem {
+  store_id: number | null
+  product_id: number | null
+  date_start: string | null
+  date_end: string | null
+  created_objects: Record<string, unknown>
+}
+
+// Page shape of GET /demo/workspaces.
+export interface WorkspaceListResponse {
+  workspaces: WorkspaceListItem[]
+  total: number
 }
 
 // === AI Model Configuration (/config) ===

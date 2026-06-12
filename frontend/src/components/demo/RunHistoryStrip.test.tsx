@@ -23,6 +23,7 @@ const summary: DemoSummary = {
   alias: 'demo-production',
   wallClockS: 174.5,
   v2RunId: 'v2-456',
+  workspaceId: null,
 }
 
 describe('RunHistoryStrip', () => {
@@ -106,6 +107,24 @@ describe('RunHistoryStrip', () => {
     expect(items[0].id).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     )
+  })
+
+  it('E4 (#393) — does NOT append a kept run (workspaceId set)', () => {
+    const keptSummary: DemoSummary = { ...summary, workspaceId: 'ws-e4-abc' }
+    const { container } = render(
+      <RunHistoryStrip onReplay={() => {}} summary={keptSummary} scenario="showcase_rich" />,
+    )
+    // Server-backed WorkspacePanel owns kept runs; localStorage stays empty
+    // (the persist effect writes the initial '[]') and the strip renders nothing.
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? '[]')).toHaveLength(0)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('E4 (#393) — still appends an ephemeral run (workspaceId null)', () => {
+    render(<RunHistoryStrip onReplay={() => {}} summary={summary} scenario="demo_minimal" />)
+    const stored = window.localStorage.getItem(STORAGE_KEY)
+    expect(stored).not.toBeNull()
+    expect(JSON.parse(stored!)).toHaveLength(1)
   })
 
   it('Clear button empties history + localStorage', () => {

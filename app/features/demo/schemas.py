@@ -8,7 +8,7 @@ event/result models are plain ``BaseModel`` subclasses with NO
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -164,3 +164,50 @@ class DemoRunResult(BaseModel):
         default=None,
         description="showcase_workspace id recorded for this run, if kept.",
     )
+
+
+class WorkspaceListItem(BaseModel):
+    """A compact row in the saved-workspaces list (E4, issue #393).
+
+    Response model -- plain ``BaseModel`` with ``from_attributes`` (built from
+    ``ShowcaseWorkspace`` ORM rows), NOT ``ConfigDict(strict=True)``: strict
+    mode is a request-body policy (see the ``StepEvent`` precedent above).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    workspace_id: str = Field(..., description="Unique external identifier (UUID hex).")
+    name: str | None = Field(default=None, description="Optional human label.")
+    status: str = Field(..., description="Lifecycle state -- running / completed / failed.")
+    seed: int = Field(..., description="Seeder seed the run was started with.")
+    scenario: str = Field(..., description="Seeder scenario preset value.")
+    reset: bool = Field(..., description="Whether the run wiped the database first.")
+    skip_seed: bool = Field(..., description="Whether the run skipped the seed step.")
+    result_summary: dict[str, Any] | None = Field(
+        default=None, description="Winner / WAPE / wall-clock display payload."
+    )
+    created_at: datetime = Field(..., description="When the run was recorded (UTC).")
+
+
+class WorkspaceDetailResponse(WorkspaceListItem):
+    """Full workspace row incl. created objects (E4, issue #393)."""
+
+    store_id: int | None = Field(default=None, description="Showcase grain store id.")
+    product_id: int | None = Field(default=None, description="Showcase grain product id.")
+    date_start: date | None = Field(default=None, description="Seeded window start.")
+    date_end: date | None = Field(default=None, description="Seeded window end.")
+    created_objects: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Soft-reference ids of everything the run created.",
+    )
+
+
+class WorkspaceListResponse(BaseModel):
+    """A page of saved workspaces, newest first (E4, issue #393)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    workspaces: list[WorkspaceListItem] = Field(
+        ..., description="Saved workspaces for the current page; empty when none."
+    )
+    total: int = Field(..., ge=0, description="Total saved workspaces.")

@@ -12,9 +12,9 @@ demo pipeline. :func:`create_workspace` returns ``None`` on any error;
 :func:`finalize_workspace` swallows any error. Both log a structured warning
 (pattern: the ``app/main.py`` lifespan config-override load).
 
-:func:`get_workspace` / :func:`list_workspaces` are unrouted in E1 -- consumed
-by the integration tests now and by the E4 restore/replay routes later
-(epic #393).
+:func:`get_workspace` / :func:`list_workspaces` / :func:`count_workspaces` are
+routed since E4 (epic #393) by ``GET /demo/workspaces`` and
+``GET /demo/workspaces/{workspace_id}`` in ``app/features/demo/routes.py``.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_session_maker
@@ -193,3 +193,16 @@ async def list_workspaces(
         .offset(offset)
     )
     return list(result.scalars().all())
+
+
+async def count_workspaces(db: AsyncSession) -> int:
+    """Count all workspace rows (E4, issue #393).
+
+    Args:
+        db: An open async session (caller-owned).
+
+    Returns:
+        The total number of saved workspaces.
+    """
+    count_stmt = select(func.count()).select_from(ShowcaseWorkspace)
+    return int(await db.scalar(count_stmt) or 0)

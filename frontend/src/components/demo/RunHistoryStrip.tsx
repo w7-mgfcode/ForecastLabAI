@@ -68,7 +68,9 @@ export function RunHistoryStrip({ onReplay, summary, scenario }: RunHistoryStrip
   // (the React "storing information from previous renders" pattern) rather than
   // in an effect — calling setState synchronously inside an effect body causes
   // cascading renders and is flagged by react-hooks/set-state-in-effect.
-  if (summary && summary !== lastSummary) {
+  // E4 (#393) — kept runs (workspaceId != null) are owned by the server-backed
+  // WorkspacePanel; localStorage records ephemeral runs only.
+  if (summary && summary !== lastSummary && summary.workspaceId === null) {
     setLastSummary(summary)
     setItems((prev) =>
       [
