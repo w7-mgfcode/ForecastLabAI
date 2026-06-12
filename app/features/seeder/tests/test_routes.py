@@ -163,6 +163,52 @@ class TestGenerate:
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
+    def test_generate_with_overrides(self, client, mock_settings, mock_db):
+        """E3 (#409) — the nested overrides object is accepted (201)."""
+        mock_result = schemas.GenerateResult(
+            success=True,
+            records_created={"stores": 8, "products": 20, "sales": 5000},
+            duration_seconds=12.0,
+            message="Success",
+            seed=42,
+        )
+
+        with patch(
+            "app.features.seeder.routes.service.generate_data", return_value=mock_result
+        ) as mock_generate:
+            response = client.post(
+                "/seeder/generate",
+                json={
+                    "scenario": "demo_minimal",
+                    "overrides": {"stores": 8, "promotion_intensity": 0.3},
+                },
+            )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        # The validated params object carries the parsed nested model.
+        params = mock_generate.call_args.args[1]
+        assert params.overrides is not None
+        assert params.overrides.stores == 8
+        assert params.overrides.promotion_intensity == 0.3
+
+    def test_generate_overrides_out_of_bounds_rejected(self, client, mock_settings):
+        """E3 (#409) — an out-of-bounds knob is a 422."""
+        response = client.post(
+            "/seeder/generate",
+            json={"overrides": {"stores": 0}},
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    def test_generate_overrides_unknown_knob_rejected(self, client, mock_settings):
+        """E3 (#409) — extra='forbid' rejects knobs outside the allow-list."""
+        response = client.post(
+            "/seeder/generate",
+            json={"overrides": {"bogus_knob": 1}},
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
     def test_generate_blocked_in_production(self, client, mock_db):
         """Test generate is blocked in production."""
         with patch("app.features.seeder.routes.get_settings") as mock_settings:

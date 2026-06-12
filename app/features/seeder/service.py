@@ -52,6 +52,7 @@ from app.shared.seeder.generators.exogenous import ExogenousSignalGenerator
 from app.shared.seeder.generators.lifecycle import LifecycleGenerator
 from app.shared.seeder.generators.replenishment import ReplenishmentGenerator
 from app.shared.seeder.generators.returns import ReturnsGenerator
+from app.shared.seeder.overrides import SeederOverrides
 
 logger = get_logger(__name__)
 
@@ -199,6 +200,49 @@ def _apply_phase2_overrides(config: SeederConfig, params: schemas.GenerateParams
         )
 
 
+def _apply_seed_overrides(config: SeederConfig, overrides: SeederOverrides | None) -> None:
+    """Apply the curated nested overrides LAST -- wins over scalar params (E3, #409).
+
+    Mutates ``config`` in place (the ``_apply_phaseN_overrides`` pattern).
+    ``dataclasses.replace`` is field-precise: preset-customized sibling fields
+    (region/category lists, ``random_gaps_*``) survive every knob. ``None``
+    (or an all-``None`` object) is a no-op so legacy bodies stay
+    byte-identical.
+    """
+    if overrides is None:
+        return
+    if overrides.stores is not None or overrides.products is not None:
+        config.dimensions = replace(
+            config.dimensions,
+            stores=overrides.stores if overrides.stores is not None else config.dimensions.stores,
+            products=(
+                overrides.products if overrides.products is not None else config.dimensions.products
+            ),
+        )
+    if overrides.window_days is not None:
+        # Recompute the window length from the (scalar-or-default) end_date;
+        # end_date itself is untouched.
+        config.start_date = config.end_date - timedelta(days=overrides.window_days)
+    if overrides.sparsity is not None:
+        config.sparsity = replace(config.sparsity, missing_combinations_pct=overrides.sparsity)
+    if overrides.promotion_intensity is not None or overrides.stockout_intensity is not None:
+        config.retail = replace(
+            config.retail,
+            promotion_probability=(
+                overrides.promotion_intensity
+                if overrides.promotion_intensity is not None
+                else config.retail.promotion_probability
+            ),
+            stockout_probability=(
+                overrides.stockout_intensity
+                if overrides.stockout_intensity is not None
+                else config.retail.stockout_probability
+            ),
+        )
+    if overrides.noise_sigma is not None:
+        config.time_series = replace(config.time_series, noise_sigma=overrides.noise_sigma)
+
+
 def _build_config_from_params(params: schemas.GenerateParams) -> SeederConfig:
     """Build SeederConfig from API parameters.
 
@@ -239,6 +283,9 @@ def _build_config_from_params(params: schemas.GenerateParams) -> SeederConfig:
 
     _apply_phase1_overrides(config, params)
     _apply_phase2_overrides(config, params)
+    # E3 (#409) — the curated nested overrides apply LAST so they win over
+    # the scalar stores/products/sparsity params above.
+    _apply_seed_overrides(config, params.overrides)
 
     settings = get_settings()
     config.batch_size = settings.seeder_batch_size
