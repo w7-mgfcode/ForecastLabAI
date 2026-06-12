@@ -6,7 +6,7 @@ import math
 import random
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from app.shared.seeder.config import (
@@ -24,6 +24,83 @@ if TYPE_CHECKING:
 
 _VALID_CHANNELS = frozenset({"in_store", "online", "click_collect", "wholesale"})
 """Mirrors the SQL CHECK on ``sales_daily.channel`` (see PRP-12 §schema)."""
+
+
+PriceLookup = dict[tuple[int, int | None], list[tuple[date, date | None, Decimal]]]
+"""Price windows indexed by ``(product_id, store_id)``.
+
+``store_id=None`` keys hold chain-wide windows; each value is a list of
+``(valid_from, valid_to, price)`` tuples sorted by ``valid_from`` ascending
+(``valid_to=None`` means open-ended).
+"""
+
+
+def build_price_lookup(
+    price_records: list[dict[str, date | int | Decimal | None]],
+) -> PriceLookup:
+    """Index price-history records by ``(product_id, store_id)`` scope.
+
+    Pure and rng-free — the seeder's byte-stability contract forbids any
+    rng draw here. Accepts the row shape both :class:`PriceHistoryGenerator`
+    and the Phase 2 ``MarkdownGenerator`` emit. Within a scope, windows are
+    sorted by ``valid_from`` ascending (stable, so a markdown appended after
+    the base window it overlaps wins on a ``valid_from`` tie).
+
+    Args:
+        price_records: Price-history row dicts carrying ``product_id``,
+            ``store_id``, ``price``, ``valid_from``, ``valid_to``.
+
+    Returns:
+        The :data:`PriceLookup` mapping :func:`resolve_price` consumes.
+    """
+    lookup: PriceLookup = {}
+    for record in price_records:
+        product_id = cast("int", record["product_id"])
+        store_id = cast("int | None", record["store_id"])
+        price = cast("Decimal", record["price"])
+        valid_from = cast("date", record["valid_from"])
+        valid_to = cast("date | None", record["valid_to"])
+        lookup.setdefault((product_id, store_id), []).append((valid_from, valid_to, price))
+    for windows in lookup.values():
+        windows.sort(key=lambda window: window[0])
+    return lookup
+
+
+def resolve_price(
+    lookup: PriceLookup,
+    product_id: int,
+    store_id: int,
+    day: date,
+    base_price: Decimal,
+) -> Decimal:
+    """Resolve the active price for ``(product_id, store_id)`` on ``day``.
+
+    Precedence (deterministic): a store-specific window beats a chain-wide
+    one; within a scope the latest ``valid_from`` covering ``day`` wins
+    (markdowns fire later than the base window they cut). ``valid_to=None``
+    is open-ended. A day no window covers falls back to ``base_price``.
+
+    Args:
+        lookup: The index built by :func:`build_price_lookup`.
+        product_id: Product the sales row belongs to.
+        store_id: Store the sales row belongs to.
+        day: The sales date to resolve.
+        base_price: Fallback when no window covers ``day``.
+
+    Returns:
+        The active price as a :class:`~decimal.Decimal`.
+    """
+    for scope in ((product_id, store_id), (product_id, None)):
+        windows = lookup.get(scope)
+        if not windows:
+            continue
+        # Sorted by valid_from ASC at build time; scan from the latest so the
+        # most recent window covering ``day`` wins (markdown overlaps cut the
+        # base window they were appended after).
+        for valid_from, valid_to, price in reversed(windows):
+            if valid_from <= day and (valid_to is None or day <= valid_to):
+                return price
+    return base_price
 
 
 class SalesDailyGenerator:
@@ -420,6 +497,8 @@ class SalesDailyGenerator:
         promotions: dict[tuple[int, int], set[date]],  # (store_id, product_id) -> promo dates
         stockouts: dict[tuple[int, int], set[date]],  # (store_id, product_id) -> stockout dates
         product_lifecycle_data: dict[int, tuple[date | None, date | None]] | None = None,
+        *,
+        price_lookup: PriceLookup | None = None,
     ) -> list[dict[str, date | int | Decimal]]:
         """Generate sales daily records.
 
@@ -435,6 +514,12 @@ class SalesDailyGenerator:
                 :meth:`__init__`. Missing entries fall back to
                 ``(None, None)`` so the lifecycle multiplier evaluates to
                 1.0 for that product.
+            price_lookup: Optional :data:`PriceLookup` built from the
+                generated price-history records (issue #237). When supplied,
+                each row's ``unit_price`` is the day's resolved price and
+                demand responds via ``retail_config.price_elasticity``.
+                When ``None`` (the default) the legacy path is byte-identical:
+                ``unit_price = base_price`` and no elasticity effect.
 
         Returns:
             List of sales dictionaries ready for database insertion.
@@ -518,11 +603,19 @@ class SalesDailyGenerator:
 
                     stockouts_today = stockouts_by_store_date.get((store_id, current_date))
 
+                    # Resolved day price (issue #237): None on the legacy path
+                    # so the elasticity term in _compute_demand stays dormant.
+                    resolved_price = (
+                        resolve_price(price_lookup, product_id, store_id, current_date, base_price)
+                        if price_lookup is not None
+                        else None
+                    )
+
                     quantity = self._compute_demand(
                         current_date=current_date,
                         base_date=base_date,
                         base_price=base_price,
-                        current_price=None,  # Simplified: use base price
+                        current_price=resolved_price,
                         is_promotion=is_promotion,
                         is_stockout=is_stockout,
                         product_launch_date=launch_date_for_product,
@@ -541,7 +634,7 @@ class SalesDailyGenerator:
                     quantity, chosen_channel = self._maybe_apply_channel(quantity, is_promotion)
 
                     # Calculate total amount
-                    unit_price = base_price
+                    unit_price = resolved_price if resolved_price is not None else base_price
                     total_amount = unit_price * quantity
 
                     row: dict[str, date | int | Decimal | str] = {

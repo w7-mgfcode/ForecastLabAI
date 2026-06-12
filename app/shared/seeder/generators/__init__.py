@@ -8,6 +8,8 @@ from app.shared.seeder.generators.facts import (
     PriceHistoryGenerator,
     PromotionGenerator,
     SalesDailyGenerator,
+    build_price_lookup,
+    resolve_price,
 )
 from app.shared.seeder.generators.lifecycle import LifecycleGenerator
 from app.shared.seeder.generators.markdowns import MarkdownGenerator
@@ -30,4 +32,6 @@ __all__ = [
     "ReturnsGenerator",
     "SalesDailyGenerator",
     "StoreGenerator",
+    "build_price_lookup",
+    "resolve_price",
 ]
