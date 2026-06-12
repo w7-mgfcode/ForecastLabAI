@@ -6,8 +6,8 @@ forecasting model union as a frontend-consumable catalog so the React
 ``MODEL_FAMILY_MAP`` / labels never drift from the Python authority.
 
 Capability provenance (BACKEND-OWNED, verified 2026-06-01):
-- ``family``         — ``forecasting.feature_metadata.model_family_for`` (lazy
-  cross-slice import inside the builder, per the slice's import discipline).
+- ``family``         — ``app.shared.model_taxonomy.model_family_for`` (shared
+  taxonomy, #268).
 - ``feature_aware``  — the set whose forecasters set ``requires_features=True``
   (RandomForest/Regression/LightGBM/XGBoost/ProphetLike), i.e. exactly the set
   ``ForecastingService.predict()`` rejects (``forecasting/service.py``).
@@ -28,6 +28,7 @@ from app.features.model_selection.schemas import (
     CandidateModelInfo,
     ModelCatalogResponse,
 )
+from app.shared.model_taxonomy import model_family_for
 
 # Models gated behind the matching opt-in extra (may be absent at runtime).
 _REQUIRES_EXTRA: frozenset[str] = frozenset({"lightgbm", "xgboost"})
@@ -130,10 +131,6 @@ def build_model_catalog() -> ModelCatalogResponse:
     from the module-level sets. Returns the full catalog plus the documented
     default candidate set.
     """
-    # Lazy cross-slice import (mirror service.py) — avoids closing an alembic
-    # cold-boot import cycle through the forecasting slice.
-    from app.features.forecasting.feature_metadata import model_family_for
-
     models: list[CandidateModelInfo] = []
     for model_type, meta in _CATALOG.items():
         feature_aware = model_type in _FEATURE_AWARE

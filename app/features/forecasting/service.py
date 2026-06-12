@@ -51,14 +51,6 @@ from app.features.forecasting.schemas import (
     PredictResponse,
     TrainResponse,
 )
-
-# NOTE: ``RegistryService`` / ``JobService`` and their status enums are imported
-# LAZILY inside the feature-metadata methods below. Importing them at module
-# scope would close a cycle with ``registry.schemas`` (which eagerly imports
-# ``ModelFamily`` from the forecasting slice for the ``model_family`` computed
-# field on ``RunResponse``). The explainability slice avoids the same trap by
-# importing only ``registry.models`` (a read-only ORM contract); we keep the
-# import-graph one-way by deferring our service-level imports.
 from app.features.forecasting.v2_loaders import (
     assemble_v2_historical_sidecar,
     load_exogenous_history,
@@ -68,6 +60,8 @@ from app.features.forecasting.v2_loaders import (
     load_replenishment_history,
     load_returns_history,
 )
+from app.features.registry.schemas import RunStatus
+from app.features.registry.service import RegistryService
 from app.shared.feature_frames import (
     DEFAULT_V2_GROUPS,
     HISTORY_TAIL_DAYS,
@@ -81,6 +75,14 @@ from app.shared.feature_frames import (
     v2_feature_safety_classes,
     v2_pinned_constants,
 )
+
+# NOTE: ``JobService`` and the job enums are imported LAZILY inside
+# ``get_feature_metadata_for_job``: ``jobs/service.py`` lazily imports
+# ``ForecastingService`` back at call time (lines ~435, ~545), so the pair is
+# mutually dependent and at least one side must stay call-time-lazy to keep
+# cold-boot clean. The registry imports above are EAGER since #268 moved
+# ``ModelFamily`` to ``app/shared/model_taxonomy`` — registry no longer
+# imports this slice.
 
 if TYPE_CHECKING:
     pass
@@ -963,10 +965,6 @@ class ForecastingService:
                 estimator does not expose
                 ``feature_importances_`` (``HistGradientBoostingRegressor``).
         """
-        # Lazy cross-slice imports — see module-level NOTE.
-        from app.features.registry.schemas import RunStatus
-        from app.features.registry.service import RegistryService
-
         run = await RegistryService().get_run(db, run_id)
         if run is None:
             raise NotFoundError(message=f"Model run not found: {run_id}")
@@ -1049,7 +1047,7 @@ class ForecastingService:
                 ``load_model_bundle`` can no longer find, or when the
                 ``ml-*`` extra is missing at unpickle time.
         """
-        # Lazy cross-slice imports — see module-level NOTE.
+        # Lazy by design — see the jobs↔forecasting NOTE below the module imports.
         from app.features.jobs.models import JobStatus, JobType
         from app.features.jobs.service import JobService
 
