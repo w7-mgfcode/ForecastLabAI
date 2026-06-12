@@ -62,6 +62,7 @@ All endpoints serve JSON; error responses use `application/problem+json` (RFC 78
 | demo | WS | `/demo/stream` | Stream one `StepEvent` per pipeline step for the live Showcase page |
 | demo | GET | `/demo/workspaces` | **E4 (#393)** — list saved showcase workspaces, newest first (`limit` 1-100 default 20 / `offset`); `200` + empty list on an empty table |
 | demo | GET | `/demo/workspaces/{workspace_id}` | **E4 (#393)** — full workspace row incl. `created_objects` soft references + grain/window columns; `404 application/problem+json` when missing |
+| demo | DELETE | `/demo/workspaces/{workspace_id}` | Delete one saved workspace METADATA row; `204` on success, `404 application/problem+json` when missing. The run's created objects (model runs, scenario plans, aliases, jobs, artifacts) are soft references and are NOT deleted |
 | config | GET | `/config/ai` | Effective AI-model config (agent LLM + RAG embeddings); API keys masked, never raw |
 | config | PATCH | `/config/ai` | Persist + apply AI-model changes live (no restart). `409` if an embedding-dimension change would orphan indexed RAG chunks (resend with `force=true`) |
 | config | GET | `/config/providers/health` | Per-provider connectivity — Ollama probed live, cloud providers by API-key presence |

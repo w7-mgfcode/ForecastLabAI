@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { WorkspaceDetail, WorkspaceListResponse } from '@/types/api'
 
@@ -21,5 +21,22 @@ export function useWorkspace(workspaceId: string, enabled = true) {
     queryKey: ['workspaces', workspaceId],
     queryFn: () => api<WorkspaceDetail>(`/demo/workspaces/${workspaceId}`),
     enabled: enabled && !!workspaceId,
+  })
+}
+
+/**
+ * Delete a saved workspace METADATA row; invalidates the workspaces list on
+ * success. Server-side this removes only the `showcase_workspace` record —
+ * the run's created objects (model runs, scenario plans, aliases, jobs,
+ * artifacts) are soft references and stay untouched.
+ */
+export function useDeleteWorkspace() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (workspaceId: string) =>
+      api<void>(`/demo/workspaces/${workspaceId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['workspaces'] })
+    },
   })
 }

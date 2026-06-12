@@ -3,8 +3,10 @@
 Exposes:
 - ``POST /demo/run``    -- synchronous; runs the whole pipeline, returns a result.
 - ``WS   /demo/stream`` -- streams one StepEvent per step for the live UI.
-- ``GET  /demo/workspaces``                 -- E4 (#393): list saved workspaces.
-- ``GET  /demo/workspaces/{workspace_id}``  -- E4 (#393): one workspace's detail.
+- ``GET    /demo/workspaces``                 -- E4 (#393): list saved workspaces.
+- ``GET    /demo/workspaces/{workspace_id}``  -- E4 (#393): one workspace's detail.
+- ``DELETE /demo/workspaces/{workspace_id}``  -- delete the workspace METADATA
+  row only; the run's created objects are soft references and stay untouched.
 
 The run/stream handlers obtain the live FastAPI app from ``request.app`` /
 ``websocket.app`` and pass it into the pipeline -- the slice never imports
@@ -16,7 +18,15 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -123,6 +133,34 @@ async def get_showcase_workspace(
     if row is None:
         raise NotFoundError(message=f"Workspace not found: {workspace_id}")
     return WorkspaceDetailResponse.model_validate(row)
+
+
+@router.delete(
+    "/workspaces/{workspace_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a saved showcase workspace",
+    description=(
+        "Delete one saved workspace METADATA row. Everything the run created "
+        "(model runs, scenario plans, aliases, jobs, artifacts) is a soft "
+        "reference and is NOT deleted."
+    ),
+)
+async def delete_showcase_workspace(
+    workspace_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Delete a saved showcase workspace metadata row.
+
+    Args:
+        workspace_id: External identifier of the workspace.
+        db: Async database session from dependency.
+
+    Raises:
+        NotFoundError: When no workspace matches ``workspace_id``.
+    """
+    deleted = await workspace.delete_workspace(db, workspace_id)
+    if not deleted:
+        raise NotFoundError(message=f"Workspace not found: {workspace_id}")
 
 
 @router.websocket("/stream")

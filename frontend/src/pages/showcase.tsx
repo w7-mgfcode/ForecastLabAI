@@ -241,10 +241,15 @@ export default function ShowcasePage() {
         scenario={scenario}
       />
 
-      {/* E4 (#393) — server-backed saved workspaces (Load + Replay). */}
+      {/* E4 (#393) — server-backed saved workspaces (Load + Replay + Delete). */}
       <WorkspacePanel
         onLoad={handleLoadWorkspace}
         onReplay={handleReplayWorkspace}
+        onDeleted={(workspaceId) => {
+          // Deleting the currently loaded workspace detaches its artifacts
+          // panel — the metadata row backing it is gone (created objects stay).
+          if (selectedWorkspaceId === workspaceId) setSelectedWorkspaceId(null)
+        }}
         isRunning={isRunning}
         lastWorkspaceId={summary?.workspaceId ?? null}
       />

@@ -56,14 +56,18 @@
   - An agent-saved plan (`source='agent'`) is persisted ONLY after the human approves it through the HITL gate — it always carries the approval audit trail.
 
 ### `showcase_workspace` (Demo)
-- **Root:** `ShowcaseWorkspace(workspace_id: str, status: str)` — one row = one preserved (`preservation="keep"`) showcase run.
+- **Root:** `ShowcaseWorkspace(workspace_id: str, status: str)` — one row = one preserved (`preservation="keep"`) showcase run. Ephemeral runs (the default) write no row; a `workspace_name` merely labels a keep-run row (names are non-unique).
 - **Status state machine:** `running` → `completed` | `failed` (CHECK-constrained; the finalize hook settles the row even on mid-run failure).
+- **Stored metadata:** replay config (`seed`, `scenario`, `reset`, `skip_seed`), showcase grain + window (`store_id`, `product_id`, `date_start`, `date_end` — NULL on early failure), lifecycle (`status`, `created_at`/`updated_at`), and the two JSONB payloads below.
 - **JSONB fields:** `created_objects` (sparse soft-reference keys — `winning_run_id`, `v2_run_id`, `v2_model_path`, `alias`, `agent_session_id`, `batch_id`, `scenario_plan_ids`, `scenario_artifact_key`, `train_model_types`, `stale_alias_run_id`) and `result_summary` (winner / WAPE / wall-clock display payload).
+- **Relationship to demo pipeline runs:** one workspace row per kept pipeline run — `create_workspace` inserts it as `running` before the first step; `finalize_workspace` settles it with the run's collected ids. NOT a seeder `scenario`: a preset is a reusable data-generation recipe; a workspace is the record of ONE concrete run (which preset it used, with what seed, and what it produced).
 - **Invariants:**
   - The config columns (`seed`, `scenario`, `reset`, `skip_seed`) are sufficient for a verbatim Replay through the normal run path — replay never mutates the original row; it creates a NEW row.
   - `name` is deliberately NON-unique; `workspace_id` (UUID hex) is the unique handle.
   - `created_objects` carries SOFT references only — **no ForeignKeys by design**. The workspace row is an audit record, not an ownership root: the referenced runs/plans/aliases are independently operator-deletable, and a workspace must never block (or cascade) their deletion.
+  - Deletion is METADATA-ONLY, symmetric with the no-FK design: `DELETE /demo/workspaces/{id}` removes the `showcase_workspace` row and nothing else — the soft-referenced model runs, scenario plans, aliases, jobs, agent sessions, and artifacts survive, and a workspace whose references already dangle still deletes cleanly.
   - Persistence is warn-and-continue: a workspace write failure must never break the demo pipeline (the run completes with `workspace_id: null`).
+- **Out of scope (deliberately not modeled yet):** a `replayed_from` provenance column, export bundles under `artifacts/showcase/<workspace>/`, RAG-event / approval-decision capture, advanced seed config, and per-phase interactive configuration — see `docs/_base/RUNBOOKS.md` § Showcase workspace.
 
 ## Key Invariants — NEVER violate
 
