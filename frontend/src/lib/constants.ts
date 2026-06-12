@@ -2,6 +2,8 @@
 export const ROUTES = {
   DASHBOARD: '/',
   SHOWCASE: '/showcase',
+  // E2 (#408) — two-workspace compare; deep-linkable via ?a=&b=.
+  SHOWCASE_COMPARE: '/showcase/compare',
   OPS: '/ops',
   EXPLORER: {
     SALES: '/explorer/sales',
