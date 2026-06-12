@@ -742,9 +742,18 @@ export interface VerifyResult {
 export type DemoStepStatus = 'running' | 'pass' | 'fail' | 'skip' | 'warn'
 export type DemoEventType = 'step_start' | 'step_complete' | 'pipeline_complete' | 'error'
 
-// PRP-38 — seeder scenario presets the picker offers. Mirrors the backend
-// app/shared/seeder/config.py:ScenarioPreset enum's string values.
-export type ScenarioPreset = 'demo_minimal' | 'showcase_rich' | 'sparse'
+// PRP-38 / E2 (#391) — seeder scenario presets the picker offers. Mirrors
+// the backend app/shared/seeder/config.py:ScenarioPreset enum's string
+// values — all 8 members.
+export type ScenarioPreset =
+  | 'retail_standard'
+  | 'holiday_rush'
+  | 'high_variance'
+  | 'stockout_heavy'
+  | 'new_launches'
+  | 'sparse'
+  | 'demo_minimal'
+  | 'showcase_rich'
 
 // One streamed pipeline event from WS /demo/stream (matches the backend
 // StepEvent Pydantic model; snake_case on the wire).

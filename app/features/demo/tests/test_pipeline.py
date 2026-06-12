@@ -8,9 +8,11 @@ database, no network, and no real models.
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
 from fastapi import FastAPI
 
 from app.features.demo import pipeline
@@ -675,11 +677,26 @@ def test_phase_table_showcase_rich_emits_24_steps_with_agents_hitl_and_ops_snaps
     ]
 
 
-def test_phase_table_sparse_matches_demo_minimal_shape():
-    """PRP-38 — SPARSE is offered in the picker but does not extend the pipeline."""
-    sparse_rows = pipeline._phase_table(ScenarioPreset.SPARSE)
+@pytest.mark.parametrize(
+    "preset",
+    [
+        ScenarioPreset.RETAIL_STANDARD,
+        ScenarioPreset.HOLIDAY_RUSH,
+        ScenarioPreset.HIGH_VARIANCE,
+        ScenarioPreset.STOCKOUT_HEAVY,
+        ScenarioPreset.NEW_LAUNCHES,
+        ScenarioPreset.SPARSE,
+    ],
+)
+def test_phase_table_non_showcase_presets_match_demo_minimal_shape(preset: ScenarioPreset):
+    """PRP-38 / E2 (#391) — only SHOWCASE_RICH extends the pipeline.
+
+    Every other preset (incl. the 5 newly exposed by E2) runs the legacy
+    11-step flow; the picker offers them as data-shape variations only.
+    """
+    rows = pipeline._phase_table(preset)
     minimal_rows = pipeline._phase_table(ScenarioPreset.DEMO_MINIMAL)
-    assert [(p, s) for p, s, _ in sparse_rows] == [(p, s) for p, s, _ in minimal_rows]
+    assert [(p, s) for p, s, _ in rows] == [(p, s) for p, s, _ in minimal_rows]
 
 
 def test_legacy_step_table_adapter_returns_11_pairs():
@@ -1001,8 +1018,6 @@ def test_parse_artifact_key_v2_artifacts_models_path():
 
 def test_parse_artifact_key_rejects_unparseable():
     """PRP-40 — a malformed artifact_uri raises ValueError (not a silent miss)."""
-    import pytest
-
     with pytest.raises(ValueError, match="Cannot parse artifact-key"):
         pipeline._parse_artifact_key("not-a-model-uri.bin")
 
@@ -2259,3 +2274,78 @@ async def test_run_pipeline_keep_finalizes_failed_on_step_failure(monkeypatch):
     assert final.event_type == "pipeline_complete"
     assert final.status == "fail"
     assert final.data["workspace_id"] == "ws-e1-test"
+
+
+# =============================================================================
+# E2 (#391) — per-preset demo seed profiles
+# =============================================================================
+
+
+def test_scenario_seed_profile_covers_every_preset():
+    """E2 (#391) — every ScenarioPreset member has an explicit seed profile.
+
+    The ``.get`` fallback in step_seed stays (a future 9th member must not
+    crash), but no CURRENT member may silently fall back to demo_minimal —
+    the picker cards promise per-preset seed shapes.
+    """
+    assert set(pipeline._SCENARIO_SEED_PROFILE) == set(ScenarioPreset)
+
+
+def test_scenario_seed_profile_windows_clear_backfill_gate():
+    """E2 (#391) — every profile window is >= 75 days so a later
+    showcase_rich run with skip_seed=true clears the historical_backfill gate."""
+    for preset, profile in pipeline._SCENARIO_SEED_PROFILE.items():
+        if profile.window is not None:
+            span = (profile.window[1] - profile.window[0]).days
+        else:
+            span = profile.span_days
+        assert span >= 75, f"{preset.value} window spans only {span} days"
+
+
+async def test_step_seed_holiday_rush_posts_pinned_window():
+    """E2 (#391) — holiday_rush MUST seed the calendar-pinned 2024 window.
+
+    The preset's HolidayConfig spikes are fixed 2024 dates; a today-anchored
+    window would never contain them and the preset silently degrades.
+    """
+    ctx = pipeline.DemoContext(
+        seed=42, skip_seed=False, reset=False, scenario=ScenarioPreset.HOLIDAY_RUSH
+    )
+    client = _RecordingClient(
+        None,
+        responses={("POST", "/seeder/generate"): {"records_created": {"sales": 1}}},
+    )
+    status, detail, _data = await pipeline.step_seed(ctx, _as_client(client))
+    assert status == "pass"
+    body = client.calls[0][2]
+    assert body is not None
+    assert body["scenario"] == "holiday_rush"
+    assert body["start_date"] == "2024-10-01"
+    assert body["end_date"] == "2024-12-31"
+    assert body["stores"] == 5
+    assert body["products"] == 15
+    assert "holiday_rush: 5 stores x 15 products" in detail
+
+
+async def test_step_seed_retail_standard_posts_demo_scaled_profile():
+    """E2 (#391) — retail_standard seeds 5x15 over a 180-day today-anchored window."""
+    ctx = pipeline.DemoContext(
+        seed=42, skip_seed=False, reset=False, scenario=ScenarioPreset.RETAIL_STANDARD
+    )
+    client = _RecordingClient(
+        None,
+        responses={("POST", "/seeder/generate"): {"records_created": {"sales": 1}}},
+    )
+    status, _detail, _data = await pipeline.step_seed(ctx, _as_client(client))
+    assert status == "pass"
+    body = client.calls[0][2]
+    assert body is not None
+    assert body["scenario"] == "retail_standard"
+    assert body["stores"] == 5
+    assert body["products"] == 15
+    start = date.fromisoformat(body["start_date"])
+    end = date.fromisoformat(body["end_date"])
+    assert end - start == timedelta(days=180)
+    # sparsity stays 0.0 — the seeder override fires only when > 0, which is
+    # what preserves the sparse preset's 50%-missing character.
+    assert body["sparsity"] == 0.0

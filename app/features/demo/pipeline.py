@@ -32,7 +32,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 from fastapi import FastAPI
@@ -476,12 +476,47 @@ async def step_reset(ctx: DemoContext, client: _Client) -> StepResult:
     )
 
 
-_SCENARIO_SEED_PROFILE: dict[ScenarioPreset, tuple[int, int, int]] = {
-    ScenarioPreset.DEMO_MINIMAL: (DEMO_SEED_STORES, DEMO_SEED_PRODUCTS, DEMO_SEED_SPAN_DAYS),
+class _SeedProfile(NamedTuple):
+    """Demo-scaled seed profile for one scenario preset.
+
+    The /seeder/generate request overrides preset dims/window by design
+    (app/features/seeder/service.py:_build_config_from_params) while
+    preserving the preset's behavioral character (noise, promos, stockouts,
+    sparsity, launch ramps). ``window`` pins a fixed calendar range
+    (holiday_rush); when None the window runs ``span_days`` back from today.
+    """
+
+    stores: int
+    products: int
+    span_days: int
+    window: tuple[date, date] | None = None
+
+
+_SCENARIO_SEED_PROFILE: dict[ScenarioPreset, _SeedProfile] = {
+    ScenarioPreset.DEMO_MINIMAL: _SeedProfile(
+        DEMO_SEED_STORES, DEMO_SEED_PRODUCTS, DEMO_SEED_SPAN_DAYS
+    ),
     # PRP-38 — SHOWCASE_RICH profile mirrors app/shared/seeder/config.py:from_scenario.
-    ScenarioPreset.SHOWCASE_RICH: (5, 15, 180),
+    ScenarioPreset.SHOWCASE_RICH: _SeedProfile(5, 15, 180),
     # PRP-38 — SPARSE picker option exercises the data-shape edge case.
-    ScenarioPreset.SPARSE: (DEMO_SEED_STORES, DEMO_SEED_PRODUCTS, DEMO_SEED_SPAN_DAYS),
+    ScenarioPreset.SPARSE: _SeedProfile(DEMO_SEED_STORES, DEMO_SEED_PRODUCTS, DEMO_SEED_SPAN_DAYS),
+    # E2 (#391) — demo-scaled profiles for the remaining presets; the preset's
+    # character comes from SeederConfig.from_scenario, dims/window from this
+    # request (precedence contract: app/features/seeder/service.py). All
+    # windows stay >= 75 days so a later showcase_rich run with
+    # skip_seed=true clears the historical_backfill gate.
+    ScenarioPreset.RETAIL_STANDARD: _SeedProfile(5, 15, 180),
+    ScenarioPreset.HIGH_VARIANCE: _SeedProfile(5, 15, 180),
+    ScenarioPreset.STOCKOUT_HEAVY: _SeedProfile(5, 15, 180),
+    # Extra products for launch variety (the native preset seeds 100).
+    ScenarioPreset.NEW_LAUNCHES: _SeedProfile(5, 25, 180),
+    # Calendar-pinned: the preset's HolidayConfig spikes are fixed 2024 dates
+    # (app/shared/seeder/config.py:from_scenario) — a today-anchored window
+    # would never contain them. span_days is dead data when window is set
+    # (the pinned range is 92 days inclusive, delta 91).
+    ScenarioPreset.HOLIDAY_RUSH: _SeedProfile(
+        5, 15, 91, window=(date(2024, 10, 1), date(2024, 12, 31))
+    ),
 }
 
 
@@ -489,12 +524,16 @@ async def step_seed(ctx: DemoContext, client: _Client) -> StepResult:
     """Seed the active scenario (skipped when ``skip_seed`` is set)."""
     if ctx.skip_seed:
         return ("skip", "skip_seed=true (assuming a seeded database)", {})
-    stores, products, span_days = _SCENARIO_SEED_PROFILE.get(
+    profile = _SCENARIO_SEED_PROFILE.get(
         ctx.scenario,
-        (DEMO_SEED_STORES, DEMO_SEED_PRODUCTS, DEMO_SEED_SPAN_DAYS),
+        _SeedProfile(DEMO_SEED_STORES, DEMO_SEED_PRODUCTS, DEMO_SEED_SPAN_DAYS),
     )
-    seed_end = datetime.now(UTC).date()
-    seed_start = seed_end - timedelta(days=span_days)
+    stores, products = profile.stores, profile.products
+    if profile.window is not None:
+        seed_start, seed_end = profile.window
+    else:
+        seed_end = datetime.now(UTC).date()
+        seed_start = seed_end - timedelta(days=profile.span_days)
     body = await client.request(
         "seed",
         "POST",
