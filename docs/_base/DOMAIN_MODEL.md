@@ -55,6 +55,16 @@
   - JSONB columns are persisted via `model_dump(mode="json")` so `date`/`datetime` serialise to ISO strings.
   - An agent-saved plan (`source='agent'`) is persisted ONLY after the human approves it through the HITL gate — it always carries the approval audit trail.
 
+### `showcase_workspace` (Demo)
+- **Root:** `ShowcaseWorkspace(workspace_id: str, status: str)` — one row = one preserved (`preservation="keep"`) showcase run.
+- **Status state machine:** `running` → `completed` | `failed` (CHECK-constrained; the finalize hook settles the row even on mid-run failure).
+- **JSONB fields:** `created_objects` (sparse soft-reference keys — `winning_run_id`, `v2_run_id`, `v2_model_path`, `alias`, `agent_session_id`, `batch_id`, `scenario_plan_ids`, `scenario_artifact_key`, `train_model_types`, `stale_alias_run_id`) and `result_summary` (winner / WAPE / wall-clock display payload).
+- **Invariants:**
+  - The config columns (`seed`, `scenario`, `reset`, `skip_seed`) are sufficient for a verbatim Replay through the normal run path — replay never mutates the original row; it creates a NEW row.
+  - `name` is deliberately NON-unique; `workspace_id` (UUID hex) is the unique handle.
+  - `created_objects` carries SOFT references only — **no ForeignKeys by design**. The workspace row is an audit record, not an ownership root: the referenced runs/plans/aliases are independently operator-deletable, and a workspace must never block (or cascade) their deletion.
+  - Persistence is warn-and-continue: a workspace write failure must never break the demo pipeline (the run completes with `workspace_id: null`).
+
 ## Key Invariants — NEVER violate
 
 1. **Time safety in features.** `app/features/featuresets/` uses only data at or before `cutoff_date`. Lags via `shift(positive)`, rolling via `shift(1).rolling(...)`, all `groupby` entity-aware. The test `app/features/featuresets/tests/test_leakage.py` is the spec — it MUST keep passing.
@@ -89,6 +99,7 @@
 | `model_exogenous` | The scenario `method` where a regression baseline genuinely re-forecasts through the assumptions — as opposed to the `heuristic` post-forecast multiplier | re-trained model (the baseline is not re-trained, only re-run) |
 | `future feature frame` | The leakage-safe `X_future` matrix `feature_frame.py` builds — long-lag, calendar, and exogenous columns the regression model consumes to re-forecast a scenario | feature matrix (that is the training-time term) |
 | `scenario tag` | A free-text label on a saved `scenario_plan` (its own queryable JSONB-array column) for filtering and grouping the library | seeder `scenario` preset, registry `alias` |
+| `workspace` (showcase) | A saved showcase-run record (`showcase_workspace` row) — replay config + soft references to everything the run created | seeder `scenario` (a preset), `scenario plan` (a saved what-if), agent `session` |
 
 ## Event Taxonomy
 
@@ -113,6 +124,8 @@ agent_session ──owns──► message_history (JSONB) ──may-contain─�
 job ──may-reference──► model_run (for train/backtest jobs)
 
 scenario_plan ──built-from──► model artifact (a baseline run_id) ──embeds──► comparison snapshot (JSONB)
+
+showcase_workspace ──soft-references──► model_run / scenario_plan / run_alias / agent_session / batch (JSONB ids, NO FK)
 ```
 
 ## Glossary (cross-cutting)
