@@ -352,6 +352,92 @@ async def test_delete_workspace_404(client, monkeypatch):
 
 
 # =============================================================================
+# E1 (#407) -- PATCH /demo/workspaces/{workspace_id} (unit)
+# =============================================================================
+
+
+async def test_patch_workspace_happy_path(client, monkeypatch):
+    """E1 (#407) -- provided fields update; response echoes the full detail."""
+    seen: dict[str, object] = {}
+
+    async def fake_update(_db, workspace_id: str, update) -> SimpleNamespace:
+        seen["workspace_id"] = workspace_id
+        seen["changes"] = update.model_dump(exclude_unset=True)
+        return _orm_like_row(
+            workspace_id=workspace_id,
+            name="renamed",
+            pinned=True,
+            tags=["t1"],
+        )
+
+    monkeypatch.setattr(workspace, "update_workspace", fake_update)
+
+    resp = await client.patch(
+        "/demo/workspaces/" + "a" * 32,
+        json={"name": "renamed", "pinned": True, "tags": ["t1"]},
+    )
+    assert resp.status_code == 200
+    assert seen["workspace_id"] == "a" * 32
+    assert seen["changes"] == {"name": "renamed", "pinned": True, "tags": ["t1"]}
+    body = resp.json()
+    assert body["name"] == "renamed"
+    assert body["pinned"] is True
+    assert body["tags"] == ["t1"]
+    # Untouched fields ride through from the row.
+    assert body["status"] == "completed"
+    assert body["seed"] == 42
+
+
+async def test_patch_workspace_missing_404_problem_json(client, monkeypatch):
+    """E1 (#407) -- an unknown workspace_id is a 404 problem+json."""
+
+    async def fake_update(_db, _workspace_id: str, _update) -> None:
+        return None
+
+    monkeypatch.setattr(workspace, "update_workspace", fake_update)
+
+    resp = await client.patch("/demo/workspaces/" + "0" * 32, json={"pinned": True})
+    assert resp.status_code == 404
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    assert "Workspace not found" in resp.json()["detail"]
+
+
+async def test_patch_workspace_unknown_field_422(client):
+    """E1 (#407) -- extra='forbid': a typo'd field is a 422 problem+json."""
+    resp = await client.patch("/demo/workspaces/" + "a" * 32, json={"bogus": 1})
+    assert resp.status_code == 422
+    assert resp.headers["content-type"].startswith("application/problem+json")
+
+
+async def test_patch_workspace_explicit_null_archived_422(client):
+    """E1 (#407) -- explicit null on a NOT NULL-backed field is a 422."""
+    resp = await client.patch("/demo/workspaces/" + "a" * 32, json={"archived": None})
+    assert resp.status_code == 422
+    assert resp.headers["content-type"].startswith("application/problem+json")
+
+
+async def test_patch_workspace_empty_body_noop_200(client, monkeypatch):
+    """E1 (#407) -- an empty body is a 200 no-op returning the current row."""
+
+    async def fake_update(_db, workspace_id: str, update) -> SimpleNamespace:
+        assert update.model_dump(exclude_unset=True) == {}
+        return _orm_like_row(workspace_id=workspace_id)
+
+    monkeypatch.setattr(workspace, "update_workspace", fake_update)
+
+    resp = await client.patch("/demo/workspaces/" + "a" * 32, json={})
+    assert resp.status_code == 200
+    assert resp.json()["workspace_id"] == "a" * 32
+
+
+async def test_run_demo_rejects_replayed_from_without_keep_422(client):
+    """E1 (#407) -- a lineage pointer without preservation='keep' is a 422."""
+    resp = await client.post("/demo/run", json={"replayed_from_workspace_id": "a" * 32})
+    assert resp.status_code == 422
+    assert resp.headers["content-type"].startswith("application/problem+json")
+
+
+# =============================================================================
 # E4 (#393) -- workspace GET routes against real Postgres (integration)
 # =============================================================================
 
@@ -403,6 +489,41 @@ async def test_get_workspace_integration_round_trip(client, db_session: AsyncSes
     missing = await client.get("/demo/workspaces/" + "f" * 32)
     assert missing.status_code == 404
     assert missing.headers["content-type"].startswith("application/problem+json")
+
+
+@pytest.mark.integration
+async def test_patch_workspace_integration_round_trip(client, db_session: AsyncSession):
+    """E1 (#407) -- PATCH round-trips rename/notes/tags/archive/pin on a real row."""
+    workspace_id = await workspace.create_workspace(
+        DemoRunRequest.model_validate({"preservation": "keep", "workspace_name": "e1-patch"})
+    )
+    assert workspace_id is not None
+
+    resp = await client.patch(
+        f"/demo/workspaces/{workspace_id}",
+        json={
+            "name": "e1-renamed",
+            "notes": "kept for review",
+            "tags": ["smoke", "workspace:e1"],
+            "archived": True,
+            "pinned": True,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["name"] == "e1-renamed"
+    assert body["notes"] == "kept for review"
+    assert body["tags"] == ["smoke", "workspace:e1"]
+    assert body["archived"] is True
+    assert body["pinned"] is True
+    # The pipeline-owned lifecycle status is untouched.
+    assert body["status"] == "running"
+
+    # The change persisted -- the detail endpoint reads it back.
+    detail = await client.get(f"/demo/workspaces/{workspace_id}")
+    assert detail.status_code == 200
+    assert detail.json()["name"] == "e1-renamed"
+    assert detail.json()["archived"] is True
 
 
 @pytest.mark.integration

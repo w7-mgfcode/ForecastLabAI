@@ -15,7 +15,10 @@ demo pipeline. :func:`create_workspace` returns ``None`` on any error;
 :func:`get_workspace` / :func:`list_workspaces` / :func:`count_workspaces` are
 routed since E4 (epic #393) by ``GET /demo/workspaces`` and
 ``GET /demo/workspaces/{workspace_id}`` in ``app/features/demo/routes.py``;
-:func:`delete_workspace` backs ``DELETE /demo/workspaces/{workspace_id}``.
+:func:`delete_workspace` backs ``DELETE /demo/workspaces/{workspace_id}``;
+:func:`update_workspace` backs ``PATCH /demo/workspaces/{workspace_id}``
+(E1, #407). The request-scoped helpers take a caller-owned session and raise
+normally -- the warn-and-continue contract is pipeline-only.
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ from app.features.demo.models import (
     WORKSPACE_STATUS_FAILED,
     ShowcaseWorkspace,
 )
-from app.features.demo.schemas import DemoRunRequest
+from app.features.demo.schemas import DemoRunRequest, WorkspaceUpdateRequest
 
 if TYPE_CHECKING:
     # NOTE: pipeline imports this module at runtime; importing DemoContext
@@ -65,6 +68,9 @@ async def create_workspace(req: DemoRunRequest) -> str | None:
                     scenario=req.scenario.value,
                     reset=req.reset,
                     skip_seed=req.skip_seed,
+                    # E1 (#407): replay provenance, recorded verbatim (soft
+                    # reference -- no existence check; dangles are designed).
+                    replayed_from_workspace_id=req.replayed_from_workspace_id,
                 )
             )
             await db.commit()
@@ -169,6 +175,41 @@ async def get_workspace(db: AsyncSession, workspace_id: str) -> ShowcaseWorkspac
         select(ShowcaseWorkspace).where(ShowcaseWorkspace.workspace_id == workspace_id)
     )
     return result.scalar_one_or_none()
+
+
+async def update_workspace(
+    db: AsyncSession,
+    workspace_id: str,
+    update: WorkspaceUpdateRequest,
+) -> ShowcaseWorkspace | None:
+    """Apply a partial lifecycle update; return the row or ``None`` when missing.
+
+    ``exclude_unset`` distinguishes absent fields from explicit ``null`` --
+    only fields present in the request body are applied (explicit ``null``
+    clears ``name`` / ``notes``; the schema rejects ``null`` on the NOT NULL
+    columns). JSONB values are assigned WHOLE (never mutated in place) so
+    SQLAlchemy change detection fires. An empty request is a no-op that still
+    returns the row.
+
+    Args:
+        db: An open async session (caller-owned; this backs an HTTP route,
+            NOT the pipeline -- it raises normally, no warn-and-continue).
+        workspace_id: The external id of the row to update.
+        update: The validated partial-update request.
+
+    Returns:
+        The updated row, or ``None`` when no row matched (route maps to 404).
+    """
+    row = await get_workspace(db, workspace_id)
+    if row is None:
+        return None
+    changes = update.model_dump(exclude_unset=True)  # absent != explicit null
+    for field, value in changes.items():
+        setattr(row, field, value)  # whole-value assignment (JSONB gotcha)
+    await db.commit()
+    await db.refresh(row)
+    logger.info("demo.workspace_updated", workspace_id=workspace_id, fields=sorted(changes))
+    return row
 
 
 async def list_workspaces(

@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.shared.seeder.config import ScenarioPreset
 
@@ -76,6 +76,15 @@ class DemoRunRequest(BaseModel):
         pattern=r"^[a-z0-9][a-z0-9\-_]*$",
         description="Optional workspace label; requires preservation='keep'.",
     )
+    # E1 (#407): replay provenance. The frontend Replay handler sends the
+    # SOURCE row's workspace_id; create_workspace records it verbatim on the
+    # NEW row (soft reference -- no existence check). JSON-native str -> no
+    # Field(strict=False) needed.
+    replayed_from_workspace_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{32}$",  # uuid4().hex shape of workspace_id
+        description="workspace_id this run replays; requires preservation='keep'.",
+    )
 
     @model_validator(mode="after")
     def _workspace_name_requires_keep(self) -> DemoRunRequest:
@@ -83,6 +92,67 @@ class DemoRunRequest(BaseModel):
         if self.workspace_name is not None and self.preservation != "keep":
             raise ValueError("workspace_name requires preservation='keep'")
         return self
+
+    @model_validator(mode="after")
+    def _replayed_from_requires_keep(self) -> DemoRunRequest:
+        """Reject a lineage pointer on a run that writes no workspace row."""
+        if self.replayed_from_workspace_id is not None and self.preservation != "keep":
+            raise ValueError("replayed_from_workspace_id requires preservation='keep'")
+        return self
+
+
+class WorkspaceUpdateRequest(BaseModel):
+    """Partial lifecycle update for ``PATCH /demo/workspaces/{workspace_id}``.
+
+    exclude_unset semantics: only fields present in the body are applied;
+    explicit ``null`` clears ``name`` / ``notes``. Explicit ``null`` on
+    ``archived`` / ``pinned`` / ``tags`` is rejected (422) -- they back NOT
+    NULL columns; send ``[]`` to clear tags. ``extra="forbid"`` so a typo'd
+    field 422s instead of silently no-opping (RunUpdate precedent,
+    ``app/features/registry/schemas.py``). All fields JSON-native -> the
+    model-level ``strict=True`` needs no per-field override. ``status`` is
+    deliberately absent -- the pipeline owns the run lifecycle.
+    """
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    name: str | None = Field(
+        default=None,
+        max_length=100,
+        pattern=r"^[a-z0-9][a-z0-9\-_]*$",  # same as workspace_name
+        description="Rename the workspace; explicit null clears the label.",
+    )
+    notes: str | None = Field(
+        default=None,
+        max_length=2000,
+        description="Free-text annotation; explicit null clears it.",
+    )
+    tags: list[str] | None = Field(
+        default=None,
+        max_length=20,
+        description="Replace the full tag list (not a merge).",
+    )
+    archived: bool | None = Field(default=None, description="Archive flag.")
+    pinned: bool | None = Field(default=None, description="Pin flag.")
+
+    @field_validator("archived", "pinned", "tags")
+    @classmethod
+    def _reject_explicit_null(cls, v: bool | list[str] | None) -> bool | list[str]:
+        """Reject an explicit ``null`` on the NOT NULL-backed optional fields.
+
+        Fires only on explicitly provided values (pydantic skips validators
+        for defaults unless ``validate_default=True``), so an absent field
+        stays unset while an explicit ``{"archived": null}`` / ``{"tags":
+        null}`` 422s instead of reaching the NOT NULL column via
+        ``exclude_unset`` -> ``setattr`` -> IntegrityError 500. tags: send
+        ``[]`` to clear, never ``null``.
+        """
+        if v is None:
+            raise ValueError(
+                "archived/pinned accept only true/false and tags accepts a list "
+                "(send [] to clear) — explicit null is not allowed"
+            )
+        return v
 
 
 class StepEvent(BaseModel):
@@ -187,6 +257,15 @@ class WorkspaceListItem(BaseModel):
         default=None, description="Winner / WAPE / wall-clock display payload."
     )
     created_at: datetime = Field(..., description="When the run was recorded (UTC).")
+    # E1 (#407) -- additive lifecycle + provenance fields (defaults so
+    # pre-E1 ORM-shaped stand-ins keep validating).
+    archived: bool = Field(default=False, description="Operator archive flag.")
+    pinned: bool = Field(default=False, description="Operator pin flag.")
+    tags: list[str] = Field(default_factory=list, description="Operator tags.")
+    replayed_from_workspace_id: str | None = Field(
+        default=None,
+        description="workspace_id this run replayed (soft reference; may dangle).",
+    )
 
 
 class WorkspaceDetailResponse(WorkspaceListItem):
@@ -199,6 +278,30 @@ class WorkspaceDetailResponse(WorkspaceListItem):
     created_objects: dict[str, Any] = Field(
         default_factory=dict,
         description="Soft-reference ids of everything the run created.",
+    )
+    # E1 (#407) -- additive lifecycle metadata + the six story slots
+    # (NULL until their writer epic lands; defaults keep pre-E1 stand-ins valid).
+    notes: str | None = Field(default=None, description="Free-text operator annotation.")
+    config_schema_version: int = Field(
+        default=1, description="Version of the config + story-slot schema."
+    )
+    seed_overrides: dict[str, Any] | None = Field(
+        default=None, description="Story slot (E3 #409 writes): seeder-override payload."
+    )
+    user_scope: dict[str, Any] | None = Field(
+        default=None, description="Story slot (E3 #409 writes): operator-selected focus."
+    )
+    approval_events: list[dict[str, Any]] | None = Field(
+        default=None, description="Story slot (E5 #411 writes): HITL approval audit."
+    )
+    rag_events: list[dict[str, Any]] | None = Field(
+        default=None, description="Story slot (E5 #411 writes): RAG event audit."
+    )
+    job_ids: list[str] | None = Field(
+        default=None, description="Story slot (later epic): submitted job/batch ids."
+    )
+    phase_summaries: list[dict[str, Any]] | None = Field(
+        default=None, description="Story slot (later epic): per-phase outcome summary."
     )
 
 

@@ -11,6 +11,7 @@ import uuid
 from datetime import date
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -109,3 +110,84 @@ async def test_showcase_workspace_status_check_violation(db_session: AsyncSessio
     with pytest.raises(IntegrityError):
         await db_session.commit()
     await db_session.rollback()
+
+
+# =============================================================================
+# E1 (#407) -- metadata + provenance backbone
+# =============================================================================
+
+
+async def test_showcase_workspace_e1_defaults_applied(db_session: AsyncSession) -> None:
+    """A minimal insert gets the E1 defaults (ORM + server defaults agree)."""
+    row = _make_row()
+    db_session.add(row)
+    await db_session.commit()
+
+    loaded = await get_workspace(db_session, row.workspace_id)
+    assert loaded is not None
+    assert loaded.archived is False
+    assert loaded.pinned is False
+    assert loaded.notes is None
+    assert loaded.tags == []
+    assert loaded.config_schema_version == 1
+    assert loaded.replayed_from_workspace_id is None
+    # All six story slots stay NULL until their writer epic lands.
+    assert loaded.seed_overrides is None
+    assert loaded.user_scope is None
+    assert loaded.approval_events is None
+    assert loaded.rag_events is None
+    assert loaded.job_ids is None
+    assert loaded.phase_summaries is None
+
+
+async def test_showcase_workspace_tags_containment_query(db_session: AsyncSession) -> None:
+    """tags round-trips as a JSONB string array and answers .contains()."""
+    tagged = _make_row(tags=["workspace:x", "demo"])
+    untagged = _make_row(tags=["other"])
+    db_session.add_all([tagged, untagged])
+    await db_session.commit()
+
+    result = await db_session.execute(
+        select(ShowcaseWorkspace).where(ShowcaseWorkspace.tags.contains(["demo"]))
+    )
+    matches = [r.workspace_id for r in result.scalars().all()]
+    assert tagged.workspace_id in matches
+    assert untagged.workspace_id not in matches
+
+    loaded = await get_workspace(db_session, tagged.workspace_id)
+    assert loaded is not None
+    assert loaded.tags == ["workspace:x", "demo"]
+
+
+async def test_showcase_workspace_story_slot_roundtrip(db_session: AsyncSession) -> None:
+    """A dict slot and a list[dict] slot round-trip through JSONB intact."""
+    seed_overrides = {"noise_sigma": 0.2, "promo_intensity": "high"}
+    approval_events = [
+        {
+            "action_id": "act-1",
+            "tool_name": "save_scenario",
+            "decision": "approved",
+            "decided_at": "2026-06-12T12:00:00+00:00",
+            "session_id": "sess-1",
+        }
+    ]
+    row = _make_row(seed_overrides=seed_overrides, approval_events=approval_events)
+    db_session.add(row)
+    await db_session.commit()
+
+    loaded = await get_workspace(db_session, row.workspace_id)
+    assert loaded is not None
+    assert loaded.seed_overrides == seed_overrides
+    assert loaded.approval_events == approval_events
+
+
+async def test_showcase_workspace_replayed_from_recorded(db_session: AsyncSession) -> None:
+    """replayed_from_workspace_id stores a verbatim soft reference (may dangle)."""
+    dangling_source = uuid.uuid4().hex  # no such row -- dangles by design
+    row = _make_row(replayed_from_workspace_id=dangling_source)
+    db_session.add(row)
+    await db_session.commit()
+
+    loaded = await get_workspace(db_session, row.workspace_id)
+    assert loaded is not None
+    assert loaded.replayed_from_workspace_id == dangling_source

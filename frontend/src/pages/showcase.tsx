@@ -181,6 +181,8 @@ export default function ShowcasePage() {
       reset: ws.reset,
       skip_seed: ws.skip_seed,
       preservation: 'keep',
+      // E1 (#407) — record replay lineage on the NEW row (soft reference).
+      replayed_from_workspace_id: ws.workspace_id,
       ...(ws.name ? { workspace_name: ws.name } : {}),
     })
   }

@@ -785,6 +785,8 @@ export interface DemoRunRequest {
   // Omit both to keep the legacy ephemeral behavior byte-identical.
   preservation?: 'ephemeral' | 'keep'
   workspace_name?: string
+  // E1 (#407) — replay provenance: the source workspace_id a Replay re-runs.
+  replayed_from_workspace_id?: string
 }
 
 // Aggregate result returned by the synchronous POST /demo/run.
