@@ -1,5 +1,69 @@
 # Changelog
 
+## [0.2.22](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.21...v0.2.22) (2026-06-12)
+
+
+### Features
+
+* **api,ui:** showcase workspace restore/replay ([#393](https://github.com/w7-mgfcode/ForecastLabAI/issues/393)) ([c54e69b](https://github.com/w7-mgfcode/ForecastLabAI/commit/c54e69b471b0da444a80f7c9ae28526b70265239))
+* **api,ui:** showcase workspace-tagged scenario plans ([#392](https://github.com/w7-mgfcode/ForecastLabAI/issues/392)) ([8a358d6](https://github.com/w7-mgfcode/ForecastLabAI/commit/8a358d6a9d52af2678ff0087efba0432d4c15a75))
+* **api:** add showcase_workspace model and migration ([#390](https://github.com/w7-mgfcode/ForecastLabAI/issues/390)) ([1bc887f](https://github.com/w7-mgfcode/ForecastLabAI/commit/1bc887f03984e8eb1d426496f5807de0ecc5d5af))
+* **api:** expose showcase workspace list and detail endpoints ([#393](https://github.com/w7-mgfcode/ForecastLabAI/issues/393)) ([f280936](https://github.com/w7-mgfcode/ForecastLabAI/commit/f2809365082bc937cad790c676e9f6b29c1b818f))
+* **api:** extend demo seed profiles to all scenario presets ([#391](https://github.com/w7-mgfcode/ForecastLabAI/issues/391)) ([c99b217](https://github.com/w7-mgfcode/ForecastLabAI/commit/c99b21720a2a363e32d8bb0cfa71ae0f567ecf8d))
+* **api:** record demo run objects into showcase workspace ([#390](https://github.com/w7-mgfcode/ForecastLabAI/issues/390)) ([e41643f](https://github.com/w7-mgfcode/ForecastLabAI/commit/e41643fe61f3d5c960ee0227a37c99fdcfd04b8d))
+* **api:** showcase workspace persistence backbone ([#390](https://github.com/w7-mgfcode/ForecastLabAI/issues/390)) ([0493192](https://github.com/w7-mgfcode/ForecastLabAI/commit/04931928ee94a4d3709f59aa27b679c749ef26ac))
+* **api:** tag showcase plans with workspace label ([#392](https://github.com/w7-mgfcode/ForecastLabAI/issues/392)) ([bf55f86](https://github.com/w7-mgfcode/ForecastLabAI/commit/bf55f8621ebba8e42aa311b9d9a8eb8e91d0ce4c))
+* **docs,repo:** add /flow-umbrella command — E3 of flow-pack suite ([#372](https://github.com/w7-mgfcode/ForecastLabAI/issues/372)) ([9679ce8](https://github.com/w7-mgfcode/ForecastLabAI/commit/9679ce87c225349f1e1f882fa6d51ad2af3aaf24))
+* **docs,repo:** flow-pack E1 foundation — /flow-prime + tracked contract + rule ([#369](https://github.com/w7-mgfcode/ForecastLabAI/issues/369)) ([a921ecb](https://github.com/w7-mgfcode/ForecastLabAI/commit/a921ecb693a722059f1382c267fb2d33e90825c7))
+* **docs,repo:** flow-pack E1 foundation — /flow-prime + tracked contract + rule ([#369](https://github.com/w7-mgfcode/ForecastLabAI/issues/369)) ([f5ad537](https://github.com/w7-mgfcode/ForecastLabAI/commit/f5ad53747bde429b9d1fc881ff0b86327ea54184))
+* **docs,repo:** flow-pack E4 — /flow-epics command template + local install ([#373](https://github.com/w7-mgfcode/ForecastLabAI/issues/373)) ([ef037e9](https://github.com/w7-mgfcode/ForecastLabAI/commit/ef037e9676baa9f62ce94ac129ec4f36542bf081))
+* **docs,repo:** flow-pack E4 — /flow-epics command template + local install ([#373](https://github.com/w7-mgfcode/ForecastLabAI/issues/373)) ([ae1c201](https://github.com/w7-mgfcode/ForecastLabAI/commit/ae1c2017719dc727f749db3bbeabd9a4e768bf5a))
+* **ui:** add tag filter to planner saved-plans library ([#392](https://github.com/w7-mgfcode/ForecastLabAI/issues/392)) ([233bef5](https://github.com/w7-mgfcode/ForecastLabAI/commit/233bef54b289acc6f15b6f81d6dab751380badd1))
+* **ui:** add workspace restore and replay to showcase page ([#393](https://github.com/w7-mgfcode/ForecastLabAI/issues/393)) ([67dac81](https://github.com/w7-mgfcode/ForecastLabAI/commit/67dac81e3b97ba18271a909185b00bab2061991f))
+* **ui:** expose all eight scenario presets as guided cards ([#391](https://github.com/w7-mgfcode/ForecastLabAI/issues/391)) ([f6e86c9](https://github.com/w7-mgfcode/ForecastLabAI/commit/f6e86c98b268d3e2c1369aa9603c09ef2e19bf48))
+* **ui:** showcase workspace full preset exposure ([#391](https://github.com/w7-mgfcode/ForecastLabAI/issues/391)) ([3194fe8](https://github.com/w7-mgfcode/ForecastLabAI/commit/3194fe89781540ae7e5b2a5b363a51f7adea0733))
+
+
+### Bug Fixes
+
+* **agents,api:** surface fallback model failures with classified details ([#335](https://github.com/w7-mgfcode/ForecastLabAI/issues/335)) ([fb7f84c](https://github.com/w7-mgfcode/ForecastLabAI/commit/fb7f84cb0f71fe7aa18ae43247cedf6a0436a226))
+* **agents,api:** surface fallback model failures with classified details ([#335](https://github.com/w7-mgfcode/ForecastLabAI/issues/335)) ([a060ff6](https://github.com/w7-mgfcode/ForecastLabAI/commit/a060ff66a1bf43b422018a30d2356e628d8b19a8))
+* **api:** reject doubled provider prefixes in agent model ids ([#334](https://github.com/w7-mgfcode/ForecastLabAI/issues/334)) ([b7a7ae9](https://github.com/w7-mgfcode/ForecastLabAI/commit/b7a7ae932fe05585dbb585232e39b63fded94e70))
+* **api:** reject doubled provider prefixes in agent model ids ([#334](https://github.com/w7-mgfcode/ForecastLabAI/issues/334)) ([d15622a](https://github.com/w7-mgfcode/ForecastLabAI/commit/d15622a7fed97f8b1ab58100633d5d05fb030f49))
+* **data:** couple seeded sales prices to price_history windows ([#237](https://github.com/w7-mgfcode/ForecastLabAI/issues/237)) ([151611c](https://github.com/w7-mgfcode/ForecastLabAI/commit/151611ca2e1395b2a3e7ef0a47885d9dec649cca))
+* **data:** model_exogenous price inertia — discriminator tests + seeder price coupling ([#237](https://github.com/w7-mgfcode/ForecastLabAI/issues/237)) ([aca758f](https://github.com/w7-mgfcode/ForecastLabAI/commit/aca758fbf0630464d4e50fd0de8991d144576afc))
+* **repo:** correct flow-prime milestone query ([#371](https://github.com/w7-mgfcode/ForecastLabAI/issues/371)) ([1f7fd82](https://github.com/w7-mgfcode/ForecastLabAI/commit/1f7fd82f1081ef5d0b494ac9e586462c2acb6735))
+* **ui:** avoid crypto.randomUUID crash on lan http showcase ([#332](https://github.com/w7-mgfcode/ForecastLabAI/issues/332)) ([1482144](https://github.com/w7-mgfcode/ForecastLabAI/commit/1482144124073347e014e2e8a144095a348d6890))
+* **ui:** avoid crypto.randomUUID crash on LAN HTTP showcase ([#332](https://github.com/w7-mgfcode/ForecastLabAI/issues/332)) ([3a7d7a0](https://github.com/w7-mgfcode/ForecastLabAI/commit/3a7d7a053f4961a85ddef6e59c366737b0397723))
+
+
+### Documentation
+
+* **api:** document full scenario union and preset outcomes ([#391](https://github.com/w7-mgfcode/ForecastLabAI/issues/391)) ([ce7033d](https://github.com/w7-mgfcode/ForecastLabAI/commit/ce7033dbc8a1387d873a07070e32f8ac081491e6))
+* **api:** document preservation and workspace_name fields ([#390](https://github.com/w7-mgfcode/ForecastLabAI/issues/390)) ([9a40669](https://github.com/w7-mgfcode/ForecastLabAI/commit/9a406699c77fee8b55203d6aef23ec23467fbb2d))
+* **api:** document workspace plan tags ([#392](https://github.com/w7-mgfcode/ForecastLabAI/issues/392)) ([d711ca0](https://github.com/w7-mgfcode/ForecastLabAI/commit/d711ca0bf9d00b1c2a9f8a38c5d57037f5534afa))
+* **api:** document workspace restore endpoints ([#393](https://github.com/w7-mgfcode/ForecastLabAI/issues/393)) ([ee844f1](https://github.com/w7-mgfcode/ForecastLabAI/commit/ee844f120ff8f060d944453a0febb1d837ed2c27))
+* **repo:** add /flow-brainstorm command — E2 of flow-pack suite ([#371](https://github.com/w7-mgfcode/ForecastLabAI/issues/371)) ([d023a20](https://github.com/w7-mgfcode/ForecastLabAI/commit/d023a20ec0e7a732a978e03b856459485326b9d3))
+* **repo:** add onboarding guide, role deep-dives, and architecture diagrams ([#368](https://github.com/w7-mgfcode/ForecastLabAI/issues/368)) ([4984713](https://github.com/w7-mgfcode/ForecastLabAI/commit/49847133fe6b4efda29f5fcf7703a8481eaed9e2))
+* **repo:** address review notes on taxonomy map provenance and prp typo ([#268](https://github.com/w7-mgfcode/ForecastLabAI/issues/268)) ([f7fd09c](https://github.com/w7-mgfcode/ForecastLabAI/commit/f7fd09cc9229aa237c79a867d30e1e94db54a5a5))
+* **repo:** address review wording nits on e6 prp ([#387](https://github.com/w7-mgfcode/ForecastLabAI/issues/387)) ([62a2463](https://github.com/w7-mgfcode/ForecastLabAI/commit/62a2463cde67ef5142a7167d21e041f5c4da2669))
+* **repo:** correct slice count 11 to 19 in base docs ([#376](https://github.com/w7-mgfcode/ForecastLabAI/issues/376)) ([7a34b3b](https://github.com/w7-mgfcode/ForecastLabAI/commit/7a34b3b6c7bf7555b8b8d62e3f9e49f6170bade7))
+* **repo:** fix review typos in methodology and PRP ([#369](https://github.com/w7-mgfcode/ForecastLabAI/issues/369)) ([cde4dff](https://github.com/w7-mgfcode/ForecastLabAI/commit/cde4dffa38d29eadf7ccc0e794ace40742a2e155))
+* **repo:** flow-pack closeout — PRPs, onboarding docs, flow-prime fix ([#368](https://github.com/w7-mgfcode/ForecastLabAI/issues/368)) ([98147d1](https://github.com/w7-mgfcode/ForecastLabAI/commit/98147d1050879efdb3e7ff28ffff121e7e58193d))
+* **repo:** harden flow-prime state markers ([#369](https://github.com/w7-mgfcode/ForecastLabAI/issues/369)) ([2cb87b5](https://github.com/w7-mgfcode/ForecastLabAI/commit/2cb87b594e9bf774d0dcd6be04aef6ca1d35ce60))
+* **repo:** track flow-pack E2-E4 PRPs ([#368](https://github.com/w7-mgfcode/ForecastLabAI/issues/368)) ([7799d53](https://github.com/w7-mgfcode/ForecastLabAI/commit/7799d530806a7f74cb90a3b1e8dcc996f926ed27))
+* **repo:** track reliability E1 prp for doubled provider prefixes ([#334](https://github.com/w7-mgfcode/ForecastLabAI/issues/334)) ([07fdee4](https://github.com/w7-mgfcode/ForecastLabAI/commit/07fdee4a26f19f10a12b204a5d9d0b07f84c4d5b))
+* **repo:** track reliability E2 prp for surfacing fallback failures ([#335](https://github.com/w7-mgfcode/ForecastLabAI/issues/335)) ([7c57641](https://github.com/w7-mgfcode/ForecastLabAI/commit/7c5764118c5a68755cc115130e7c110755144652))
+* **repo:** track reliability E3 prp for safe uuid fallback ([#332](https://github.com/w7-mgfcode/ForecastLabAI/issues/332)) ([3300d67](https://github.com/w7-mgfcode/ForecastLabAI/commit/3300d67f5f0b928299386e4e1c8a85290524e69e))
+* **repo:** track reliability E4 prp for shared model taxonomy ([#268](https://github.com/w7-mgfcode/ForecastLabAI/issues/268)) ([1f45249](https://github.com/w7-mgfcode/ForecastLabAI/commit/1f4524992ba8cd53b27a642900b244db0b1922db))
+* **repo:** track reliability E5 prp and document seeder price coupling ([#237](https://github.com/w7-mgfcode/ForecastLabAI/issues/237)) ([82300eb](https://github.com/w7-mgfcode/ForecastLabAI/commit/82300eb51660f3c32e58f2f507825afbe2556459))
+* **repo:** track reliability E6 prp ([#387](https://github.com/w7-mgfcode/ForecastLabAI/issues/387)) ([2c71928](https://github.com/w7-mgfcode/ForecastLabAI/commit/2c719282417081fd096c4b39416489e2bbb264cd))
+* **repo:** track reliability E6 prp ([#387](https://github.com/w7-mgfcode/ForecastLabAI/issues/387)) ([fdf72c1](https://github.com/w7-mgfcode/ForecastLabAI/commit/fdf72c10e34bb48594101150609bc6c44b05e2c4))
+* **repo:** track showcase workspace e1 prp ([#390](https://github.com/w7-mgfcode/ForecastLabAI/issues/390)) ([85f0151](https://github.com/w7-mgfcode/ForecastLabAI/commit/85f0151b3313bf6d3d52f1a8f968fe9c5e944607))
+* **repo:** track showcase workspace e2 prp ([#391](https://github.com/w7-mgfcode/ForecastLabAI/issues/391)) ([39eb429](https://github.com/w7-mgfcode/ForecastLabAI/commit/39eb42964f073f3c1bf8008986d8e15662836353))
+* **repo:** track showcase workspace e3 prp ([#392](https://github.com/w7-mgfcode/ForecastLabAI/issues/392)) ([d78d6b0](https://github.com/w7-mgfcode/ForecastLabAI/commit/d78d6b0c9ba6c7eafdfc0fff3072a350e93a958f))
+* **repo:** track showcase workspace e4 prp ([#393](https://github.com/w7-mgfcode/ForecastLabAI/issues/393)) ([b1c8593](https://github.com/w7-mgfcode/ForecastLabAI/commit/b1c859319f6f7fe099929f3eab27a445a9932133))
+
 ## [0.2.21](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.20...v0.2.21) (2026-06-01)
 
 
