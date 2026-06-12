@@ -5,6 +5,8 @@ Exposes:
 - ``WS   /demo/stream`` -- streams one StepEvent per step for the live UI.
 - ``GET    /demo/workspaces``                 -- E4 (#393): list saved workspaces.
 - ``GET    /demo/workspaces/{workspace_id}``  -- E4 (#393): one workspace's detail.
+- ``PATCH  /demo/workspaces/{workspace_id}``  -- E1 (#407): partial lifecycle
+  update (rename / notes / tags / archive / pin); ``status`` is not patchable.
 - ``DELETE /demo/workspaces/{workspace_id}``  -- delete the workspace METADATA
   row only; the run's created objects are soft references and stay untouched.
 
@@ -41,6 +43,7 @@ from app.features.demo.schemas import (
     WorkspaceDetailResponse,
     WorkspaceListItem,
     WorkspaceListResponse,
+    WorkspaceUpdateRequest,
 )
 
 logger = get_logger(__name__)
@@ -130,6 +133,40 @@ async def get_showcase_workspace(
         NotFoundError: When no workspace matches ``workspace_id``.
     """
     row = await workspace.get_workspace(db, workspace_id)
+    if row is None:
+        raise NotFoundError(message=f"Workspace not found: {workspace_id}")
+    return WorkspaceDetailResponse.model_validate(row)
+
+
+@router.patch(
+    "/workspaces/{workspace_id}",
+    response_model=WorkspaceDetailResponse,
+    summary="Update a saved showcase workspace's lifecycle metadata",
+    description=(
+        "Partial update: rename / notes / tags / archive / pin. Only fields "
+        "present in the body change; explicit null clears name/notes. The run "
+        "lifecycle status is not patchable."
+    ),
+)
+async def update_showcase_workspace(
+    workspace_id: str,
+    update: WorkspaceUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+) -> WorkspaceDetailResponse:
+    """Update a saved showcase workspace's lifecycle metadata (E1, #407).
+
+    Args:
+        workspace_id: External identifier of the workspace.
+        update: Partial-update body; only provided fields are applied.
+        db: Async database session from dependency.
+
+    Returns:
+        The full updated workspace row.
+
+    Raises:
+        NotFoundError: When no workspace matches ``workspace_id``.
+    """
+    row = await workspace.update_workspace(db, workspace_id, update)
     if row is None:
         raise NotFoundError(message=f"Workspace not found: {workspace_id}")
     return WorkspaceDetailResponse.model_validate(row)

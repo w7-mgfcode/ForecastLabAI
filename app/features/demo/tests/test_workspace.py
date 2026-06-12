@@ -20,7 +20,7 @@ from app.features.demo.models import (
     WORKSPACE_STATUS_RUNNING,
 )
 from app.features.demo.pipeline import DemoContext
-from app.features.demo.schemas import DemoRunRequest
+from app.features.demo.schemas import DemoRunRequest, WorkspaceUpdateRequest
 from app.shared.seeder.config import ScenarioPreset
 
 pytestmark = pytest.mark.integration
@@ -182,3 +182,134 @@ async def test_delete_workspace_removes_only_target_row(db_session: AsyncSession
 async def test_delete_workspace_missing_returns_false(db_session: AsyncSession) -> None:
     """delete_workspace returns False (no raise) for an unknown id."""
     assert await workspace.delete_workspace(db_session, "0" * 32) is False
+
+
+# =============================================================================
+# E1 (#407) -- replay provenance recording
+# =============================================================================
+
+
+async def test_create_workspace_records_replayed_from(db_session: AsyncSession) -> None:
+    """create_workspace records the lineage pointer verbatim on the NEW row."""
+    source_id = "a" * 32  # soft reference -- no row needs to exist
+    workspace_id = await workspace.create_workspace(
+        _keep_request(replayed_from_workspace_id=source_id)
+    )
+    assert workspace_id is not None
+
+    row = await workspace.get_workspace(db_session, workspace_id)
+    assert row is not None
+    assert row.replayed_from_workspace_id == source_id
+
+
+async def test_create_workspace_without_replayed_from_is_none(db_session: AsyncSession) -> None:
+    """A fresh keep-run (no lineage pointer) records NULL -- legacy identical."""
+    workspace_id = await workspace.create_workspace(_keep_request())
+    assert workspace_id is not None
+
+    row = await workspace.get_workspace(db_session, workspace_id)
+    assert row is not None
+    assert row.replayed_from_workspace_id is None
+    assert row.archived is False
+    assert row.pinned is False
+    assert row.tags == []
+    assert row.config_schema_version == 1
+
+
+# =============================================================================
+# E1 (#407) -- update_workspace (PATCH helper)
+# =============================================================================
+
+
+async def test_update_workspace_partial_leaves_other_fields(db_session: AsyncSession) -> None:
+    """Only provided fields change; everything else is untouched."""
+    workspace_id = await workspace.create_workspace(_keep_request(workspace_name="it-upd"))
+    assert workspace_id is not None
+
+    row = await workspace.update_workspace(
+        db_session,
+        workspace_id,
+        WorkspaceUpdateRequest.model_validate({"name": "it-upd-renamed", "pinned": True}),
+    )
+    assert row is not None
+    assert row.name == "it-upd-renamed"
+    assert row.pinned is True
+    # Untouched fields keep their values.
+    assert row.archived is False
+    assert row.notes is None
+    assert row.tags == []
+    assert row.seed == 7
+    assert row.status == WORKSPACE_STATUS_RUNNING
+
+
+async def test_update_workspace_explicit_null_clears_name(db_session: AsyncSession) -> None:
+    """An explicit null clears name/notes (exclude_unset keeps it in changes)."""
+    workspace_id = await workspace.create_workspace(_keep_request(workspace_name="it-clear"))
+    assert workspace_id is not None
+    await workspace.update_workspace(
+        db_session,
+        workspace_id,
+        WorkspaceUpdateRequest.model_validate({"notes": "temporary"}),
+    )
+
+    row = await workspace.update_workspace(
+        db_session,
+        workspace_id,
+        WorkspaceUpdateRequest.model_validate({"name": None, "notes": None}),
+    )
+    assert row is not None
+    assert row.name is None
+    assert row.notes is None
+
+
+async def test_update_workspace_tags_replaced_whole(db_session: AsyncSession) -> None:
+    """tags is replaced as a whole list (never merged); [] clears it."""
+    workspace_id = await workspace.create_workspace(_keep_request(workspace_name="it-tags"))
+    assert workspace_id is not None
+
+    row = await workspace.update_workspace(
+        db_session,
+        workspace_id,
+        WorkspaceUpdateRequest.model_validate({"tags": ["a", "b"]}),
+    )
+    assert row is not None
+    assert row.tags == ["a", "b"]
+
+    row = await workspace.update_workspace(
+        db_session,
+        workspace_id,
+        WorkspaceUpdateRequest.model_validate({"tags": ["c"]}),
+    )
+    assert row is not None
+    assert row.tags == ["c"]  # replaced, not merged
+
+    row = await workspace.update_workspace(
+        db_session,
+        workspace_id,
+        WorkspaceUpdateRequest.model_validate({"tags": []}),
+    )
+    assert row is not None
+    assert row.tags == []
+
+
+async def test_update_workspace_missing_returns_none(db_session: AsyncSession) -> None:
+    """update_workspace returns None for an unknown id (route maps to 404)."""
+    result = await workspace.update_workspace(
+        db_session,
+        "0" * 32,
+        WorkspaceUpdateRequest.model_validate({"pinned": True}),
+    )
+    assert result is None
+
+
+async def test_update_workspace_empty_request_noop(db_session: AsyncSession) -> None:
+    """An empty request is a no-op that still returns the row."""
+    workspace_id = await workspace.create_workspace(_keep_request(workspace_name="it-noop"))
+    assert workspace_id is not None
+
+    row = await workspace.update_workspace(
+        db_session, workspace_id, WorkspaceUpdateRequest.model_validate({})
+    )
+    assert row is not None
+    assert row.name == "it-noop"
+    assert row.status == WORKSPACE_STATUS_RUNNING

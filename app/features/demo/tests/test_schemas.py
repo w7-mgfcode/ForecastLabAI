@@ -13,6 +13,7 @@ from app.features.demo.schemas import (
     WorkspaceDetailResponse,
     WorkspaceListItem,
     WorkspaceListResponse,
+    WorkspaceUpdateRequest,
 )
 from app.shared.seeder.config import ScenarioPreset
 
@@ -100,6 +101,89 @@ def test_demo_run_request_rejects_unknown_preservation():
     """E1 (#390) -- preservation is a closed Literal; unknown values 422."""
     with pytest.raises(ValidationError):
         DemoRunRequest.model_validate({"preservation": "archive"})
+
+
+# =============================================================================
+# E1 (#407) -- replayed_from_workspace_id (replay provenance)
+# =============================================================================
+
+
+def test_demo_run_request_replayed_from_default_none():
+    """E1 (#407) -- default None; a legacy frame without the key validates."""
+    assert DemoRunRequest().replayed_from_workspace_id is None
+    legacy = DemoRunRequest.model_validate({"seed": 7})
+    assert legacy.replayed_from_workspace_id is None
+
+
+def test_demo_run_request_replayed_from_json_path():
+    """E1 (#407) -- the JSON wire form (validate_python on a parsed dict, the
+    path FastAPI uses) accepts keep + a 32-hex lineage pointer."""
+    req = DemoRunRequest.model_validate(
+        {"preservation": "keep", "replayed_from_workspace_id": "a" * 32}
+    )
+    assert req.replayed_from_workspace_id == "a" * 32
+
+
+def test_demo_run_request_replayed_from_requires_keep():
+    """E1 (#407) -- a lineage pointer without preservation='keep' is rejected."""
+    with pytest.raises(ValidationError):
+        DemoRunRequest.model_validate({"replayed_from_workspace_id": "a" * 32})
+    with pytest.raises(ValidationError):
+        DemoRunRequest.model_validate(
+            {"preservation": "ephemeral", "replayed_from_workspace_id": "a" * 32}
+        )
+
+
+def test_demo_run_request_replayed_from_pattern_rejected():
+    """E1 (#407) -- values off the uuid4().hex shape are rejected."""
+    for bad in ("not-hex!" + "0" * 24, "A" * 32, "a" * 31, "a" * 33):
+        with pytest.raises(ValidationError):
+            DemoRunRequest.model_validate(
+                {"preservation": "keep", "replayed_from_workspace_id": bad}
+            )
+
+
+# =============================================================================
+# E1 (#407) -- WorkspaceUpdateRequest (PATCH body)
+# =============================================================================
+
+
+def test_workspace_update_request_partial_fields_set():
+    """E1 (#407) -- exclude_unset distinguishes absent from explicit null."""
+    cleared = WorkspaceUpdateRequest.model_validate({"notes": None})
+    assert cleared.model_dump(exclude_unset=True) == {"notes": None}
+    empty = WorkspaceUpdateRequest.model_validate({})
+    assert empty.model_dump(exclude_unset=True) == {}
+
+
+def test_workspace_update_request_rejects_unknown_key():
+    """E1 (#407) -- extra='forbid': status (and any typo) is not patchable."""
+    with pytest.raises(ValidationError):
+        WorkspaceUpdateRequest.model_validate({"status": "archived"})
+    with pytest.raises(ValidationError):
+        WorkspaceUpdateRequest.model_validate({"archvied": True})
+
+
+def test_workspace_update_request_name_pattern_and_tags_cap():
+    """E1 (#407) -- name pattern + the 20-item tag cap are enforced."""
+    with pytest.raises(ValidationError):
+        WorkspaceUpdateRequest.model_validate({"name": "Bad Name!"})
+    with pytest.raises(ValidationError):
+        WorkspaceUpdateRequest.model_validate({"tags": [f"t{i}" for i in range(21)]})
+    ok = WorkspaceUpdateRequest.model_validate({"tags": ["workspace:x", "demo"]})
+    assert ok.tags == ["workspace:x", "demo"]
+
+
+def test_workspace_update_request_rejects_explicit_null_flags():
+    """E1 (#407) -- explicit null on the NOT NULL-backed fields is a 422."""
+    with pytest.raises(ValidationError):
+        WorkspaceUpdateRequest.model_validate({"archived": None})
+    with pytest.raises(ValidationError):
+        WorkspaceUpdateRequest.model_validate({"pinned": None})
+    with pytest.raises(ValidationError):
+        WorkspaceUpdateRequest.model_validate({"tags": None})
+    # The sanctioned clear path: an empty list, never null.
+    assert WorkspaceUpdateRequest.model_validate({"tags": []}).tags == []
 
 
 def test_step_event_json_round_trip():
@@ -264,6 +348,49 @@ def test_workspace_detail_tolerates_running_row_nulls():
     assert detail.name is None
     assert detail.created_objects == {}
     assert detail.result_summary is None
+
+
+def test_workspace_responses_default_e1_fields_for_pre_e1_rows():
+    """E1 (#407) -- pre-E1 ORM-shaped rows (no new attrs) still validate;
+    the additive fields fall back to their defaults."""
+    item = WorkspaceListItem.model_validate(_orm_like_workspace_row())
+    assert item.archived is False
+    assert item.pinned is False
+    assert item.tags == []
+    assert item.replayed_from_workspace_id is None
+
+    detail = WorkspaceDetailResponse.model_validate(_orm_like_workspace_row())
+    assert detail.notes is None
+    assert detail.config_schema_version == 1
+    assert detail.seed_overrides is None
+    assert detail.user_scope is None
+    assert detail.approval_events is None
+    assert detail.rag_events is None
+    assert detail.job_ids is None
+    assert detail.phase_summaries is None
+
+
+def test_workspace_detail_passes_e1_fields_through():
+    """E1 (#407) -- populated lifecycle + slot values ride through verbatim."""
+    detail = WorkspaceDetailResponse.model_validate(
+        _orm_like_workspace_row(
+            archived=True,
+            pinned=True,
+            tags=["demo", "workspace:x"],
+            replayed_from_workspace_id="b" * 32,
+            notes="kept for the quarterly review",
+            config_schema_version=1,
+            seed_overrides={"noise_sigma": 0.2},
+            job_ids=["job-1", "job-2"],
+        )
+    )
+    assert detail.archived is True
+    assert detail.pinned is True
+    assert detail.tags == ["demo", "workspace:x"]
+    assert detail.replayed_from_workspace_id == "b" * 32
+    assert detail.notes == "kept for the quarterly review"
+    assert detail.seed_overrides == {"noise_sigma": 0.2}
+    assert detail.job_ids == ["job-1", "job-2"]
 
 
 def test_workspace_list_response_shape():
