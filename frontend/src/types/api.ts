@@ -815,6 +815,11 @@ export interface WorkspaceListItem {
   skip_seed: boolean
   result_summary: Record<string, unknown> | null
   created_at: string
+  // E1 (#407) — lifecycle + provenance fields (consumed by E2 #408).
+  archived: boolean
+  pinned: boolean
+  tags: string[]
+  replayed_from_workspace_id: string | null
 }
 
 // Full row from GET /demo/workspaces/{workspace_id}.
@@ -824,12 +829,60 @@ export interface WorkspaceDetail extends WorkspaceListItem {
   date_start: string | null
   date_end: string | null
   created_objects: Record<string, unknown>
+  // E1 (#407) — operator annotation + schema version.
+  notes: string | null
+  config_schema_version: number
 }
 
 // Page shape of GET /demo/workspaces.
 export interface WorkspaceListResponse {
   workspaces: WorkspaceListItem[]
   total: number
+}
+
+// E2 (#408) — partial-update body for PATCH /demo/workspaces/{workspace_id}
+// (E1 endpoint). Absent field = unchanged; explicit null clears name/notes.
+export interface WorkspaceUpdate {
+  name?: string | null
+  notes?: string | null
+  tags?: string[]
+  archived?: boolean
+  pinned?: boolean
+}
+
+// E2 (#408) — query params for GET /demo/workspaces. Archived rows are
+// hidden unless include_archived; unknown sort_by falls back server-side.
+export interface WorkspaceListParams {
+  limit?: number
+  offset?: number
+  q?: string
+  tags?: string
+  include_archived?: boolean
+  sort_by?: 'created_at' | 'name' | 'seed' | 'status'
+  sort_order?: 'asc' | 'desc'
+}
+
+// E2 (#408) — link-health classification of one probed soft reference.
+export type RefHealthStatus = 'alive' | 'dead' | 'unknown'
+
+export interface WorkspaceRefHealth {
+  key: string
+  ref_type: 'model_run' | 'scenario_plan' | 'alias' | 'batch' | 'agent_session' | 'job'
+  ref_id: string
+  status: RefHealthStatus
+  probe_path: string
+}
+
+// E2 (#408) — GET /demo/workspaces/{workspace_id}/health response.
+export interface WorkspaceHealth {
+  workspace_id: string
+  workspace_status: 'running' | 'completed' | 'failed'
+  partial_run: boolean
+  references: WorkspaceRefHealth[]
+  alive: number
+  dead: number
+  unknown: number
+  checked_at: string
 }
 
 // === AI Model Configuration (/config) ===

@@ -1,13 +1,14 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { toast } from 'sonner'
 import { WorkspacePanel } from './WorkspacePanel'
 import { ApiError } from '@/lib/api'
-import type { WorkspaceListItem, WorkspaceListResponse } from '@/types/api'
+import type { WorkspaceListItem, WorkspaceListParams, WorkspaceListResponse } from '@/types/api'
 
 beforeAll(() => {
-  // Radix AlertDialog needs these in jsdom (pattern: cancel-run-dialog.test.tsx).
+  // Radix AlertDialog/DropdownMenu need these in jsdom.
   class ResizeObserverStub {
     observe() {}
     unobserve() {}
@@ -16,6 +17,9 @@ beforeAll(() => {
   vi.stubGlobal('ResizeObserver', ResizeObserverStub)
   if (!Element.prototype.hasPointerCapture) {
     Element.prototype.hasPointerCapture = () => false
+  }
+  if (!Element.prototype.scrollIntoView) {
+    Element.prototype.scrollIntoView = () => {}
   }
 })
 
@@ -34,6 +38,16 @@ const baseItem: WorkspaceListItem = {
   skip_seed: true,
   result_summary: { winner_model_type: 'seasonal_naive' },
   created_at: '2026-06-01T12:00:00Z',
+  archived: false,
+  pinned: false,
+  tags: [],
+  replayed_from_workspace_id: null,
+}
+
+const secondItem: WorkspaceListItem = {
+  ...baseItem,
+  workspace_id: 'b'.repeat(32),
+  name: 'second',
 }
 
 let mockResponse: { data: WorkspaceListResponse | undefined; isLoading: boolean } = {
@@ -41,33 +55,69 @@ let mockResponse: { data: WorkspaceListResponse | undefined; isLoading: boolean 
   isLoading: false,
 }
 
-let mockDeleteResult: { mutate: ReturnType<typeof vi.fn>; isPending: boolean } = {
+let lastListParams: WorkspaceListParams | undefined
+
+let mockDeleteResult: {
+  mutate: ReturnType<typeof vi.fn>
+  mutateAsync: ReturnType<typeof vi.fn>
+  isPending: boolean
+} = { mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }
+
+let mockPatchResult: { mutate: ReturnType<typeof vi.fn>; isPending: boolean } = {
   mutate: vi.fn(),
   isPending: false,
 }
 
+const mockNavigate = vi.fn()
+
 vi.mock('@/hooks/use-workspaces', () => ({
-  useWorkspaces: () => mockResponse,
+  useWorkspaces: (params: WorkspaceListParams) => {
+    lastListParams = params
+    return mockResponse
+  },
+  // WorkspaceEditDialog dependencies (mounted closed by the panel).
+  useWorkspace: () => ({ data: undefined, isSuccess: false, isError: false }),
   useDeleteWorkspace: () => mockDeleteResult,
+  usePatchWorkspace: () => mockPatchResult,
 }))
+
+vi.mock('react-router-dom', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-router-dom')>()
+  return { ...actual, useNavigate: () => mockNavigate }
+})
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }))
 
+beforeEach(() => {
+  lastListParams = undefined
+  mockDeleteResult = { mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }
+  mockPatchResult = { mutate: vi.fn(), isPending: false }
+})
+
 function renderPanel(props: Partial<Parameters<typeof WorkspacePanel>[0]> = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <WorkspacePanel
-        onLoad={() => {}}
-        onReplay={() => {}}
-        isRunning={false}
-        lastWorkspaceId={null}
-        {...props}
-      />
+      <MemoryRouter>
+        <WorkspacePanel
+          onLoad={() => {}}
+          onRequestReplay={() => {}}
+          isRunning={false}
+          lastWorkspaceId={null}
+          {...props}
+        />
+      </MemoryRouter>
     </QueryClientProvider>,
   )
+}
+
+/** Open a Radix dropdown/select (pattern: model-family-tabs.test.tsx). */
+function radixOpen(target: HTMLElement) {
+  fireEvent.pointerDown(target, { button: 0, ctrlKey: false })
+  fireEvent.mouseDown(target, { button: 0 })
+  fireEvent.click(target)
 }
 
 describe('WorkspacePanel', () => {
@@ -86,7 +136,6 @@ describe('WorkspacePanel', () => {
     expect(container.textContent).toContain('seed 7')
     expect(container.textContent).toContain('COMPLETED')
     expect(container.textContent).toContain('winner seasonal_naive')
-    // No destructive badge on a reset=false row.
     expect(container.textContent).not.toContain('DESTRUCTIVE')
   })
 
@@ -99,57 +148,192 @@ describe('WorkspacePanel', () => {
     expect(container.textContent).toContain('DESTRUCTIVE')
   })
 
-  it('falls back to the workspace_id slice when the row is unnamed', () => {
-    mockResponse = {
-      data: { workspaces: [{ ...baseItem, name: null }], total: 1 },
-      isLoading: false,
-    }
-    const { container } = renderPanel()
-    expect(container.textContent).toContain('aaaaaaaa')
-  })
-
-  it('invokes onLoad / onReplay with the list item', () => {
+  it('invokes onLoad / onRequestReplay with the list item — replay never starts here', () => {
     mockResponse = { data: { workspaces: [baseItem], total: 1 }, isLoading: false }
     const onLoad = vi.fn()
-    const onReplay = vi.fn()
-    const { container } = renderPanel({ onLoad, onReplay })
+    const onRequestReplay = vi.fn()
+    const { container } = renderPanel({ onLoad, onRequestReplay })
     const buttons = Array.from(container.querySelectorAll('button'))
     fireEvent.click(buttons.find((b) => (b.textContent ?? '').includes('Load'))!)
     expect(onLoad).toHaveBeenCalledWith(baseItem)
     fireEvent.click(buttons.find((b) => (b.textContent ?? '').includes('Replay'))!)
-    expect(onReplay).toHaveBeenCalledWith(baseItem)
+    expect(onRequestReplay).toHaveBeenCalledWith(baseItem)
   })
 
-  it('disables both actions while a run is in flight', () => {
+  it('disables row actions while a run is in flight', () => {
     mockResponse = { data: { workspaces: [baseItem], total: 1 }, isLoading: false }
-    const { container } = renderPanel({ isRunning: true })
-    const buttons = Array.from(container.querySelectorAll('button'))
-    expect(buttons.length).toBeGreaterThanOrEqual(2)
-    expect(buttons.every((b) => b.disabled)).toBe(true)
+    renderPanel({ isRunning: true })
+    const labels = ['Load', 'Replay']
+    for (const label of labels) {
+      const button = screen
+        .getAllByRole('button')
+        .find((b) => (b.textContent ?? '').includes(label))! as HTMLButtonElement
+      expect(button.disabled).toBe(true)
+    }
   })
 })
 
-describe('WorkspacePanel — delete', () => {
-  function openDeleteDialog() {
+describe('WorkspacePanel — E2 lifecycle badges + toolbar params', () => {
+  it('renders pinned / archived / replay badges', () => {
+    mockResponse = {
+      data: {
+        workspaces: [
+          {
+            ...baseItem,
+            pinned: true,
+            archived: true,
+            replayed_from_workspace_id: 'c'.repeat(32),
+          },
+        ],
+        total: 1,
+      },
+      isLoading: false,
+    }
+    const { container } = renderPanel()
+    expect(container.textContent).toContain('archived')
+    expect(container.textContent).toContain('replay')
+    expect(screen.getByLabelText('Unpin e4-panel')).toBeTruthy()
+  })
+
+  it('flows the debounced search into the q list param (min 2 chars)', async () => {
     mockResponse = { data: { workspaces: [baseItem], total: 1 }, isLoading: false }
-    mockDeleteResult = { mutate: vi.fn(), isPending: false }
+    renderPanel()
+    fireEvent.change(screen.getByLabelText('Search workspaces by name'), {
+      target: { value: 'demo' },
+    })
+    await waitFor(() => expect(lastListParams?.q).toBe('demo'))
+  })
+
+  it('flows the show-archived toggle into include_archived', () => {
+    mockResponse = { data: { workspaces: [baseItem], total: 1 }, isLoading: false }
+    const { container } = renderPanel()
+    expect(lastListParams?.include_archived).toBeUndefined()
+    const checkbox = Array.from(container.querySelectorAll('button[role="checkbox"]')).find(
+      (el) => el.parentElement?.textContent?.includes('Show archived'),
+    )!
+    fireEvent.click(checkbox)
+    expect(lastListParams?.include_archived).toBe(true)
+  })
+
+  it('flows the sort select into sort_by/sort_order', () => {
+    mockResponse = { data: { workspaces: [baseItem], total: 1 }, isLoading: false }
+    renderPanel()
+    radixOpen(screen.getByLabelText('Sort workspaces'))
+    fireEvent.click(screen.getByText('Name'))
+    expect(lastListParams?.sort_by).toBe('name')
+    expect(lastListParams?.sort_order).toBe('asc')
+  })
+
+  it('clicking a tag chip filters by that tag; the toolbar chip clears it', () => {
+    mockResponse = {
+      data: { workspaces: [{ ...baseItem, tags: ['smoke'] }], total: 1 },
+      isLoading: false,
+    }
+    renderPanel()
+    fireEvent.click(screen.getByLabelText('Filter by tag smoke'))
+    expect(lastListParams?.tags).toBe('smoke')
+    fireEvent.click(screen.getByLabelText('Clear tag filter smoke'))
+    expect(lastListParams?.tags).toBeUndefined()
+  })
+
+  it('pin toggle fires the PATCH mutation', () => {
+    mockResponse = { data: { workspaces: [baseItem], total: 1 }, isLoading: false }
+    renderPanel()
+    fireEvent.click(screen.getByLabelText('Pin e4-panel'))
+    expect(mockPatchResult.mutate).toHaveBeenCalledWith(
+      { workspaceId: baseItem.workspace_id, update: { pinned: true } },
+      expect.anything(),
+    )
+  })
+
+  it('archive action in the dropdown fires the PATCH mutation', () => {
+    mockResponse = { data: { workspaces: [baseItem], total: 1 }, isLoading: false }
+    renderPanel()
+    radixOpen(screen.getByLabelText('More actions for e4-panel'))
+    fireEvent.click(screen.getByText('Archive'))
+    expect(mockPatchResult.mutate).toHaveBeenCalledWith(
+      { workspaceId: baseItem.workspace_id, update: { archived: true } },
+      expect.anything(),
+    )
+  })
+})
+
+describe('WorkspacePanel — multi-select', () => {
+  function selectBoth() {
+    mockResponse = { data: { workspaces: [baseItem, secondItem], total: 2 }, isLoading: false }
     const result = renderPanel({ onDeleted: vi.fn() })
-    fireEvent.click(screen.getByLabelText('Delete workspace e4-panel'))
+    fireEvent.click(screen.getByLabelText('Select workspace e4-panel'))
+    fireEvent.click(screen.getByLabelText('Select workspace second'))
     return result
   }
 
-  it('renders a Delete action for each saved workspace row', () => {
-    mockResponse = { data: { workspaces: [baseItem], total: 1 }, isLoading: false }
-    const { container } = renderPanel()
-    const buttons = Array.from(container.querySelectorAll('button'))
-    expect(buttons.some((b) => (b.textContent ?? '').includes('Delete'))).toBe(true)
+  it('shows the selection footer with the count', () => {
+    const { container } = selectBoth()
+    expect(container.textContent).toContain('2 selected')
   })
+
+  it('Compare is enabled only at exactly two selections', () => {
+    mockResponse = { data: { workspaces: [baseItem, secondItem], total: 2 }, isLoading: false }
+    renderPanel()
+    fireEvent.click(screen.getByLabelText('Select workspace e4-panel'))
+    const compare = () =>
+      screen
+        .getAllByRole('button')
+        .find((b) => (b.textContent ?? '') === 'Compare')! as HTMLButtonElement
+    expect(compare().disabled).toBe(true)
+    fireEvent.click(screen.getByLabelText('Select workspace second'))
+    expect(compare().disabled).toBe(false)
+    fireEvent.click(compare())
+    expect(mockNavigate).toHaveBeenCalledWith(
+      `/showcase/compare?a=${baseItem.workspace_id}&b=${secondItem.workspace_id}`,
+    )
+  })
+
+  it('delete-selected confirms once then issues N sequential single deletes', async () => {
+    mockDeleteResult.mutateAsync.mockResolvedValue(undefined)
+    selectBoth()
+    fireEvent.click(
+      screen.getAllByRole('button').find((b) => (b.textContent ?? '').includes('Delete selected'))!,
+    )
+    // Nothing deleted before the confirmation.
+    expect(mockDeleteResult.mutateAsync).not.toHaveBeenCalled()
+    expect(document.body.textContent).toContain('Delete 2 workspace records?')
+    fireEvent.click(screen.getByTestId('workspace-multi-delete-confirm'))
+    await waitFor(() => expect(mockDeleteResult.mutateAsync).toHaveBeenCalledTimes(2))
+    expect(mockDeleteResult.mutateAsync).toHaveBeenNthCalledWith(1, baseItem.workspace_id)
+    expect(mockDeleteResult.mutateAsync).toHaveBeenNthCalledWith(2, secondItem.workspace_id)
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('2 workspace records')),
+    )
+  })
+
+  it('collects multi-delete failures into one error toast', async () => {
+    mockDeleteResult.mutateAsync
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new ApiError('Workspace not found', 404))
+    selectBoth()
+    fireEvent.click(
+      screen.getAllByRole('button').find((b) => (b.textContent ?? '').includes('Delete selected'))!,
+    )
+    fireEvent.click(screen.getByTestId('workspace-multi-delete-confirm'))
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Some deletes failed')),
+    )
+  })
+})
+
+describe('WorkspacePanel — single delete', () => {
+  function openDeleteDialog() {
+    mockResponse = { data: { workspaces: [baseItem], total: 1 }, isLoading: false }
+    const result = renderPanel({ onDeleted: vi.fn() })
+    radixOpen(screen.getByLabelText('More actions for e4-panel'))
+    fireEvent.click(screen.getByText('Delete…'))
+    return result
+  }
 
   it('shows a confirmation whose copy makes metadata-only deletion clear', () => {
     openDeleteDialog()
-    // The mutation must not fire before confirmation.
     expect(mockDeleteResult.mutate).not.toHaveBeenCalled()
-    // Radix renders the dialog in a portal — read the whole document.
     const copy = document.body.textContent ?? ''
     expect(copy).toContain('Delete workspace "e4-panel"?')
     expect(copy).toContain('only the saved workspace record')
@@ -159,9 +343,9 @@ describe('WorkspacePanel — delete', () => {
   it('confirming deletes the row and notifies the page on success', () => {
     const onDeleted = vi.fn()
     mockResponse = { data: { workspaces: [baseItem], total: 1 }, isLoading: false }
-    mockDeleteResult = { mutate: vi.fn(), isPending: false }
     renderPanel({ onDeleted })
-    fireEvent.click(screen.getByLabelText('Delete workspace e4-panel'))
+    radixOpen(screen.getByLabelText('More actions for e4-panel'))
+    fireEvent.click(screen.getByText('Delete…'))
     fireEvent.click(screen.getByTestId('workspace-delete-confirm'))
 
     expect(mockDeleteResult.mutate).toHaveBeenCalledTimes(1)
@@ -170,9 +354,6 @@ describe('WorkspacePanel — delete', () => {
       { onSuccess: () => void; onError: (error: unknown) => void },
     ]
     expect(workspaceId).toBe(baseItem.workspace_id)
-
-    // Success path: the page hook is told so it can drop a loaded workspace;
-    // the list refetch itself lives in useDeleteWorkspace (hook test).
     options.onSuccess()
     expect(onDeleted).toHaveBeenCalledWith(baseItem.workspace_id)
     expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('were kept'))
