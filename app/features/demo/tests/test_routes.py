@@ -236,10 +236,10 @@ def _orm_like_row(workspace_id: str = "a" * 32, **overrides: object) -> SimpleNa
 async def test_list_workspaces_empty(client, monkeypatch):
     """E4 (#393) -- empty table yields 200 + an empty page (no 404)."""
 
-    async def fake_list(_db, *, limit: int, offset: int) -> list[SimpleNamespace]:
+    async def fake_list(_db, **_kwargs: object) -> list[SimpleNamespace]:
         return []
 
-    async def fake_count(_db) -> int:
+    async def fake_count(_db, **_kwargs: object) -> int:
         return 0
 
     monkeypatch.setattr(workspace, "list_workspaces", fake_list)
@@ -252,14 +252,13 @@ async def test_list_workspaces_empty(client, monkeypatch):
 
 async def test_list_workspaces_passes_pagination(client, monkeypatch):
     """E4 (#393) -- limit/offset query params reach the helper."""
-    seen: dict[str, int] = {}
+    seen: dict[str, object] = {}
 
-    async def fake_list(_db, *, limit: int, offset: int) -> list[SimpleNamespace]:
-        seen["limit"] = limit
-        seen["offset"] = offset
+    async def fake_list(_db, **kwargs: object) -> list[SimpleNamespace]:
+        seen.update(kwargs)
         return [_orm_like_row()]
 
-    async def fake_count(_db) -> int:
+    async def fake_count(_db, **_kwargs: object) -> int:
         return 5
 
     monkeypatch.setattr(workspace, "list_workspaces", fake_list)
@@ -267,7 +266,8 @@ async def test_list_workspaces_passes_pagination(client, monkeypatch):
 
     resp = await client.get("/demo/workspaces", params={"limit": 2, "offset": 3})
     assert resp.status_code == 200
-    assert seen == {"limit": 2, "offset": 3}
+    assert seen["limit"] == 2
+    assert seen["offset"] == 3
     body = resp.json()
     assert body["total"] == 5
     assert body["workspaces"][0]["workspace_id"] == "a" * 32
@@ -281,6 +281,136 @@ async def test_list_workspaces_rejects_bad_pagination(client):
     assert resp.status_code == 422
     resp = await client.get("/demo/workspaces", params={"offset": -1})
     assert resp.status_code == 422
+
+
+# =============================================================================
+# E2 (#408) -- list filters / sort + GET /demo/workspaces/{id}/health (unit)
+# =============================================================================
+
+
+async def test_list_workspaces_passes_filters_and_sort(client, monkeypatch):
+    """E2 (#408) -- q/tags/include_archived/sort params reach BOTH helpers."""
+    seen_list: dict[str, object] = {}
+    seen_count: dict[str, object] = {}
+
+    async def fake_list(_db, **kwargs: object) -> list[SimpleNamespace]:
+        seen_list.update(kwargs)
+        return []
+
+    async def fake_count(_db, **kwargs: object) -> int:
+        seen_count.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(workspace, "list_workspaces", fake_list)
+    monkeypatch.setattr(workspace, "count_workspaces", fake_count)
+
+    resp = await client.get(
+        "/demo/workspaces",
+        params=[
+            ("q", "demo"),
+            ("tags", "smoke"),
+            ("tags", "e2"),
+            ("include_archived", "true"),
+            ("sort_by", "name"),
+            ("sort_order", "asc"),
+        ],
+    )
+    assert resp.status_code == 200
+    assert seen_list["q"] == "demo"
+    assert seen_list["tags"] == ["smoke", "e2"]
+    assert seen_list["include_archived"] is True
+    assert seen_list["sort_by"] == "name"
+    assert seen_list["sort_order"] == "asc"
+    # The count helper gets the SAME filters -- total respects them.
+    assert seen_count["q"] == "demo"
+    assert seen_count["tags"] == ["smoke", "e2"]
+    assert seen_count["include_archived"] is True
+
+
+async def test_list_workspaces_defaults_hide_archived(client, monkeypatch):
+    """E2 (#408) -- a legacy no-param call defaults to include_archived=False."""
+    seen: dict[str, object] = {}
+
+    async def fake_list(_db, **kwargs: object) -> list[SimpleNamespace]:
+        seen.update(kwargs)
+        return []
+
+    async def fake_count(_db, **_kwargs: object) -> int:
+        return 0
+
+    monkeypatch.setattr(workspace, "list_workspaces", fake_list)
+    monkeypatch.setattr(workspace, "count_workspaces", fake_count)
+
+    resp = await client.get("/demo/workspaces")
+    assert resp.status_code == 200
+    assert seen["include_archived"] is False
+    assert seen["q"] is None
+    assert seen["tags"] is None
+    assert seen["sort_by"] is None
+
+
+async def test_list_workspaces_rejects_bad_sort_order(client):
+    """E2 (#408) -- sort_order is pattern-constrained (asc|desc only)."""
+    resp = await client.get("/demo/workspaces", params={"sort_order": "sideways"})
+    assert resp.status_code == 422
+    assert resp.headers["content-type"].startswith("application/problem+json")
+
+
+async def test_workspace_health_404(client, monkeypatch):
+    """E2 (#408) -- health on a missing workspace is a 404 problem+json."""
+
+    async def fake_get(_db, _workspace_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(workspace, "get_workspace", fake_get)
+
+    resp = await client.get("/demo/workspaces/" + "0" * 32 + "/health")
+    assert resp.status_code == 404
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    assert "Workspace not found" in resp.json()["detail"]
+
+
+async def test_workspace_health_happy_path(client, monkeypatch):
+    """E2 (#408) -- the route resolves the row and returns the probe result."""
+    from app.features.demo import link_health
+    from app.features.demo.schemas import WorkspaceHealthResponse, WorkspaceRefHealth
+
+    row = _orm_like_row(status="failed")
+
+    async def fake_get(_db, workspace_id: str) -> SimpleNamespace:
+        return row
+
+    async def fake_probe(_app, ws) -> WorkspaceHealthResponse:
+        assert ws is row  # the route passes the resolved ORM row through
+        return WorkspaceHealthResponse(
+            workspace_id="a" * 32,
+            workspace_status="failed",
+            partial_run=True,
+            references=[
+                WorkspaceRefHealth(
+                    key="winning_run_id",
+                    ref_type="model_run",
+                    ref_id="run-abc",
+                    status="dead",
+                    probe_path="/registry/runs/run-abc",
+                )
+            ],
+            alive=0,
+            dead=1,
+            unknown=0,
+        )
+
+    monkeypatch.setattr(workspace, "get_workspace", fake_get)
+    monkeypatch.setattr(link_health, "probe_workspace_links", fake_probe)
+
+    resp = await client.get("/demo/workspaces/" + "a" * 32 + "/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["workspace_id"] == "a" * 32
+    assert body["partial_run"] is True
+    assert body["dead"] == 1
+    assert body["references"][0]["status"] == "dead"
+    assert body["references"][0]["probe_path"] == "/registry/runs/run-abc"
 
 
 async def test_get_workspace_404(client, monkeypatch):
@@ -583,5 +713,112 @@ async def test_delete_workspace_integration_keeps_created_objects(client, db_ses
         # ...but the soft-referenced agent session still exists.
         still_there = await client.get(f"/agents/sessions/{agent_session_id}")
         assert still_there.status_code == 200
+    finally:
+        await client.delete(f"/agents/sessions/{agent_session_id}")
+
+
+# =============================================================================
+# E2 (#408) -- list filters / sort + health against real Postgres (integration)
+# =============================================================================
+
+
+@pytest.mark.integration
+async def test_list_workspaces_integration_filters_and_sort(client, db_session: AsyncSession):
+    """Filters, sort, pinned-first ordering, and filtered totals on real rows."""
+    ids: dict[str, str] = {}
+    # Creation order matters for the default created_at sort assertions.
+    for name in ("alpha-match", "beta", "zeta-pinned"):
+        workspace_id = await workspace.create_workspace(
+            DemoRunRequest.model_validate({"preservation": "keep", "workspace_name": name})
+        )
+        assert workspace_id is not None
+        ids[name] = workspace_id
+    unnamed = await workspace.create_workspace(
+        DemoRunRequest.model_validate({"preservation": "keep"})
+    )
+    assert unnamed is not None
+
+    # Curate via the PATCH surface (E1): pin zeta, archive beta, tag alpha.
+    assert (
+        await client.patch(f"/demo/workspaces/{ids['zeta-pinned']}", json={"pinned": True})
+    ).status_code == 200
+    assert (
+        await client.patch(f"/demo/workspaces/{ids['beta']}", json={"archived": True})
+    ).status_code == 200
+    assert (
+        await client.patch(f"/demo/workspaces/{ids['alpha-match']}", json={"tags": ["smoke", "e2"]})
+    ).status_code == 200
+
+    # Default list: archived hidden, pinned first, then newest-first.
+    resp = await client.get("/demo/workspaces")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 3  # beta (archived) excluded from the total too
+    listed = [w["workspace_id"] for w in body["workspaces"]]
+    assert ids["beta"] not in listed
+    assert listed == [ids["zeta-pinned"], unnamed, ids["alpha-match"]]
+
+    # include_archived=true surfaces the archived row again.
+    resp = await client.get("/demo/workspaces", params={"include_archived": "true"})
+    assert resp.json()["total"] == 4
+    assert ids["beta"] in [w["workspace_id"] for w in resp.json()["workspaces"]]
+
+    # q: case-insensitive name substring; total respects the filter.
+    resp = await client.get("/demo/workspaces", params={"q": "ALPHA"})
+    body = resp.json()
+    assert body["total"] == 1
+    assert [w["workspace_id"] for w in body["workspaces"]] == [ids["alpha-match"]]
+
+    # tags: containment -- ALL listed tags must match.
+    resp = await client.get("/demo/workspaces", params=[("tags", "smoke"), ("tags", "e2")])
+    assert [w["workspace_id"] for w in resp.json()["workspaces"]] == [ids["alpha-match"]]
+    resp = await client.get("/demo/workspaces", params=[("tags", "smoke"), ("tags", "nope")])
+    assert resp.json()["total"] == 0
+
+    # sort_by=name asc: pinned row STILL first, unnamed row sinks (NULLS LAST).
+    resp = await client.get("/demo/workspaces", params={"sort_by": "name", "sort_order": "asc"})
+    names = [w["name"] for w in resp.json()["workspaces"]]
+    assert names == ["zeta-pinned", "alpha-match", None]
+
+    # Unknown sort_by silently falls back to the default order (no 422).
+    resp = await client.get("/demo/workspaces", params={"sort_by": "bogus"})
+    assert resp.status_code == 200
+    assert [w["workspace_id"] for w in resp.json()["workspaces"]] == [
+        ids["zeta-pinned"],
+        unnamed,
+        ids["alpha-match"],
+    ]
+
+
+@pytest.mark.integration
+async def test_workspace_health_integration_alive_and_dead(client, db_session: AsyncSession):
+    """A real reference probes alive; a bogus one probes dead (E2, #408)."""
+    session_resp = await client.post("/agents/sessions", json={"agent_type": "experiment"})
+    assert session_resp.status_code == 201
+    agent_session_id = session_resp.json()["session_id"]
+    try:
+        workspace_id = await workspace.create_workspace(
+            DemoRunRequest.model_validate({"preservation": "keep", "workspace_name": "e2-health"})
+        )
+        assert workspace_id is not None
+        row = await workspace.get_workspace(db_session, workspace_id)
+        assert row is not None
+        row.created_objects = {
+            "agent_session_id": agent_session_id,
+            "winning_run_id": "run-dangling-never-created",
+        }
+        await db_session.commit()
+
+        resp = await client.get(f"/demo/workspaces/{workspace_id}/health")
+        assert resp.status_code == 200
+        body = resp.json()
+        by_key = {r["key"]: r["status"] for r in body["references"]}
+        assert by_key["agent_session_id"] == "alive"
+        assert by_key["winning_run_id"] == "dead"
+        assert body["alive"] == 1
+        assert body["dead"] == 1
+        assert body["unknown"] == 0
+        # The row was inserted as 'running' (never finalized) -> partial run.
+        assert body["partial_run"] is True
     finally:
         await client.delete(f"/agents/sessions/{agent_session_id}")
