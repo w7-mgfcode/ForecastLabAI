@@ -1091,6 +1091,41 @@ def _make_showcase_ctx(scenario: ScenarioPreset = ScenarioPreset.SHOWCASE_RICH) 
     return ctx
 
 
+def test__showcase_plan_tags_ephemeral():
+    """E3 (#392) — no workspace row -> base triple only, no workspace tag."""
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    assert pipeline._showcase_plan_tags(ctx, "price") == [
+        "showcase",
+        "price",
+        "source:showcase",
+    ]
+
+
+def test__showcase_plan_tags_keep_named():
+    """E3 (#392) — keep run with a name -> workspace:<name> appended."""
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    ctx.workspace_id = "a" * 32
+    ctx.workspace_name = "bf-demo"
+    assert pipeline._showcase_plan_tags(ctx, "holiday") == [
+        "showcase",
+        "holiday",
+        "source:showcase",
+        "workspace:bf-demo",
+    ]
+
+
+def test__showcase_plan_tags_keep_unnamed_falls_back_to_workspace_id():
+    """E3 (#392) — keep run without a name -> workspace:<workspace_id>."""
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    ctx.workspace_id = "f" * 32
+    assert pipeline._showcase_plan_tags(ctx, "price") == [
+        "showcase",
+        "price",
+        "source:showcase",
+        f"workspace:{'f' * 32}",
+    ]
+
+
 async def test_scenario_simulate_and_save_happy_path():
     """PRP-40 + #324 — resolves the champion via ctx.winning_run_id -> run ->
     artifact_key, saves the plan. Must NOT read the demo-production alias
@@ -1130,9 +1165,38 @@ async def test_scenario_simulate_and_save_happy_path():
     assert body["name"] == "showcase-price-cut-10pct"
     assert body["run_id"] == "abc123def456"
     assert body["assumptions"]["price"]["change_pct"] == -0.10
-    assert body["tags"] == ["showcase", "price"]
+    assert body["tags"] == ["showcase", "price", "source:showcase"]
+    # E3 (#392) — the step data echoes the tags it sent.
+    assert data["tags"] == ["showcase", "price", "source:showcase"]
     # #324 — the safer-promote-corrupted demo-production alias must NOT be read.
     assert all(path != "/registry/aliases/demo-production" for _m, path, _b in client.calls)
+
+
+async def test_scenario_simulate_and_save_keep_run_carries_workspace_tag():
+    """E3 (#392) — a keep run (workspace_id set) stamps workspace:<name>."""
+    ctx = _make_showcase_ctx()
+    ctx.workspace_id = "a" * 32
+    ctx.workspace_name = "bf-demo"
+    client = _RecordingClient(
+        None,
+        responses={
+            ("GET", "/registry/runs/demo-run-abc123def456"): {
+                "run_id": "demo-run-abc123def456",
+                "artifact_uri": "demo/seasonal_naive-model_abc123def456.joblib",
+            },
+            ("POST", "/scenarios"): {
+                "scenario_id": "scn-001",
+                "comparison": {"method": "heuristic"},
+            },
+        },
+    )
+    status, _detail, data = await pipeline.step_scenario_simulate_and_save(ctx, _as_client(client))
+    assert status == "pass"
+    save_call = next(c for c in client.calls if c[0] == "POST" and c[1] == "/scenarios")
+    body = save_call[2]
+    assert body is not None
+    assert body["tags"] == ["showcase", "price", "source:showcase", "workspace:bf-demo"]
+    assert data["tags"] == ["showcase", "price", "source:showcase", "workspace:bf-demo"]
 
 
 async def test_scenario_simulate_and_save_missing_champion_falls_back_to_alias():
@@ -1307,6 +1371,47 @@ async def test_multi_plan_compare_happy_path():
     assert data["ranked_by"] == "revenue_delta"
     assert len(data["ranked"]) == 2
     assert "winner=showcase-holiday-uplift" in detail
+    # E3 (#392) — the holiday-plan save carries the ephemeral tag triple.
+    save_call = next(c for c in client.calls if c[0] == "POST" and c[1] == "/scenarios")
+    body = save_call[2]
+    assert body is not None
+    assert body["tags"] == ["showcase", "holiday", "source:showcase"]
+
+
+async def test_multi_plan_compare_keep_run_carries_workspace_tag():
+    """E3 (#392) — the workspace tag flows to plan #2 on keep runs."""
+    ctx = _make_showcase_ctx()
+    ctx.price_cut_scenario_id = "scn-price"
+    ctx.scenario_artifact_key = "abc123def456"
+    ctx.workspace_id = "b" * 32
+    ctx.workspace_name = "bf-demo"
+    client = _RecordingClient(
+        None,
+        responses={
+            ("POST", "/scenarios"): {
+                "scenario_id": "scn-holiday",
+                "comparison": {"method": "heuristic"},
+            },
+            ("POST", "/scenarios/compare"): {
+                "scenarios": [
+                    {
+                        "scenario_id": "scn-holiday",
+                        "name": "showcase-holiday-uplift",
+                        "units_delta": 18.5,
+                        "revenue_delta": 220.0,
+                        "coverage_verdict": "ok",
+                        "rank": 1,
+                    },
+                ],
+            },
+        },
+    )
+    status, _detail, _data = await pipeline.step_multi_plan_compare(ctx, _as_client(client))
+    assert status == "pass"
+    save_call = next(c for c in client.calls if c[0] == "POST" and c[1] == "/scenarios")
+    body = save_call[2]
+    assert body is not None
+    assert body["tags"] == ["showcase", "holiday", "source:showcase", "workspace:bf-demo"]
 
 
 async def test_multi_plan_compare_second_save_failure_emits_warn():

@@ -258,6 +258,9 @@ class DemoContext:
     # E1 (#390) -- workspace persistence. Set only on preservation="keep" runs
     # (and only when the row insert succeeded); None on ephemeral runs.
     workspace_id: str | None = None
+    # E3 (#392) -- workspace label for plan tagging. Set alongside
+    # workspace_id in run_pipeline's keep-branch; None on ephemeral runs.
+    workspace_name: str | None = None
 
 
 # =============================================================================
@@ -352,6 +355,21 @@ def _format_demo_artifact_key(run_id_raw: str) -> str:
     ``_ARTIFACT_KEY_RE`` (``model_([0-9a-f]+)``) parser.
     """
     return run_id_raw.replace("-", "")[:_DEMO_ARTIFACT_KEY_LEN]
+
+
+def _showcase_plan_tags(ctx: DemoContext, kind: str) -> list[str]:
+    """Build the tag list for a pipeline-saved scenario plan (E3, #392).
+
+    Always: ["showcase", <kind>, "source:showcase"]. When the run records a
+    workspace (ctx.workspace_id set -- preservation="keep" AND the E1 insert
+    succeeded), append "workspace:<label>" where label is the human
+    workspace_name or, on unnamed runs, the 32-hex workspace_id -- the label
+    is never empty. No workspace row -> no workspace tag (nothing to find).
+    """
+    tags = ["showcase", kind, "source:showcase"]
+    if ctx.workspace_id is not None:
+        tags.append(f"workspace:{ctx.workspace_name or ctx.workspace_id}")
+    return tags
 
 
 # PRP-40 — curated 5-file user-guide corpus indexed by the knowledge phase.
@@ -1297,6 +1315,7 @@ async def step_scenario_simulate_and_save(ctx: DemoContext, client: _Client) -> 
             "end_date": horizon_end.isoformat(),
         }
     }
+    sent_tags = _showcase_plan_tags(ctx, "price")
     plan_body = await client.request(
         "scenario_simulate_and_save[save]",
         "POST",
@@ -1306,7 +1325,7 @@ async def step_scenario_simulate_and_save(ctx: DemoContext, client: _Client) -> 
             "run_id": artifact_key,
             "horizon": DEMO_HORIZON,
             "assumptions": assumptions,
-            "tags": ["showcase", "price"],
+            "tags": sent_tags,
         },
     )
     scenario_id_raw = plan_body.get("scenario_id")
@@ -1341,6 +1360,8 @@ async def step_scenario_simulate_and_save(ctx: DemoContext, client: _Client) -> 
             "revenue_delta": revenue_delta,
             "winner_run_id": winner_run_id,
             "artifact_key": artifact_key,
+            # E3 (#392) -- echo the tags sent so the UI/e2e can observe them.
+            "tags": sent_tags,
         },
     )
 
@@ -1368,7 +1389,7 @@ async def step_multi_plan_compare(ctx: DemoContext, client: _Client) -> StepResu
                 "run_id": ctx.scenario_artifact_key,
                 "horizon": DEMO_HORIZON,
                 "assumptions": {"holiday": {"dates": [holiday_day]}},
-                "tags": ["showcase", "holiday"],
+                "tags": _showcase_plan_tags(ctx, "holiday"),
             },
         )
     except _StepError as exc:
@@ -2633,6 +2654,7 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
     # warn-and-continue: a DB failure returns None and the run proceeds.
     if req.preservation == "keep":
         ctx.workspace_id = await workspace.create_workspace(req)
+        ctx.workspace_name = req.workspace_name  # E3 (#392) -- plan-tag label
     wall_start = time.monotonic()
     any_fail = False
     # PRP-41 — buffer for intermediate events the HITL step emits via
