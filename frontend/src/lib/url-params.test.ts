@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseEnumParam, parseIdParam, parsePageParam } from './url-params'
+import { parseEnumParam, parseIdParam, parsePageParam, parseTagsParam } from './url-params'
 
 describe('parsePageParam', () => {
   it('returns the integer for a valid positive page', () => {
@@ -44,5 +44,28 @@ describe('parseEnumParam', () => {
   it('returns undefined for null or an unknown value', () => {
     expect(parseEnumParam(null, allowed)).toBeUndefined()
     expect(parseEnumParam('sideways', allowed)).toBeUndefined()
+  })
+})
+
+describe('parseTagsParam', () => {
+  it('returns an empty list for no params', () => {
+    expect(parseTagsParam([])).toEqual([])
+  })
+
+  it('passes through namespaced tags untouched', () => {
+    expect(parseTagsParam(['workspace:bf-demo'])).toEqual(['workspace:bf-demo'])
+  })
+
+  it('trims values and drops empty or whitespace-only entries', () => {
+    expect(parseTagsParam(['  showcase ', '', '   '])).toEqual(['showcase'])
+  })
+
+  it('dedupes repeated tags', () => {
+    expect(parseTagsParam(['price', 'price', ' price '])).toEqual(['price'])
+  })
+
+  it('caps the list at 20 entries', () => {
+    const values = Array.from({ length: 50 }, (_, i) => `tag-${i}`)
+    expect(parseTagsParam(values)).toHaveLength(20)
   })
 })

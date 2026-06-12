@@ -140,6 +140,66 @@ class TestScenarioPlanCrud:
         missing = await client.get(f"/scenarios/{scenario_id}")
         assert missing.status_code == 404
 
+    async def test_list_scenarios_filters_by_workspace_tag(
+        self, client: AsyncClient, trained_model: str
+    ) -> None:
+        """E3 (#392) — plans tagged workspace:<label> are retrievable by tag.
+
+        Proves the umbrella #389 criterion verbatim: two plans saved with a
+        workspace tag come back from ``GET /scenarios?tags=workspace:<label>``
+        — and adding a second tag narrows by JSONB containment (AND).
+        The tag is unique per run so a shared/stale DB can't skew the counts.
+        """
+        workspace_tag = f"workspace:e3-it-{uuid.uuid4().hex[:8]}"
+        created_ids: list[str] = []
+        try:
+            for name, kind in (
+                ("showcase-price-cut-10pct", "price"),
+                ("showcase-holiday-uplift", "holiday"),
+            ):
+                create = await client.post(
+                    "/scenarios",
+                    json={
+                        "name": name,
+                        "run_id": trained_model,
+                        "horizon": 14,
+                        "assumptions": _PRICE_ASSUMPTION,
+                        "tags": ["showcase", kind, "source:showcase", workspace_tag],
+                    },
+                )
+                assert create.status_code == 201
+                created_ids.append(create.json()["scenario_id"])
+
+            # Control plan WITHOUT the workspace tag — must not match the filter.
+            control = await client.post(
+                "/scenarios",
+                json={
+                    "name": "ephemeral-control",
+                    "run_id": trained_model,
+                    "horizon": 14,
+                    "assumptions": _PRICE_ASSUMPTION,
+                    "tags": ["showcase", "price", "source:showcase"],
+                },
+            )
+            assert control.status_code == 201
+            created_ids.append(control.json()["scenario_id"])
+
+            listed = await client.get("/scenarios", params={"tags": [workspace_tag]})
+            assert listed.status_code == 200
+            data = listed.json()
+            assert data["total"] == 2
+            assert {item["scenario_id"] for item in data["scenarios"]} == set(created_ids[:2])
+
+            # Containment is AND — a second tag narrows to the price plan only.
+            narrowed = await client.get("/scenarios", params={"tags": [workspace_tag, "price"]})
+            assert narrowed.status_code == 200
+            narrowed_data = narrowed.json()
+            assert narrowed_data["total"] == 1
+            assert narrowed_data["scenarios"][0]["scenario_id"] == created_ids[0]
+        finally:
+            for scenario_id in created_ids:
+                await client.delete(f"/scenarios/{scenario_id}")
+
     async def test_list_scenarios_empty_is_200(self, client: AsyncClient) -> None:
         """GET /scenarios returns 200 + an empty list, never 404."""
         response = await client.get("/scenarios")
