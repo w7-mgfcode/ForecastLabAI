@@ -155,8 +155,9 @@ export default function ShowcasePage() {
         <p className="mt-1 text-muted-foreground">
           Run the full forecasting pipeline live — phase by phase. The same flow as{' '}
           <code className="rounded bg-muted px-1 py-0.5 text-sm">make demo</code>, streamed to
-          the browser. Pick a scenario to control depth (demo_minimal stays fast;
-          showcase_rich exercises V1+V2 modeling).
+          the browser. Pick a scenario to control depth and data shape — all eight seeder
+          presets are available (demo_minimal stays fast; showcase_rich exercises V1+V2
+          modeling).
         </p>
       </div>
 
