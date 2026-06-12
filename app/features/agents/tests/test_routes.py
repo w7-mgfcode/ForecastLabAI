@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import AsyncClient
+from pydantic_ai.exceptions import FallbackExceptionGroup, ModelHTTPError
 
 from app.features.agents.schemas import ExperimentReport
 
@@ -161,6 +162,56 @@ class TestChatRoutes:
         )
 
         assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_chat_fallback_exhausted_returns_502_problem_json(
+        self, client: AsyncClient
+    ) -> None:
+        """Both fallback legs failing → 502 problem+json with classified
+        per-model failures (#335, umbrella #380 route-level criterion)."""
+        with patch("app.features.agents.agents.experiment.get_experiment_agent") as mock_get:
+            group = FallbackExceptionGroup(
+                "All models from FallbackModel failed",
+                [
+                    ModelHTTPError(
+                        404,
+                        "google-gla:gemini-3-flash-preview",
+                        body={"error": {"message": "models/gemini-3-flash-preview is not found"}},
+                    ),
+                    ModelHTTPError(
+                        429,
+                        "google-gla:gemini-2.5-flash",
+                        body={"error": {"message": "RESOURCE_EXHAUSTED key AIzaFakeKey123456789"}},
+                    ),
+                ],
+            )
+            mock_agent = MagicMock()
+            mock_agent.run = AsyncMock(side_effect=group)
+            mock_get.return_value = mock_agent
+
+            create_response = await client.post(
+                "/agents/sessions",
+                json={"agent_type": "experiment"},
+            )
+            session_id = create_response.json()["session_id"]
+
+            response = await client.post(
+                f"/agents/sessions/{session_id}/chat",
+                json={"message": "hello"},
+            )
+
+        assert response.status_code == 502
+        assert response.headers["content-type"].startswith("application/problem+json")
+        body = response.json()
+        assert body["code"] == "AGENT_FALLBACK_EXHAUSTED"
+        assert body["type"].endswith("/errors/agent-fallback-exhausted")
+        assert len(body["failures"]) == 2
+        assert body["failures"][0]["reason"] == "model_not_found"
+        assert body["failures"][1]["reason"] == "quota_exhausted"
+        assert "request_id" in body
+        # The opaque group string and secrets must never reach the client.
+        assert "sub-exceptions" not in body["detail"]
+        assert "AIza" not in response.text
 
 
 @pytest.mark.integration

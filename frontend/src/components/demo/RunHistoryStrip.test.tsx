@@ -8,6 +8,7 @@ const STORAGE_KEY = 'forecastlab.showcase.runs.v1'
 afterEach(() => {
   cleanup()
   window.localStorage.clear()
+  vi.unstubAllGlobals()
 })
 
 beforeEach(() => {
@@ -22,6 +23,7 @@ const summary: DemoSummary = {
   alias: 'demo-production',
   wallClockS: 174.5,
   v2RunId: 'v2-456',
+  workspaceId: null,
 }
 
 describe('RunHistoryStrip', () => {
@@ -82,6 +84,47 @@ describe('RunHistoryStrip', () => {
     expect(onReplay).toHaveBeenCalledWith(
       expect.objectContaining({ scenario: 'showcase_rich', skip_seed: true, reset: false }),
     )
+  })
+
+  it('appends a history entry without crashing when crypto.randomUUID is unavailable (#332)', () => {
+    // Non-secure contexts (plain-HTTP LAN origins) expose getRandomValues but
+    // NOT randomUUID. jsdom's crypto has randomUUID, so the LAN shape must be
+    // stubbed explicitly — an unstubbed render passes even against the bug.
+    const realGetRandomValues = globalThis.crypto.getRandomValues.bind(globalThis.crypto)
+    vi.stubGlobal('crypto', {
+      getRandomValues: realGetRandomValues,
+    } as unknown as Crypto)
+
+    const { container } = render(
+      <RunHistoryStrip onReplay={() => {}} summary={summary} scenario="showcase_rich" />,
+    )
+
+    expect(container.textContent).toContain('showcase_rich')
+    const stored = window.localStorage.getItem(STORAGE_KEY)
+    expect(stored).not.toBeNull()
+    const items = JSON.parse(stored!)
+    expect(items).toHaveLength(1)
+    expect(items[0].id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    )
+  })
+
+  it('E4 (#393) — does NOT append a kept run (workspaceId set)', () => {
+    const keptSummary: DemoSummary = { ...summary, workspaceId: 'ws-e4-abc' }
+    const { container } = render(
+      <RunHistoryStrip onReplay={() => {}} summary={keptSummary} scenario="showcase_rich" />,
+    )
+    // Server-backed WorkspacePanel owns kept runs; localStorage stays empty
+    // (the persist effect writes the initial '[]') and the strip renders nothing.
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? '[]')).toHaveLength(0)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('E4 (#393) — still appends an ephemeral run (workspaceId null)', () => {
+    render(<RunHistoryStrip onReplay={() => {}} summary={summary} scenario="demo_minimal" />)
+    const stored = window.localStorage.getItem(STORAGE_KEY)
+    expect(stored).not.toBeNull()
+    expect(JSON.parse(stored!)).toHaveLength(1)
   })
 
   it('Clear button empties history + localStorage', () => {

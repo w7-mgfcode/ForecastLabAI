@@ -27,50 +27,21 @@ from app.features.forecasting.models import (
     RegressionForecaster,
     XGBoostForecaster,
 )
-from app.features.forecasting.schemas import FeatureImportanceItem, ModelFamily
+from app.features.forecasting.schemas import FeatureImportanceItem
+
+# Back-compat re-export (#268): forecasting/service.py and tests import these
+# from here. ``_MODEL_FAMILY_MAP`` is re-exported because the drift-lock test
+# (test_feature_metadata.py) reads it to compare against the ModelType Literal.
+from app.shared.model_taxonomy import (
+    _MODEL_FAMILY_MAP as _MODEL_FAMILY_MAP,  # pyright: ignore[reportPrivateUsage]
+)
+from app.shared.model_taxonomy import ModelFamily as ModelFamily
+from app.shared.model_taxonomy import model_family_for as model_family_for
 
 if TYPE_CHECKING:
     from app.features.forecasting.models import BaseForecaster
 
 logger = structlog.get_logger(__name__)
-
-
-# Canonical map: model_type string → ModelFamily. Unknown types log a warning
-# and classify as BASELINE (forward-compatible for new families before this
-# map is updated). Keep in sync with the ``ModelType`` Literal in
-# ``forecasting/models.py`` (line 1133-1135).
-_MODEL_FAMILY_MAP: dict[str, ModelFamily] = {
-    "naive": ModelFamily.BASELINE,
-    "seasonal_naive": ModelFamily.BASELINE,
-    "moving_average": ModelFamily.BASELINE,
-    "weighted_moving_average": ModelFamily.BASELINE,
-    "seasonal_average": ModelFamily.BASELINE,
-    "trend_regression_baseline": ModelFamily.ADDITIVE,
-    "random_forest": ModelFamily.TREE,
-    "regression": ModelFamily.TREE,
-    "lightgbm": ModelFamily.TREE,
-    "xgboost": ModelFamily.TREE,
-    "prophet_like": ModelFamily.ADDITIVE,
-}
-
-
-def model_family_for(model_type: str) -> ModelFamily:
-    """Return the :class:`ModelFamily` for a given ``model_type`` string.
-
-    Unknown types log a warning and return :attr:`ModelFamily.BASELINE` so a
-    new model registered in :mod:`forecasting.models` before this map is
-    updated does not raise — it just shows up in the dashboard as a baseline
-    until the map catches up.
-    """
-    family = _MODEL_FAMILY_MAP.get(model_type)
-    if family is None:
-        logger.warning(
-            "forecasting.unknown_model_family",
-            model_type=model_type,
-            fallback=ModelFamily.BASELINE.value,
-        )
-        return ModelFamily.BASELINE
-    return family
 
 
 class FeatureImportanceUnavailableError(ValueError):

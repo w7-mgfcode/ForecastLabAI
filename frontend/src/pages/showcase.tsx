@@ -3,18 +3,27 @@ import { Play, Loader2, Trophy, AlertTriangle, ArrowRight, Square } from 'lucide
 import { useState } from 'react'
 import { useDemoPipeline } from '@/hooks/use-demo-pipeline'
 import type { DemoStep } from '@/hooks/use-demo-pipeline'
+import { useWorkspace } from '@/hooks/use-workspaces'
 import { DemoPhasePanel } from '@/components/demo/DemoPhasePanel'
 import { ScenarioPicker } from '@/components/demo/ScenarioPicker'
 import { ShowcaseKpiStrip } from '@/components/demo/ShowcaseKpiStrip'
 import { InspectArtifactsPanel } from '@/components/demo/InspectArtifactsPanel'
 import { RunHistoryStrip } from '@/components/demo/RunHistoryStrip'
+import { WorkspacePanel } from '@/components/demo/WorkspacePanel'
+import { WorkspaceArtifactsPanel } from '@/components/demo/WorkspaceArtifactsPanel'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Input } from '@/components/ui/input'
 import { ROUTES } from '@/lib/constants'
 import { cn } from '@/lib/utils'
+import type { WorkspaceListItem } from '@/types/api'
 
 const TERMINAL_STATUSES = new Set(['pass', 'fail', 'skip', 'warn'])
+
+// E4 (#393) — mirrors the backend DemoRunRequest.workspace_name pattern
+// (schemas.py): lowercase letters/digits, then -/_ allowed; ≤100 chars.
+const WORKSPACE_NAME_PATTERN = /^[a-z0-9][a-z0-9\-_]*$/
 
 /**
  * PRP-38 / PRP-39 / PRP-40 — resolve the per-step Inspect deep link.
@@ -108,11 +117,72 @@ export default function ShowcasePage() {
   } = useDemoPipeline()
   const [reseed, setReseed] = useState(false)
   const [resetDb, setResetDb] = useState(false)
+  // E4 (#393) — workspace controls + restore state.
+  const [seed, setSeed] = useState(42)
+  const [keepWorkspace, setKeepWorkspace] = useState(false)
+  const [workspaceName, setWorkspaceName] = useState('')
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
+
+  // The page (not the panel) resolves the loaded workspace's detail — the
+  // artifacts panel needs detail-only created_objects.
+  const { data: loadedWorkspace } = useWorkspace(
+    selectedWorkspaceId ?? '',
+    !!selectedWorkspaceId
+  )
 
   const completed = steps.filter((s) => TERMINAL_STATUSES.has(s.status)).length
 
+  const trimmedName = workspaceName.trim()
+  const nameInvalid =
+    keepWorkspace && trimmedName !== '' && !WORKSPACE_NAME_PATTERN.test(trimmedName)
+
   const handleRun = () => {
-    start({ seed: 42, skip_seed: !reseed, reset: resetDb, scenario })
+    // Starting a run detaches any loaded workspace — live cards take over.
+    setSelectedWorkspaceId(null)
+    start({
+      seed,
+      skip_seed: !reseed,
+      reset: resetDb,
+      scenario,
+      // Omit the preservation fields entirely on ephemeral runs (legacy
+      // byte-compat); omit workspace_name when the input is empty.
+      ...(keepWorkspace
+        ? {
+            preservation: 'keep' as const,
+            ...(trimmedName ? { workspace_name: trimmedName } : {}),
+          }
+        : {}),
+    })
+  }
+
+  // E4 (#393) — Load: recorded config repopulates the controls; the detail
+  // query then renders the artifacts panel. Read-only — no run starts.
+  const handleLoadWorkspace = (ws: WorkspaceListItem) => {
+    setScenario(ws.scenario)
+    setSeed(ws.seed)
+    setReseed(!ws.skip_seed)
+    setResetDb(ws.reset)
+    setKeepWorkspace(true)
+    setWorkspaceName(ws.name ?? '')
+    setSelectedWorkspaceId(ws.workspace_id)
+  }
+
+  // E4 (#393) — Replay: Load, then re-submit the recorded config VERBATIM
+  // through the existing WS run path with preservation='keep' (a replay is
+  // itself a workspace run). setScenario runs first (picker-desync gotcha:
+  // start() does not sync the picker state).
+  const handleReplayWorkspace = (ws: WorkspaceListItem) => {
+    handleLoadWorkspace(ws)
+    // The re-run's live cards take over; the original row stays untouched.
+    setSelectedWorkspaceId(null)
+    start({
+      seed: ws.seed,
+      scenario: ws.scenario,
+      reset: ws.reset,
+      skip_seed: ws.skip_seed,
+      preservation: 'keep',
+      ...(ws.name ? { workspace_name: ws.name } : {}),
+    })
   }
 
   // For the Inspect link to surface store_id/product_id on the train/backtest
@@ -155,19 +225,28 @@ export default function ShowcasePage() {
         <p className="mt-1 text-muted-foreground">
           Run the full forecasting pipeline live — phase by phase. The same flow as{' '}
           <code className="rounded bg-muted px-1 py-0.5 text-sm">make demo</code>, streamed to
-          the browser. Pick a scenario to control depth (demo_minimal stays fast;
-          showcase_rich exercises V1+V2 modeling).
+          the browser. Pick a scenario to control depth and data shape — all eight seeder
+          presets are available (demo_minimal stays fast; showcase_rich exercises V1+V2
+          modeling).
         </p>
       </div>
 
       {/* PRP-41 — KPI strip at the top, hidden until at least one step completes. */}
       <ShowcaseKpiStrip steps={steps} />
 
-      {/* PRP-41 — Replayable run history (localStorage FIFO 5). */}
+      {/* PRP-41 — Replayable run history (localStorage FIFO 5; ephemeral runs only). */}
       <RunHistoryStrip
         onReplay={(req) => start(req)}
         summary={phase === 'done' ? summary : null}
         scenario={scenario}
+      />
+
+      {/* E4 (#393) — server-backed saved workspaces (Load + Replay). */}
+      <WorkspacePanel
+        onLoad={handleLoadWorkspace}
+        onReplay={handleReplayWorkspace}
+        isRunning={isRunning}
+        lastWorkspaceId={summary?.workspaceId ?? null}
       />
 
       {/* Controls */}
@@ -185,7 +264,7 @@ export default function ShowcasePage() {
         <CardContent className="space-y-4">
           <div className="flex flex-wrap items-end gap-6">
             <ScenarioPicker value={scenario} onChange={setScenario} disabled={isRunning} />
-            <Button onClick={handleRun} disabled={isRunning} size="lg">
+            <Button onClick={handleRun} disabled={isRunning || nameInvalid} size="lg">
               {isRunning ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
@@ -225,6 +304,57 @@ export default function ShowcasePage() {
                 <span className="ml-1 text-destructive">(destructive — wipes all data)</span>
               </span>
             </label>
+
+            {/* E4 (#393) — controllable seed (restore is meaningless without it). */}
+            <label className="flex items-center gap-2 text-sm">
+              <span>Seed</span>
+              <Input
+                type="number"
+                min={0}
+                className="h-9 w-24"
+                value={seed}
+                onChange={(e) => {
+                  const next = Number.parseInt(e.target.value, 10)
+                  setSeed(Number.isNaN(next) || next < 0 ? 0 : next)
+                }}
+                disabled={isRunning}
+              />
+            </label>
+
+            {/* E4 (#393) — preservation controls. */}
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={keepWorkspace}
+                onCheckedChange={(v) => setKeepWorkspace(v === true)}
+                disabled={isRunning}
+              />
+              <span>
+                Save as workspace
+                <span className="ml-1 text-muted-foreground">(keeps this run restorable)</span>
+              </span>
+            </label>
+
+            {keepWorkspace && (
+              <div className="flex flex-col gap-1 text-sm">
+                <label className="flex items-center gap-2">
+                  <span>Name</span>
+                  <Input
+                    className="h-9 w-48"
+                    placeholder="optional, e.g. black-friday"
+                    value={workspaceName}
+                    onChange={(e) => setWorkspaceName(e.target.value)}
+                    disabled={isRunning}
+                    maxLength={100}
+                    aria-invalid={nameInvalid}
+                  />
+                </label>
+                {nameInvalid && (
+                  <p className="text-xs text-destructive">
+                    Lowercase letters/digits only, then “-” or “_” (must not start with either).
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           {phase === 'running' && (
@@ -306,6 +436,12 @@ export default function ShowcasePage() {
       {/* PRP-41 — post-run deep-link grid (10 cards). */}
       {phase === 'done' && summary && (
         <InspectArtifactsPanel steps={steps} summary={summary} />
+      )}
+
+      {/* E4 (#393) — re-attached artifacts of a LOADED workspace. Any started
+          run detaches it (selectedWorkspaceId cleared) so live cards take over. */}
+      {phase !== 'running' && loadedWorkspace && (
+        <WorkspaceArtifactsPanel workspace={loadedWorkspace} />
       )}
     </div>
   )

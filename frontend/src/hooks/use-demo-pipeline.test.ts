@@ -107,7 +107,29 @@ describe('applyEvent', () => {
       alias: 'demo-production',
       wallClockS: 42,
       v2RunId: null,
+      workspaceId: null,
     })
+  })
+
+  it('E4 (#393) — captures workspace_id from pipeline_complete data', () => {
+    const next = applyEvent(
+      initialState(),
+      makeEvent({
+        event_type: 'pipeline_complete',
+        step_name: 'summary',
+        status: 'pass',
+        data: { workspace_id: 'ws-e4-abc' },
+      })
+    )
+    expect(next.summary?.workspaceId).toBe('ws-e4-abc')
+  })
+
+  it('E4 (#393) — legacy pipeline_complete without workspace_id yields null', () => {
+    const next = applyEvent(
+      initialState(),
+      makeEvent({ event_type: 'pipeline_complete', step_name: 'summary', status: 'pass', data: {} })
+    )
+    expect(next.summary?.workspaceId).toBeNull()
   })
 
   it('reports a failed pipeline_complete as fail', () => {

@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.exceptions import (
+    FallbackExceptionGroup,
+    ModelHTTPError,
+    UnexpectedModelBehavior,
+)
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -18,6 +22,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
+from app.core.exceptions import AgentFallbackExhaustedError
 from app.features.agents.deps import AgentDeps
 from app.features.agents.models import AgentSession, AgentType, SessionStatus
 from app.features.agents.schemas import ExperimentReport
@@ -422,6 +427,58 @@ class TestAgentServiceChat:
 
         mock_mode.assert_called_once_with("sequential")
 
+    @pytest.mark.asyncio
+    async def test_chat_fallback_exhausted_raises_classified_error(
+        self,
+        sample_active_session: AgentSession,
+    ) -> None:
+        """A FallbackExceptionGroup from agent.run must raise the classified
+        502 AgentFallbackExhaustedError, not bubble the raw group (#335)."""
+        service = AgentService()
+        mock_db = AsyncMock()
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        group = FallbackExceptionGroup(
+            "All models from FallbackModel failed",
+            [
+                ModelHTTPError(
+                    404,
+                    "google-gla:gemini-3-flash-preview",
+                    body={"error": {"message": "models/gemini-3-flash-preview is not found"}},
+                ),
+                ModelHTTPError(
+                    429,
+                    "google-gla:gemini-2.5-flash",
+                    body={"error": {"message": "RESOURCE_EXHAUSTED key AIzaFakeKey123456789"}},
+                ),
+            ],
+        )
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(side_effect=group)
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            with pytest.raises(AgentFallbackExhaustedError) as exc_info:
+                await service.chat(
+                    db=mock_db,
+                    session_id=sample_active_session.session_id,
+                    message="Hello",
+                )
+
+        exc = exc_info.value
+        assert exc.status_code == 502
+        assert exc.code == "AGENT_FALLBACK_EXHAUSTED"
+        failures = exc.extensions["failures"]
+        assert len(failures) == 2
+        assert failures[0]["reason"] == "model_not_found"
+        assert failures[1]["reason"] == "quota_exhausted"
+        assert "sub-exceptions" not in exc.message
+        # Issue #335 hard constraint: no secret-like material anywhere.
+        serialized = json.dumps({"message": exc.message, "extensions": exc.extensions})
+        assert "AIza" not in serialized
+
 
 class TestAgentServiceStreamChat:
     """Tests for streaming chat functionality."""
@@ -477,6 +534,127 @@ class TestAgentServiceStreamChat:
         assert events[0].data["recoverable"] is True
         assert events[0].data["error_type"] == "model_behavior_error"
         assert "exceeded max retries" not in events[0].data["error"]
+        # failures is exclusive to fallback_exhausted events (#335).
+        assert "failures" not in events[0].data
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_fallback_exhausted_yields_classified_error(
+        self,
+        sample_active_session: AgentSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """All fallback legs failing must yield ONE classified `error` event
+        with per-model failures — never the raw group string (#335)."""
+        service = AgentService()
+        # Pin a streaming-capable (cloud) provider so this exercises the
+        # run_stream path regardless of the local .env (#342).
+        monkeypatch.setattr(service.settings, "agent_default_model", "anthropic:claude-test")
+        mock_db = AsyncMock()
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        class _RaisingStream:
+            """Async context manager that fails on entry like an exhausted chain."""
+
+            async def __aenter__(self) -> Any:
+                raise FallbackExceptionGroup(
+                    "All models from FallbackModel failed",
+                    [
+                        ModelHTTPError(
+                            404,
+                            "google-gla:gemini-3-flash-preview",
+                            body={
+                                "error": {"message": "models/gemini-3-flash-preview is not found"}
+                            },
+                        ),
+                        ModelHTTPError(
+                            429,
+                            "google-gla:gemini-2.5-flash",
+                            body={
+                                "error": {"message": "RESOURCE_EXHAUSTED key AIzaFakeKey123456789"}
+                            },
+                        ),
+                    ],
+                )
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        mock_agent = MagicMock()
+        mock_agent.run_stream = MagicMock(return_value=_RaisingStream())
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            events = [
+                event
+                async for event in service.stream_chat(
+                    db=mock_db,
+                    session_id=sample_active_session.session_id,
+                    message="Hello",
+                )
+            ]
+
+        assert len(events) == 1
+        assert events[0].event_type == "error"
+        assert events[0].data["error_type"] == "fallback_exhausted"
+        assert events[0].data["recoverable"] is True
+        failures = events[0].data["failures"]
+        assert len(failures) == 2
+        assert failures[0]["reason"] == "model_not_found"
+        assert failures[1]["reason"] == "quota_exhausted"
+        assert "google-gla:gemini-3-flash-preview" in events[0].data["error"]
+        assert "google-gla:gemini-2.5-flash" in events[0].data["error"]
+        # The opaque group string must never reach the client.
+        assert "sub-exceptions" not in events[0].data["error"]
+        # Issue #335 hard constraint: no secret-like material anywhere.
+        assert "AIza" not in json.dumps(events[0].model_dump(mode="json"))
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_bare_model_api_error_classified(
+        self,
+        sample_active_session: AgentSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A bare ModelAPIError (single-model config, no fallback wired) gets
+        the same classified treatment as a 1-element failures list (#335)."""
+        service = AgentService()
+        monkeypatch.setattr(service.settings, "agent_default_model", "anthropic:claude-test")
+        mock_db = AsyncMock()
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = sample_active_session
+        mock_db.execute.return_value = mock_result
+
+        class _RaisingStream:
+            """Async context manager that fails on entry like a provider 401."""
+
+            async def __aenter__(self) -> Any:
+                raise ModelHTTPError(401, "anthropic:claude-test")
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        mock_agent = MagicMock()
+        mock_agent.run_stream = MagicMock(return_value=_RaisingStream())
+
+        with patch.object(service, "_get_agent", return_value=mock_agent):
+            events = [
+                event
+                async for event in service.stream_chat(
+                    db=mock_db,
+                    session_id=sample_active_session.session_id,
+                    message="Hello",
+                )
+            ]
+
+        assert len(events) == 1
+        assert events[0].event_type == "error"
+        assert events[0].data["error_type"] == "fallback_exhausted"
+        failures = events[0].data["failures"]
+        assert len(failures) == 1
+        assert failures[0]["reason"] == "auth_error"
+        assert failures[0]["model_name"] == "anthropic:claude-test"
 
     @pytest.mark.asyncio
     async def test_chat_surfaces_pending_action_on_model_misbehavior(

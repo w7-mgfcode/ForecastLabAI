@@ -3,22 +3,35 @@
 Exposes:
 - ``POST /demo/run``    -- synchronous; runs the whole pipeline, returns a result.
 - ``WS   /demo/stream`` -- streams one StepEvent per step for the live UI.
+- ``GET  /demo/workspaces``                 -- E4 (#393): list saved workspaces.
+- ``GET  /demo/workspaces/{workspace_id}``  -- E4 (#393): one workspace's detail.
 
-Both obtain the live FastAPI app from ``request.app`` / ``websocket.app`` and
-pass it into the pipeline -- the slice never imports ``app.main`` (circular).
+The run/stream handlers obtain the live FastAPI app from ``request.app`` /
+``websocket.app`` and pass it into the pipeline -- the slice never imports
+``app.main`` (circular). The workspace GETs are the slice's first DB-dependent
+routes (``Depends(get_db)``).
 """
 
 from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import ConflictError
+from app.core.database import get_db
+from app.core.exceptions import ConflictError, NotFoundError
 from app.core.logging import get_logger
-from app.features.demo import service
-from app.features.demo.schemas import DemoRunRequest, DemoRunResult, StepEvent
+from app.features.demo import service, workspace
+from app.features.demo.schemas import (
+    DemoRunRequest,
+    DemoRunResult,
+    StepEvent,
+    WorkspaceDetailResponse,
+    WorkspaceListItem,
+    WorkspaceListResponse,
+)
 
 logger = get_logger(__name__)
 
@@ -52,6 +65,64 @@ async def run_demo_pipeline(request: Request, params: DemoRunRequest) -> DemoRun
         return await service.run_pipeline_sync(request.app, params)
     except service.PipelineBusyError as exc:
         raise ConflictError(str(exc)) from exc
+
+
+@router.get(
+    "/workspaces",
+    response_model=WorkspaceListResponse,
+    summary="List saved showcase workspaces",
+    description="List saved showcase workspaces, newest first. Returns 200 + "
+    "an empty list when no workspaces exist.",
+)
+async def list_showcase_workspaces(
+    db: AsyncSession = Depends(get_db),
+    limit: int = Query(default=20, ge=1, le=100, description="Maximum workspaces to return."),
+    offset: int = Query(default=0, ge=0, description="Number of workspaces to skip."),
+) -> WorkspaceListResponse:
+    """List saved showcase workspaces (E4, issue #393).
+
+    Args:
+        db: Async database session from dependency.
+        limit: Maximum workspaces to return (1-100).
+        offset: Number of workspaces to skip.
+
+    Returns:
+        A page of saved workspaces plus the total count.
+    """
+    rows = await workspace.list_workspaces(db, limit=limit, offset=offset)
+    total = await workspace.count_workspaces(db)
+    return WorkspaceListResponse(
+        workspaces=[WorkspaceListItem.model_validate(row) for row in rows],
+        total=total,
+    )
+
+
+@router.get(
+    "/workspaces/{workspace_id}",
+    response_model=WorkspaceDetailResponse,
+    summary="Get a saved showcase workspace",
+    description="Fetch one saved workspace, including its created-object soft references.",
+)
+async def get_showcase_workspace(
+    workspace_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> WorkspaceDetailResponse:
+    """Get a saved showcase workspace by id (E4, issue #393).
+
+    Args:
+        workspace_id: External identifier of the workspace.
+        db: Async database session from dependency.
+
+    Returns:
+        The full workspace row including ``created_objects``.
+
+    Raises:
+        NotFoundError: When no workspace matches ``workspace_id``.
+    """
+    row = await workspace.get_workspace(db, workspace_id)
+    if row is None:
+        raise NotFoundError(message=f"Workspace not found: {workspace_id}")
+    return WorkspaceDetailResponse.model_validate(row)
 
 
 @router.websocket("/stream")

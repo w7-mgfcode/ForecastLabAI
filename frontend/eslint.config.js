@@ -27,4 +27,19 @@ export default defineConfig([
       'react-refresh/only-export-components': 'off',
     },
   },
+  // #332 — crypto.randomUUID is undefined outside secure contexts (plain-HTTP LAN).
+  {
+    files: ['**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-properties': [
+        'error',
+        {
+          object: 'crypto',
+          property: 'randomUUID',
+          message:
+            'crypto.randomUUID is undefined outside secure contexts (plain-HTTP LAN origins). Use safeRandomUUID() from @/lib/uuid-utils instead. (#332)',
+        },
+      ],
+    },
+  },
 ])

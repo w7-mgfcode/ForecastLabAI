@@ -32,7 +32,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 from fastapi import FastAPI
@@ -40,6 +40,7 @@ from fastapi import FastAPI
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.problem_details import EMBEDDING_AUTH_CODE, ERROR_TYPES
+from app.features.demo import workspace
 from app.features.demo.schemas import DemoRunRequest, StepEvent, StepStatus
 from app.shared.seeder.config import ScenarioPreset
 
@@ -254,6 +255,12 @@ class DemoContext:
     # step_agent_hitl_flow on SHOWCASE_RICH. Remain None on every other path.
     approval_action_id: str | None = None
     agent_approval_decision: str | None = None  # "executed"|"rejected"|"expired"|"timed_out"
+    # E1 (#390) -- workspace persistence. Set only on preservation="keep" runs
+    # (and only when the row insert succeeded); None on ephemeral runs.
+    workspace_id: str | None = None
+    # E3 (#392) -- workspace label for plan tagging. Set alongside
+    # workspace_id in run_pipeline's keep-branch; None on ephemeral runs.
+    workspace_name: str | None = None
 
 
 # =============================================================================
@@ -348,6 +355,21 @@ def _format_demo_artifact_key(run_id_raw: str) -> str:
     ``_ARTIFACT_KEY_RE`` (``model_([0-9a-f]+)``) parser.
     """
     return run_id_raw.replace("-", "")[:_DEMO_ARTIFACT_KEY_LEN]
+
+
+def _showcase_plan_tags(ctx: DemoContext, kind: str) -> list[str]:
+    """Build the tag list for a pipeline-saved scenario plan (E3, #392).
+
+    Always: ["showcase", <kind>, "source:showcase"]. When the run records a
+    workspace (ctx.workspace_id set -- preservation="keep" AND the E1 insert
+    succeeded), append "workspace:<label>" where label is the human
+    workspace_name or, on unnamed runs, the 32-hex workspace_id -- the label
+    is never empty. No workspace row -> no workspace tag (nothing to find).
+    """
+    tags = ["showcase", kind, "source:showcase"]
+    if ctx.workspace_id is not None:
+        tags.append(f"workspace:{ctx.workspace_name or ctx.workspace_id}")
+    return tags
 
 
 # PRP-40 — curated 5-file user-guide corpus indexed by the knowledge phase.
@@ -472,12 +494,47 @@ async def step_reset(ctx: DemoContext, client: _Client) -> StepResult:
     )
 
 
-_SCENARIO_SEED_PROFILE: dict[ScenarioPreset, tuple[int, int, int]] = {
-    ScenarioPreset.DEMO_MINIMAL: (DEMO_SEED_STORES, DEMO_SEED_PRODUCTS, DEMO_SEED_SPAN_DAYS),
+class _SeedProfile(NamedTuple):
+    """Demo-scaled seed profile for one scenario preset.
+
+    The /seeder/generate request overrides preset dims/window by design
+    (app/features/seeder/service.py:_build_config_from_params) while
+    preserving the preset's behavioral character (noise, promos, stockouts,
+    sparsity, launch ramps). ``window`` pins a fixed calendar range
+    (holiday_rush); when None the window runs ``span_days`` back from today.
+    """
+
+    stores: int
+    products: int
+    span_days: int
+    window: tuple[date, date] | None = None
+
+
+_SCENARIO_SEED_PROFILE: dict[ScenarioPreset, _SeedProfile] = {
+    ScenarioPreset.DEMO_MINIMAL: _SeedProfile(
+        DEMO_SEED_STORES, DEMO_SEED_PRODUCTS, DEMO_SEED_SPAN_DAYS
+    ),
     # PRP-38 — SHOWCASE_RICH profile mirrors app/shared/seeder/config.py:from_scenario.
-    ScenarioPreset.SHOWCASE_RICH: (5, 15, 180),
+    ScenarioPreset.SHOWCASE_RICH: _SeedProfile(5, 15, 180),
     # PRP-38 — SPARSE picker option exercises the data-shape edge case.
-    ScenarioPreset.SPARSE: (DEMO_SEED_STORES, DEMO_SEED_PRODUCTS, DEMO_SEED_SPAN_DAYS),
+    ScenarioPreset.SPARSE: _SeedProfile(DEMO_SEED_STORES, DEMO_SEED_PRODUCTS, DEMO_SEED_SPAN_DAYS),
+    # E2 (#391) — demo-scaled profiles for the remaining presets; the preset's
+    # character comes from SeederConfig.from_scenario, dims/window from this
+    # request (precedence contract: app/features/seeder/service.py). All
+    # windows stay >= 75 days so a later showcase_rich run with
+    # skip_seed=true clears the historical_backfill gate.
+    ScenarioPreset.RETAIL_STANDARD: _SeedProfile(5, 15, 180),
+    ScenarioPreset.HIGH_VARIANCE: _SeedProfile(5, 15, 180),
+    ScenarioPreset.STOCKOUT_HEAVY: _SeedProfile(5, 15, 180),
+    # Extra products for launch variety (the native preset seeds 100).
+    ScenarioPreset.NEW_LAUNCHES: _SeedProfile(5, 25, 180),
+    # Calendar-pinned: the preset's HolidayConfig spikes are fixed 2024 dates
+    # (app/shared/seeder/config.py:from_scenario) — a today-anchored window
+    # would never contain them. span_days is dead data when window is set
+    # (the pinned range is 92 days inclusive, delta 91).
+    ScenarioPreset.HOLIDAY_RUSH: _SeedProfile(
+        5, 15, 91, window=(date(2024, 10, 1), date(2024, 12, 31))
+    ),
 }
 
 
@@ -485,12 +542,16 @@ async def step_seed(ctx: DemoContext, client: _Client) -> StepResult:
     """Seed the active scenario (skipped when ``skip_seed`` is set)."""
     if ctx.skip_seed:
         return ("skip", "skip_seed=true (assuming a seeded database)", {})
-    stores, products, span_days = _SCENARIO_SEED_PROFILE.get(
+    profile = _SCENARIO_SEED_PROFILE.get(
         ctx.scenario,
-        (DEMO_SEED_STORES, DEMO_SEED_PRODUCTS, DEMO_SEED_SPAN_DAYS),
+        _SeedProfile(DEMO_SEED_STORES, DEMO_SEED_PRODUCTS, DEMO_SEED_SPAN_DAYS),
     )
-    seed_end = datetime.now(UTC).date()
-    seed_start = seed_end - timedelta(days=span_days)
+    stores, products = profile.stores, profile.products
+    if profile.window is not None:
+        seed_start, seed_end = profile.window
+    else:
+        seed_end = datetime.now(UTC).date()
+        seed_start = seed_end - timedelta(days=profile.span_days)
     body = await client.request(
         "seed",
         "POST",
@@ -1254,6 +1315,7 @@ async def step_scenario_simulate_and_save(ctx: DemoContext, client: _Client) -> 
             "end_date": horizon_end.isoformat(),
         }
     }
+    sent_tags = _showcase_plan_tags(ctx, "price")
     plan_body = await client.request(
         "scenario_simulate_and_save[save]",
         "POST",
@@ -1263,7 +1325,7 @@ async def step_scenario_simulate_and_save(ctx: DemoContext, client: _Client) -> 
             "run_id": artifact_key,
             "horizon": DEMO_HORIZON,
             "assumptions": assumptions,
-            "tags": ["showcase", "price"],
+            "tags": sent_tags,
         },
     )
     scenario_id_raw = plan_body.get("scenario_id")
@@ -1298,6 +1360,8 @@ async def step_scenario_simulate_and_save(ctx: DemoContext, client: _Client) -> 
             "revenue_delta": revenue_delta,
             "winner_run_id": winner_run_id,
             "artifact_key": artifact_key,
+            # E3 (#392) -- echo the tags sent so the UI/e2e can observe them.
+            "tags": sent_tags,
         },
     )
 
@@ -1325,7 +1389,7 @@ async def step_multi_plan_compare(ctx: DemoContext, client: _Client) -> StepResu
                 "run_id": ctx.scenario_artifact_key,
                 "horizon": DEMO_HORIZON,
                 "assumptions": {"holiday": {"dates": [holiday_day]}},
-                "tags": ["showcase", "holiday"],
+                "tags": _showcase_plan_tags(ctx, "holiday"),
             },
         )
     except _StepError as exc:
@@ -2585,6 +2649,12 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
         reset=req.reset,
         scenario=req.scenario,
     )
+    # E1 (#390) -- create the workspace row BEFORE the first step executes so
+    # even an early failure records the run config. create_workspace is
+    # warn-and-continue: a DB failure returns None and the run proceeds.
+    if req.preservation == "keep":
+        ctx.workspace_id = await workspace.create_workspace(req)
+        ctx.workspace_name = req.workspace_name  # E3 (#392) -- plan-tag label
     wall_start = time.monotonic()
     any_fail = False
     # PRP-41 — buffer for intermediate events the HITL step emits via
@@ -2668,6 +2738,13 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
                 break
 
     wall = time.monotonic() - wall_start
+    # E1 (#390) -- settle the workspace row BEFORE the final yield so the
+    # mid-run-failure path records partial created_objects too.
+    # finalize_workspace is warn-and-continue: it never raises.
+    if ctx.workspace_id is not None:
+        await workspace.finalize_workspace(
+            ctx.workspace_id, ctx, failed=any_fail, wall_clock_s=wall
+        )
     yield StepEvent(
         event_type="pipeline_complete",
         step_name="summary",
@@ -2687,5 +2764,8 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
             # PRP-38 — expose the V2 run id when set so the Inspect deep
             # link can target /explorer/runs/{v2_run_id}.
             "v2_run_id": ctx.v2_run_id,
+            # E1 (#390) -- additive; a string on preservation='keep' runs,
+            # None otherwise (legacy clients ignore unknown keys).
+            "workspace_id": ctx.workspace_id,
         },
     )

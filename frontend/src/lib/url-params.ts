@@ -46,3 +46,20 @@ export function parseEnumParam<T extends string>(
     ? (value as T)
     : undefined
 }
+
+/**
+ * Parse repeated `tags` query params into a clean filter list.
+ *
+ * Trims each value, drops empties, dedupes, and caps at 20 entries
+ * (matches the backend CreateScenarioRequest.tags item cap) so a
+ * hand-edited URL degrades to a sane query instead of a 50-param request.
+ */
+export function parseTagsParam(values: string[]): string[] {
+  const seen = new Set<string>()
+  for (const value of values) {
+    const tag = value.trim()
+    if (tag) seen.add(tag)
+    if (seen.size >= 20) break
+  }
+  return [...seen]
+}

@@ -7,7 +7,7 @@
 ### What This Repo Owns
 - The entire stack: FastAPI backend (`app/`), React 19 SPA (`frontend/`), Alembic migrations (`alembic/`), data seeder (`app/shared/seeder/` + `scripts/seed_random.py`), `.claude/` policy + skills + hooks, docs (`docs/`, `PRPs/` incl. `PRPs/INITIAL/`).
 - 7-table retail data platform (`store`, `product`, `calendar`, `sales_daily`, `price_history`, `promotion`, `inventory_snapshot_daily`) + registry, jobs, RAG sources/chunks, agent sessions.
-- 11 backend vertical slices under `app/features/` + cross-cutting `app/core/` + `app/shared/`.
+- 19 backend vertical slices under `app/features/` + cross-cutting `app/core/` + `app/shared/`.
 
 ### What This Repo Depends On
 | Dependency | Interface | Owner | Change Process |
@@ -34,7 +34,7 @@ ForecastLabAI repo
 ├── app/                        # FastAPI process (uvicorn :8123)
 │   ├── core/                   # config, db engine, logging, middleware, problem-details, health
 │   ├── shared/                 # cross-slice models + seeder ("The Forge")
-│   └── features/<slice>/       # vertical slices (11 of them)
+│   └── features/<slice>/       # vertical slices (19 of them)
 └── frontend/                   # Vite dev server :5173 (proxies → :8123)
 ```
 
@@ -87,10 +87,15 @@ When a feature slice needs to call a service method or read a schema from a
 
 Existing precedents:
 - `app/features/explainability/service.py:57` — read-only `ModelRun` import
-- `app/features/forecasting/service.py` — lazy `RegistryService` / `JobService` /
-  `RunStatus` imports inside `get_feature_metadata_for_*` methods (added by
-  PRP-31; required because `RunResponse.model_family` computed_field closes
-  the cycle at alembic cold-boot)
+- `app/features/forecasting/service.py` ↔ `app/features/jobs/service.py` — mutually lazy
+  service pair (each lazily imports the other at call time; at least one side must stay
+  lazy). The former ModelFamily-driven cycle here was RESOLVED by #268.
+
+Resolved cycle (reference case):
+- #268 moved `ModelFamily` + `model_family_for` to `app/shared/model_taxonomy.py`; the
+  registry→forecasting eager edge disappeared and the registry-related lazy imports were
+  promoted to module scope. When a cycle is caused by a shared *type*, relocate the type
+  to `app/shared/` instead of adding lazy imports.
 
 ## Deployment Flow (Causal Chain)
 

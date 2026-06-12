@@ -7,7 +7,12 @@ import random
 from datetime import date
 from decimal import Decimal
 
-from app.shared.seeder.config import HolidayConfig, SparsityConfig
+from app.shared.seeder.config import (
+    HolidayConfig,
+    RetailPatternConfig,
+    SparsityConfig,
+    TimeSeriesConfig,
+)
 from app.shared.seeder.generators import (
     CalendarGenerator,
     InventorySnapshotGenerator,
@@ -16,6 +21,8 @@ from app.shared.seeder.generators import (
     PromotionGenerator,
     SalesDailyGenerator,
     StoreGenerator,
+    build_price_lookup,
+    resolve_price,
 )
 
 
@@ -256,6 +263,183 @@ class TestSalesDailyGenerator:
         # With 50% sparsity, expect roughly half the combinations
         max_sales = len(store_ids) * len(product_data) * len(dates)
         assert len(sales) < max_sales
+
+
+class TestPriceLookupResolver:
+    """Tests for build_price_lookup / resolve_price (issue #237).
+
+    Pure, rng-free functions — the seeder's byte-stability contract forbids
+    any rng draw in the resolver.
+    """
+
+    def test_store_specific_beats_chain_wide(self):
+        """A store-specific window takes precedence over a chain-wide one."""
+        lookup = build_price_lookup(
+            [
+                {
+                    "product_id": 1,
+                    "store_id": None,
+                    "price": Decimal("10.00"),
+                    "valid_from": date(2024, 1, 1),
+                    "valid_to": None,
+                },
+                {
+                    "product_id": 1,
+                    "store_id": 7,
+                    "price": Decimal("8.50"),
+                    "valid_from": date(2024, 1, 1),
+                    "valid_to": None,
+                },
+            ]
+        )
+
+        assert resolve_price(lookup, 1, 7, date(2024, 2, 1), Decimal("9.99")) == Decimal("8.50")
+        # A different store only sees the chain-wide window.
+        assert resolve_price(lookup, 1, 3, date(2024, 2, 1), Decimal("9.99")) == Decimal("10.00")
+
+    def test_latest_valid_from_wins_on_overlap(self):
+        """A later window (e.g. a markdown) overrides the base window it cuts."""
+        lookup = build_price_lookup(
+            [
+                {
+                    "product_id": 1,
+                    "store_id": None,
+                    "price": Decimal("10.00"),
+                    "valid_from": date(2024, 1, 1),
+                    "valid_to": date(2024, 3, 31),
+                },
+                {
+                    "product_id": 1,
+                    "store_id": None,
+                    "price": Decimal("6.00"),
+                    "valid_from": date(2024, 2, 1),
+                    "valid_to": date(2024, 2, 14),
+                },
+            ]
+        )
+
+        assert resolve_price(lookup, 1, 1, date(2024, 1, 15), Decimal("9.99")) == Decimal("10.00")
+        assert resolve_price(lookup, 1, 1, date(2024, 2, 7), Decimal("9.99")) == Decimal("6.00")
+        # After the markdown window closes, the base window resumes.
+        assert resolve_price(lookup, 1, 1, date(2024, 3, 1), Decimal("9.99")) == Decimal("10.00")
+
+    def test_open_ended_window_covers_any_later_day(self):
+        """valid_to=None means the window stays active indefinitely."""
+        lookup = build_price_lookup(
+            [
+                {
+                    "product_id": 1,
+                    "store_id": None,
+                    "price": Decimal("11.25"),
+                    "valid_from": date(2024, 6, 1),
+                    "valid_to": None,
+                },
+            ]
+        )
+
+        assert resolve_price(lookup, 1, 1, date(2030, 1, 1), Decimal("9.99")) == Decimal("11.25")
+
+    def test_uncovered_day_falls_back_to_base_price(self):
+        """A day before the first window (or an unknown product) → base_price."""
+        lookup = build_price_lookup(
+            [
+                {
+                    "product_id": 1,
+                    "store_id": None,
+                    "price": Decimal("10.00"),
+                    "valid_from": date(2024, 3, 1),
+                    "valid_to": None,
+                },
+            ]
+        )
+
+        assert resolve_price(lookup, 1, 1, date(2024, 1, 15), Decimal("9.99")) == Decimal("9.99")
+        assert resolve_price(lookup, 99, 1, date(2024, 3, 15), Decimal("4.49")) == Decimal("4.49")
+
+
+class TestSalesDailyGeneratorPriceCoupling:
+    """Tests for SalesDailyGenerator's price_lookup coupling (issue #237)."""
+
+    @staticmethod
+    def _deterministic_generator(seed: int = 42) -> SalesDailyGenerator:
+        """A generator with zero noise/anomaly so demand is exact."""
+        return SalesDailyGenerator(
+            random.Random(seed),
+            TimeSeriesConfig(
+                base_demand=100,
+                trend="none",
+                weekly_seasonality=[1.0] * 7,
+                monthly_seasonality={},
+                noise_sigma=0.0,
+                anomaly_probability=0.0,
+            ),
+            RetailPatternConfig(price_elasticity=-0.5),
+            SparsityConfig(),
+            [],
+        )
+
+    def test_coupled_unit_price_follows_lookup_and_demand_responds(self):
+        """On a cut day unit_price is the cut price AND elasticity lifts demand."""
+        base_price = Decimal("10.00")
+        cut_day = date(2024, 1, 3)
+        lookup = build_price_lookup(
+            [
+                {
+                    "product_id": 1,
+                    "store_id": None,
+                    "price": Decimal("8.00"),  # a -20% cut
+                    "valid_from": cut_day,
+                    "valid_to": cut_day,
+                },
+            ]
+        )
+        dates = [date(2024, 1, d) for d in range(1, 6)]
+
+        coupled = self._deterministic_generator().generate(
+            [1], [(1, base_price)], dates, {}, {}, price_lookup=lookup
+        )
+        legacy = self._deterministic_generator().generate([1], [(1, base_price)], dates, {}, {})
+
+        coupled_by_date = {row["date"]: row for row in coupled}
+        legacy_by_date = {row["date"]: row for row in legacy}
+
+        # Cut day: unit_price follows the lookup; -20% price x -0.5 elasticity
+        # lifts demand by +10% over the legacy twin (same seed, zero noise).
+        assert coupled_by_date[cut_day]["unit_price"] == Decimal("8.00")
+        assert legacy_by_date[cut_day]["unit_price"] == base_price
+        assert coupled_by_date[cut_day]["quantity"] > legacy_by_date[cut_day]["quantity"]
+
+        # Uncovered days: identical to the legacy twin.
+        for day in dates:
+            if day == cut_day:
+                continue
+            assert coupled_by_date[day] == legacy_by_date[day]
+
+        # total_amount = unit_price * quantity holds on every coupled row.
+        for row in coupled:
+            assert row["total_amount"] == row["unit_price"] * row["quantity"]
+
+    def test_none_lookup_is_byte_identical_to_legacy_call(self):
+        """price_lookup=None reproduces the no-kwarg output byte-for-byte."""
+        store_ids = [1, 2]
+        product_data = [(1, Decimal("9.99")), (2, Decimal("4.99"))]
+        dates = [date(2024, 1, d) for d in range(1, 31)]
+
+        def _noisy_generator() -> SalesDailyGenerator:
+            return SalesDailyGenerator(
+                random.Random(42),
+                TimeSeriesConfig(),
+                RetailPatternConfig(),
+                SparsityConfig(random_gaps_per_series=1),
+                [],
+            )
+
+        legacy = _noisy_generator().generate(store_ids, product_data, dates, {}, {})
+        explicit_none = _noisy_generator().generate(
+            store_ids, product_data, dates, {}, {}, price_lookup=None
+        )
+
+        assert legacy == explicit_none
 
 
 class TestInventorySnapshotGenerator:

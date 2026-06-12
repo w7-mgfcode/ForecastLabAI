@@ -12,8 +12,10 @@ from app.features.agents.schemas import (
     ChatMessage,
     ChatRequest,
     ChatResponse,
+    ErrorEvent,
     ExperimentPlan,
     ExperimentReport,
+    ModelFailureDetail,
     PendingAction,
     RAGAnswer,
     SessionCreateRequest,
@@ -302,6 +304,38 @@ class TestStreamEvent:
             timestamp=now,
         )
         assert event.event_type == "error"
+
+
+class TestErrorEvent:
+    """Tests for the ErrorEvent schema (failures added by issue #335)."""
+
+    def test_non_fallback_error_has_no_failures(self) -> None:
+        """Non-fallback error types must keep failures None in serialized output."""
+        event = ErrorEvent(
+            error="The assistant produced an invalid tool call.",
+            error_type="model_behavior_error",
+        )
+
+        serialized = event.model_dump(mode="json")
+        assert serialized.get("failures") is None
+
+    def test_fallback_exhausted_carries_failures(self) -> None:
+        """fallback_exhausted events carry the classified per-model failures."""
+        event = ErrorEvent(
+            error="All configured agent models failed",
+            error_type="fallback_exhausted",
+            failures=[
+                ModelFailureDetail(
+                    model_name="google-gla:gemini-3-flash-preview",
+                    status_code=404,
+                    reason="model_not_found",
+                )
+            ],
+        )
+
+        serialized = event.model_dump(mode="json")
+        assert serialized["failures"][0]["reason"] == "model_not_found"
+        assert serialized["failures"][0]["status_code"] == 404
 
 
 class TestExperimentPlan:

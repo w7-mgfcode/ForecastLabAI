@@ -22,13 +22,15 @@ from typing import Any, Literal, cast
 
 import structlog
 from pydantic_ai import Agent, capture_run_messages
-from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.exceptions import FallbackExceptionGroup, ModelAPIError, UnexpectedModelBehavior
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ToolReturnPart
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.core.exceptions import AgentFallbackExhaustedError
 from app.features.agents.deps import AgentDeps
+from app.features.agents.failures import classify_model_failures, summarize_model_failures
 from app.features.agents.models import AgentSession, AgentType, SessionStatus
 from app.features.agents.schemas import (
     ApprovalResponse,
@@ -309,6 +311,23 @@ class AgentService:
         except TimeoutError as e:
             raise TimeoutError(
                 f"Agent response timed out after {self.settings.agent_timeout_seconds} seconds"
+            ) from e
+        except (FallbackExceptionGroup, ModelAPIError) as e:
+            # Every model in the fallback chain failed (or the single
+            # configured model failed) with a provider-API error before any
+            # output was produced — nothing to salvage. Classify each leg into
+            # a secret-safe detail and surface the summary as a 502
+            # problem+json via the global handler (issue #335).
+            failures = classify_model_failures(e)
+            logger.warning(
+                "agents.chat_fallback_exhausted",
+                session_id=session_id,
+                failure_count=len(failures),
+                reasons=[f.reason for f in failures],
+            )
+            raise AgentFallbackExhaustedError(
+                summarize_model_failures(failures),
+                failures=[f.model_dump(mode="json") for f in failures],
             ) from e
         except UnexpectedModelBehavior as e:
             # The model misbehaved (e.g. a tool call exceeded its retry budget).
@@ -694,6 +713,33 @@ class AgentService:
             raise TimeoutError(
                 f"Agent response timed out after {self.settings.agent_timeout_seconds} seconds"
             ) from e
+        except (FallbackExceptionGroup, ModelAPIError) as e:
+            # Every model in the fallback chain failed (or the single
+            # configured model failed) with a provider-API error before any
+            # output was produced — nothing to salvage. Yield ONE classified,
+            # secret-safe `error` event instead of letting the raw exception
+            # reach the generic WebSocket backstop (issue #335).
+            failures = classify_model_failures(e)
+            logger.warning(
+                "agents.stream_chat_fallback_exhausted",
+                session_id=session_id,
+                failure_count=len(failures),
+                reasons=[f.reason for f in failures],
+            )
+            fallback_now = datetime.now(UTC)
+            session.last_activity = fallback_now
+            await db.flush()
+            yield StreamEvent(
+                event_type="error",
+                data={
+                    "error": summarize_model_failures(failures),
+                    "error_type": "fallback_exhausted",
+                    "recoverable": True,
+                    "failures": [f.model_dump(mode="json") for f in failures],
+                },
+                timestamp=fallback_now,
+            )
+            return
         except UnexpectedModelBehavior as e:
             # The model misbehaved (e.g. a tool call exceeded its retry budget).
             # Emit a clean, recoverable `error` event rather than letting the raw

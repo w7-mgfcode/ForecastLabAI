@@ -201,6 +201,70 @@ def test_assemble_future_frame_shape_and_order() -> None:
     assert all(len(row) == len(columns) for row in frame.matrix)
 
 
+def test_scenario_vs_baseline_frame_differs_only_in_price_factor() -> None:
+    """A price assumption reaches X_future, and ONLY the price_factor column.
+
+    Discriminator test for issue #237 (hypothesis 1 falsification): the
+    scenario frame and an assumptions-stripped baseline frame — built from
+    identical dates/columns/history_tail/holiday_dates/launch_date — differ
+    exactly in the ``price_factor`` cells inside the assumption window
+    (``1 + change_pct`` vs ``1.0``) and nowhere else. The future-frame wiring
+    therefore does NOT drop the price assumption; the observed 0.0 delta must
+    come from the trained model itself (see the inert-mechanism twin in
+    ``app/features/forecasting/tests/test_regression_forecaster.py``).
+    """
+    columns = canonical_feature_columns()
+    history_tail = [float(value) for value in range(HISTORY_TAIL_DAYS)]
+    launch = _ORIGIN - timedelta(days=100)
+    holiday_dates = {_HORIZON_DATES[0]}
+    # Window covering days 3..7 (indices 2..6) of the 14-day horizon.
+    assumptions = ScenarioAssumptions(
+        price=PriceAssumption(
+            change_pct=-0.15,
+            start_date=_HORIZON_DATES[2],
+            end_date=_HORIZON_DATES[6],
+        )
+    )
+
+    scenario_frame = assemble_future_frame(
+        dates=_HORIZON_DATES,
+        feature_columns=columns,
+        history_tail=history_tail,
+        assumptions=assumptions,
+        holiday_dates=holiday_dates,
+        launch_date=launch,
+    )
+    baseline_frame = assemble_future_frame(
+        dates=_HORIZON_DATES,
+        feature_columns=columns,
+        history_tail=history_tail,
+        assumptions=ScenarioAssumptions(),
+        holiday_dates=holiday_dates,
+        launch_date=launch,
+    )
+
+    price_index = columns.index("price_factor")
+    for row_index in range(_HORIZON):
+        scenario_row = scenario_frame.matrix[row_index]
+        baseline_row = baseline_frame.matrix[row_index]
+        for col_index in range(len(columns)):
+            scenario_cell = scenario_row[col_index]
+            baseline_cell = baseline_row[col_index]
+            if col_index == price_index:
+                if 2 <= row_index <= 6:
+                    assert scenario_cell == 0.85
+                    assert baseline_cell == 1.0
+                else:
+                    assert scenario_cell == 1.0
+                    assert baseline_cell == 1.0
+                continue
+            # Every non-price cell is identical (NaN-aware compare — lag
+            # cells whose source target lies in the horizon are NaN).
+            if math.isnan(scenario_cell) and math.isnan(baseline_cell):
+                continue
+            assert scenario_cell == baseline_cell
+
+
 def test_assemble_future_frame_unknown_column_is_nan() -> None:
     """A requested column the builders do not produce becomes an all-NaN column."""
     columns = [*canonical_feature_columns(), "mystery_feature"]

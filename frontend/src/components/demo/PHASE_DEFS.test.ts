@@ -72,6 +72,20 @@ describe('PHASE_DEFS lockstep with backend _phase_table', () => {
     expect(sparse).toEqual(minimal)
   })
 
+  // E2 (#391) — lockstep with the backend parametrized test
+  // test_phase_table_non_showcase_presets_match_demo_minimal_shape: only
+  // showcase_rich extends the pipeline; the 5 newly exposed presets run the
+  // legacy 11-step flow.
+  it.each([
+    'retail_standard',
+    'holiday_rush',
+    'high_variance',
+    'stockout_heavy',
+    'new_launches',
+  ] as const)('%s -> matches the demo_minimal shape (E2 #391)', (preset) => {
+    expect(phaseDefsForScenario(preset)).toEqual(phaseDefsForScenario('demo_minimal'))
+  })
+
   it('PHASE_ORDER contains exactly the ten canonical phases (PRP-41 swaps agent->agents and adds ops)', () => {
     expect(PHASE_ORDER).toEqual([
       'data',

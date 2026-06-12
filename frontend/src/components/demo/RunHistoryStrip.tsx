@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { safeRandomUUID } from '@/lib/uuid-utils'
 import type { DemoRunRequest, ScenarioPreset } from '@/types/api'
 import type { DemoSummary } from '@/hooks/use-demo-pipeline'
 
@@ -67,12 +68,14 @@ export function RunHistoryStrip({ onReplay, summary, scenario }: RunHistoryStrip
   // (the React "storing information from previous renders" pattern) rather than
   // in an effect — calling setState synchronously inside an effect body causes
   // cascading renders and is flagged by react-hooks/set-state-in-effect.
-  if (summary && summary !== lastSummary) {
+  // E4 (#393) — kept runs (workspaceId != null) are owned by the server-backed
+  // WorkspacePanel; localStorage records ephemeral runs only.
+  if (summary && summary !== lastSummary && summary.workspaceId === null) {
     setLastSummary(summary)
     setItems((prev) =>
       [
         {
-          id: crypto.randomUUID(),
+          id: safeRandomUUID(),
           runId: summary.winningRunId,
           timestamp: new Date().toISOString(),
           scenario,

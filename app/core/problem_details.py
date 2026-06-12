@@ -29,6 +29,11 @@ ERROR_TYPE_BASE = "/errors"
 # demo pipeline's classifier) so the marker never drifts between the two.
 EMBEDDING_AUTH_CODE = "EMBEDDING_AUTH"
 
+# Machine-readable code for an exhausted agent model fallback chain (#335).
+# Single source of truth shared by the producer (AgentFallbackExhaustedError)
+# and any consumer classifying the 502 — mirrors EMBEDDING_AUTH_CODE.
+AGENT_FALLBACK_EXHAUSTED_CODE = "AGENT_FALLBACK_EXHAUSTED"
+
 ERROR_TYPES = {
     "NOT_FOUND": f"{ERROR_TYPE_BASE}/not-found",
     "VALIDATION_ERROR": f"{ERROR_TYPE_BASE}/validation",
@@ -43,7 +48,15 @@ ERROR_TYPES = {
     "SERVICE_UNAVAILABLE": f"{ERROR_TYPE_BASE}/service-unavailable",
     "GATEWAY_TIMEOUT": f"{ERROR_TYPE_BASE}/gateway-timeout",
     EMBEDDING_AUTH_CODE: f"{ERROR_TYPE_BASE}/embedding-auth",
+    AGENT_FALLBACK_EXHAUSTED_CODE: f"{ERROR_TYPE_BASE}/agent-fallback-exhausted",
 }
+
+# RFC 7807 extension members may never shadow the spec/base fields the
+# ProblemDetail schema already owns — reserved keys are dropped from any
+# `extensions` merge in problem_response (#335).
+_RESERVED_PROBLEM_KEYS = frozenset(
+    {"type", "title", "status", "detail", "instance", "errors", "code", "request_id"}
+)
 
 
 # =============================================================================
@@ -172,6 +185,7 @@ def problem_response(
     detail: str | None = None,
     error_code: str = "INTERNAL_ERROR",
     errors: list[dict[str, Any]] | None = None,
+    extensions: dict[str, Any] | None = None,
 ) -> ProblemDetailResponse:
     """Create a ProblemDetailResponse with proper content type.
 
@@ -181,6 +195,9 @@ def problem_response(
         detail: Detailed explanation (optional).
         error_code: Internal error code for type URI lookup.
         errors: Field-level validation errors (optional).
+        extensions: Additional RFC 7807 extension members merged into the
+            response body (optional, #335). Reserved base-field keys are
+            silently dropped — extensions can never shadow type/status/etc.
     Returns:
         JSONResponse with problem+json content type.
     """
@@ -192,9 +209,17 @@ def problem_response(
         errors=errors,
     )
 
+    # Merge on the serialized dict (not ProblemDetail(**extensions)) so
+    # arbitrary extension payloads never fight the pydantic constructor.
+    content = problem.model_dump(exclude_none=True)
+    if extensions:
+        content.update(
+            {key: value for key, value in extensions.items() if key not in _RESERVED_PROBLEM_KEYS}
+        )
+
     return ProblemDetailResponse(
         status_code=status,
-        content=problem.model_dump(exclude_none=True),
+        content=content,
     )
 
 

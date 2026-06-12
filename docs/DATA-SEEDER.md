@@ -196,6 +196,26 @@ uv run python scripts/seed_random.py --full-new --config examples/seed/config_cu
 - **Price Elasticity**: Demand adjustment based on price changes
 - **New Product Ramps**: Gradual demand increase for new launches
 
+### Price/Sales Coupling (`price_sales_coupling`, issue #237)
+
+`RetailPatternConfig.price_sales_coupling` (default **`true`**) couples the generated
+`price_history` windows — including Phase 2 markdown price drops — into `sales_daily`:
+
+- Each sales row's `unit_price` is the price actually active for that
+  `(store, product, date)` (store-specific windows beat chain-wide ones; on
+  overlapping windows the latest `valid_from` wins, so markdowns cut the base window).
+- Demand responds to the price via `price_elasticity`
+  (`demand *= 1 + price_elasticity * change_pct`) — a -20% price window with the
+  default `-0.5` elasticity lifts demand by +10% inside the window.
+
+This matters because a forecasting model trained on seeded data can only learn a price
+response when `sales_daily.unit_price` actually varies; with coupling off every trained
+`regression` model sees a constant `price_factor ≡ 1.0` and any `model_exogenous`
+scenario price assumption returns an exact 0.0 delta. Default `true` so every scenario
+produces learnable price signal out of the box; set `price_sales_coupling: false` under
+`retail:` to restore the legacy behavior (`unit_price = base_price` on every row, no
+elasticity effect).
+
 ## Phase 1 Realism Extensions
 
 Phase 1 adds opt-in realism: exogenous signals, multi-seasonality, trend changepoints,
