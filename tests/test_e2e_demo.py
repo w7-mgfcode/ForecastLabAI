@@ -615,6 +615,62 @@ def test_demo_replay_same_config_twice(
 
 
 @pytest.mark.integration
+def test_demo_replay_preserves_seed_overrides_and_scope(
+    uvicorn_subprocess: subprocess.Popen[bytes],
+) -> None:
+    """E3 (#409) — replayed runs carry identical seed_overrides/user_scope slots.
+
+    The replay-verbatim contract: the slots record the REQUESTED config, so two
+    runs of the same body must produce two workspace rows with identical slot
+    JSON. ``user_scope`` is deliberately a (1, 1) pair that almost certainly
+    dangles (sequences never reset) — the status step must WARN + fall back,
+    the run must still pass, and the slot must still record the request
+    verbatim (requested-vs-effective divergence stays visible: the row's
+    store_id/product_id columns carry the discovered grain).
+    """
+    import json
+
+    body_dict: dict[str, object] = {
+        "seed": 42,
+        "reset": True,
+        "skip_seed": False,
+        "scenario": "demo_minimal",
+        "preservation": "keep",
+        "workspace_name": "e3-replay-slots",
+        # Smallest overrides to keep wall-clock sane (matches demo_minimal dims).
+        "seed_overrides": {"stores": 3, "products": 10},
+        "user_scope": {"store_id": 1, "product_id": 1},
+    }
+
+    first = _post_demo_run(body_dict, REPLAY_RUN_TIMEOUT_S)
+    assert first["overall_status"] == "pass", (
+        f"first run did not pass: "
+        f"steps={[(s['step_name'], s['status'], s['detail']) for s in first['steps']]}"  # type: ignore[index]
+    )
+    second = _post_demo_run(body_dict, REPLAY_RUN_TIMEOUT_S)
+    assert second["overall_status"] == "pass", (
+        f"replay did not pass: "
+        f"steps={[(s['step_name'], s['status'], s['detail']) for s in second['steps']]}"  # type: ignore[index]
+    )
+
+    with urllib.request.urlopen(  # noqa: S310 — http://127.0.0.1 internal URL
+        f"{DEMO_API_URL}/demo/workspaces?limit=100", timeout=10.0
+    ) as resp:
+        assert resp.status == 200
+        page = json.loads(resp.read())
+    rows_by_id = {w["workspace_id"]: w for w in page["workspaces"]}
+    first_row = rows_by_id[first["workspace_id"]]
+    second_row = rows_by_id[second["workspace_id"]]
+
+    # The slots are exposed on the LIST item (replay reads list rows) and are
+    # identical across the original and the replay.
+    assert first_row["seed_overrides"] == {"stores": 3, "products": 10}
+    assert first_row["user_scope"] == {"store_id": 1, "product_id": 1}
+    assert second_row["seed_overrides"] == first_row["seed_overrides"]
+    assert second_row["user_scope"] == first_row["user_scope"]
+
+
+@pytest.mark.integration
 def test_run_demo_precondition_failure_exits_2() -> None:
     """A bogus API URL surfaces as a precondition failure with exit 2.
 
