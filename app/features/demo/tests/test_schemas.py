@@ -47,6 +47,51 @@ def test_demo_run_request_scenario_rejects_unknown():
         DemoRunRequest.model_validate({"scenario": "not_a_preset"})
 
 
+def test_demo_run_request_new_field_defaults():
+    """E1 (#390) -- defaults preserve legacy behaviour (ephemeral, unnamed)."""
+    req = DemoRunRequest()
+    assert req.preservation == "ephemeral"
+    assert req.workspace_name is None
+
+
+def test_demo_run_request_json_path_keep_with_name():
+    """E1 (#390) -- the JSON wire form (validate_python on a parsed dict, the
+    path FastAPI uses) accepts keep + a named workspace."""
+    req = DemoRunRequest.model_validate({"preservation": "keep", "workspace_name": "bf-demo"})
+    assert req.preservation == "keep"
+    assert req.workspace_name == "bf-demo"
+
+
+def test_demo_run_request_legacy_frame_still_validates():
+    """E1 (#390) -- a legacy start frame without the new keys still validates."""
+    req = DemoRunRequest.model_validate({"seed": 7})
+    assert req.seed == 7
+    assert req.preservation == "ephemeral"
+    assert req.workspace_name is None
+
+
+def test_demo_run_request_workspace_name_requires_keep():
+    """E1 (#390) -- workspace_name without preservation='keep' is rejected."""
+    with pytest.raises(ValidationError):
+        DemoRunRequest.model_validate({"workspace_name": "x"})
+    with pytest.raises(ValidationError):
+        DemoRunRequest.model_validate({"preservation": "ephemeral", "workspace_name": "x"})
+
+
+def test_demo_run_request_workspace_name_pattern_rejected():
+    """E1 (#390) -- names violating the alias-style pattern are rejected."""
+    with pytest.raises(ValidationError):
+        DemoRunRequest.model_validate({"preservation": "keep", "workspace_name": "Black Friday!"})
+    with pytest.raises(ValidationError):
+        DemoRunRequest.model_validate({"preservation": "keep", "workspace_name": "-leading-dash"})
+
+
+def test_demo_run_request_rejects_unknown_preservation():
+    """E1 (#390) -- preservation is a closed Literal; unknown values 422."""
+    with pytest.raises(ValidationError):
+        DemoRunRequest.model_validate({"preservation": "archive"})
+
+
 def test_step_event_json_round_trip():
     event = StepEvent(
         event_type="step_complete",
@@ -134,3 +179,5 @@ def test_demo_run_result_defaults():
     assert result.winner_model_type is None
     assert result.winner_wape is None
     assert result.wall_clock_s == 0.0
+    # E1 (#390) -- additive Optional field defaults to None (ephemeral runs).
+    assert result.workspace_id is None

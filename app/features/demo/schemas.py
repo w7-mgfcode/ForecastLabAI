@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.shared.seeder.config import ScenarioPreset
 
@@ -29,10 +29,12 @@ def _utc_now() -> datetime:
 class DemoRunRequest(BaseModel):
     """Request body for ``POST /demo/run`` and the ``WS /demo/stream`` start frame.
 
-    Every field is JSON-native (``int`` / ``bool``), so ``ConfigDict(strict=True)``
-    is safe with no ``Field(strict=False)`` override -- there is no
-    ``date`` / ``datetime`` / ``UUID`` / ``Decimal`` field (see
-    ``.claude/rules/security-patterns.md`` and ``test_strict_mode_policy.py``).
+    Every field is JSON-native (``int`` / ``bool`` / ``str`` / ``Literal``), so
+    ``ConfigDict(strict=True)`` is safe with no ``Field(strict=False)``
+    override -- there is no ``date`` / ``datetime`` / ``UUID`` / ``Decimal``
+    field (see ``.claude/rules/security-patterns.md`` and
+    ``test_strict_mode_policy.py``). The sole exception is ``scenario``, whose
+    enum-on-the-wire form carries its own override (PRP-38).
     """
 
     model_config = ConfigDict(strict=True)
@@ -59,6 +61,28 @@ class DemoRunRequest(BaseModel):
         strict=False,
         description="Seeder scenario preset that drives the pipeline shape.",
     )
+    # E1 (#390): preservation policy. Default "ephemeral" keeps legacy
+    # behaviour byte-identical (no workspace row). Both new fields are
+    # JSON-native (Literal[str] / str), so the model-level ``strict=True``
+    # needs no per-field override.
+    preservation: Literal["ephemeral", "keep"] = Field(
+        default="ephemeral",
+        description="'keep' records this run as a showcase_workspace row.",
+    )
+    workspace_name: str | None = Field(
+        default=None,
+        max_length=100,
+        # Same pattern as the registry alias_name (registry/schemas.py).
+        pattern=r"^[a-z0-9][a-z0-9\-_]*$",
+        description="Optional workspace label; requires preservation='keep'.",
+    )
+
+    @model_validator(mode="after")
+    def _workspace_name_requires_keep(self) -> DemoRunRequest:
+        """Reject a workspace_name on a run that does not keep a workspace."""
+        if self.workspace_name is not None and self.preservation != "keep":
+            raise ValueError("workspace_name requires preservation='keep'")
+        return self
 
 
 class StepEvent(BaseModel):
@@ -133,4 +157,10 @@ class DemoRunResult(BaseModel):
     wall_clock_s: float = Field(
         default=0.0,
         description="Total pipeline wall-clock in seconds.",
+    )
+    # E1 (#390): additive Optional field mirroring ``winning_run_id`` --
+    # ``None`` on ephemeral runs, the workspace_id on preservation='keep' runs.
+    workspace_id: str | None = Field(
+        default=None,
+        description="showcase_workspace id recorded for this run, if kept.",
     )

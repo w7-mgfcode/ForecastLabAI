@@ -2110,3 +2110,152 @@ async def test_ops_snapshot_passes_on_empty_db(tmp_path):
         "total_aliases": 0,
         "degrading_health_count": 0,
     }
+
+
+# =============================================================================
+# E1 (#390) -- workspace persistence hooks
+# =============================================================================
+
+
+class _WorkspaceSpy:
+    """Recording stand-in for the workspace module's create/finalize hooks."""
+
+    def __init__(self, create_returns: str | None = "ws-e1-test") -> None:
+        self.create_calls: list[Any] = []
+        self.finalize_calls: list[dict[str, Any]] = []
+        self._create_returns = create_returns
+
+    async def create_workspace(self, req: Any) -> str | None:
+        self.create_calls.append(req)
+        return self._create_returns
+
+    async def finalize_workspace(
+        self,
+        workspace_id: str,
+        ctx: Any,
+        *,
+        failed: bool,
+        wall_clock_s: float | None = None,
+    ) -> None:
+        self.finalize_calls.append(
+            {"workspace_id": workspace_id, "failed": failed, "wall_clock_s": wall_clock_s}
+        )
+
+
+async def test_run_pipeline_keep_creates_and_finalizes_workspace(monkeypatch, tmp_path):
+    """E1 (#390) -- keep run: create before steps, finalize before the yield."""
+    artifact = tmp_path / "m.joblib"
+    artifact.write_bytes(b"x")
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
+    wapes = {"naive": 0.3, "seasonal_naive": 0.1, "moving_average": 0.2}
+    monkeypatch.setattr(pipeline, "_Client", _build_fake_client(str(artifact), wapes))
+    spy = _WorkspaceSpy()
+    monkeypatch.setattr(pipeline, "workspace", spy)
+
+    req = DemoRunRequest.model_validate({"preservation": "keep", "workspace_name": "e1-test"})
+    events = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=req)]
+
+    assert len(spy.create_calls) == 1
+    assert spy.create_calls[0] is req
+    assert len(spy.finalize_calls) == 1
+    assert spy.finalize_calls[0]["workspace_id"] == "ws-e1-test"
+    assert spy.finalize_calls[0]["failed"] is False
+    assert spy.finalize_calls[0]["wall_clock_s"] is not None
+
+    final = events[-1]
+    assert final.event_type == "pipeline_complete"
+    assert final.status == "pass"
+    assert final.data["workspace_id"] == "ws-e1-test"
+
+
+async def test_run_pipeline_ephemeral_touches_no_workspace(monkeypatch, tmp_path):
+    """E1 (#390) -- default (ephemeral) run issues zero workspace calls."""
+    artifact = tmp_path / "m.joblib"
+    artifact.write_bytes(b"x")
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
+    wapes = {"naive": 0.3, "seasonal_naive": 0.1, "moving_average": 0.2}
+    monkeypatch.setattr(pipeline, "_Client", _build_fake_client(str(artifact), wapes))
+    spy = _WorkspaceSpy()
+    monkeypatch.setattr(pipeline, "workspace", spy)
+
+    events = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=DemoRunRequest())]
+
+    assert spy.create_calls == []
+    assert spy.finalize_calls == []
+    final = events[-1]
+    assert final.event_type == "pipeline_complete"
+    # The key is additive and present, with a null value on ephemeral runs.
+    assert "workspace_id" in final.data
+    assert final.data["workspace_id"] is None
+
+
+async def test_run_pipeline_workspace_create_failure_does_not_break_run(monkeypatch, tmp_path):
+    """E1 (#390) -- create_workspace's warn path (None) leaves the run green."""
+    artifact = tmp_path / "m.joblib"
+    artifact.write_bytes(b"x")
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
+    wapes = {"naive": 0.3, "seasonal_naive": 0.1, "moving_average": 0.2}
+    monkeypatch.setattr(pipeline, "_Client", _build_fake_client(str(artifact), wapes))
+    spy = _WorkspaceSpy(create_returns=None)
+    monkeypatch.setattr(pipeline, "workspace", spy)
+
+    req = DemoRunRequest.model_validate({"preservation": "keep"})
+    events = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=req)]
+
+    assert len(spy.create_calls) == 1
+    # No row was created, so there is nothing to finalize.
+    assert spy.finalize_calls == []
+    final = events[-1]
+    assert final.event_type == "pipeline_complete"
+    assert final.status == "pass"
+    assert final.data["workspace_id"] is None
+
+
+async def test_run_pipeline_keep_finalizes_failed_on_step_failure(monkeypatch):
+    """E1 (#390) -- a mid-run step failure still finalizes, with failed=True."""
+
+    class _FailingClient:
+        def __init__(self, _app: Any, *, event_sink: list[Any] | None = None) -> None:
+            self._event_sink = event_sink
+
+        async def __aenter__(self) -> _FailingClient:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+        def yield_event(self, event: Any) -> None:
+            if self._event_sink is None:
+                return
+            self._event_sink.append(event)
+
+        async def request(
+            self,
+            step: str,
+            method: str,
+            path: str,
+            *,
+            json_body: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            if path == "/health":
+                return {"status": "ok"}
+            if path == "/seeder/status":
+                raise pipeline._StepError(
+                    "status", 500, {"title": "Database Error", "detail": "db down"}
+                )
+            raise AssertionError(f"unexpected request after failure: {path}")
+
+    monkeypatch.setattr(pipeline, "_Client", _FailingClient)
+    spy = _WorkspaceSpy()
+    monkeypatch.setattr(pipeline, "workspace", spy)
+
+    req = DemoRunRequest.model_validate({"preservation": "keep"})
+    events = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=req)]
+
+    assert len(spy.finalize_calls) == 1
+    assert spy.finalize_calls[0]["workspace_id"] == "ws-e1-test"
+    assert spy.finalize_calls[0]["failed"] is True
+    final = events[-1]
+    assert final.event_type == "pipeline_complete"
+    assert final.status == "fail"
+    assert final.data["workspace_id"] == "ws-e1-test"

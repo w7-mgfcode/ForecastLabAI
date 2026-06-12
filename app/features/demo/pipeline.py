@@ -40,6 +40,7 @@ from fastapi import FastAPI
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.problem_details import EMBEDDING_AUTH_CODE, ERROR_TYPES
+from app.features.demo import workspace
 from app.features.demo.schemas import DemoRunRequest, StepEvent, StepStatus
 from app.shared.seeder.config import ScenarioPreset
 
@@ -254,6 +255,9 @@ class DemoContext:
     # step_agent_hitl_flow on SHOWCASE_RICH. Remain None on every other path.
     approval_action_id: str | None = None
     agent_approval_decision: str | None = None  # "executed"|"rejected"|"expired"|"timed_out"
+    # E1 (#390) -- workspace persistence. Set only on preservation="keep" runs
+    # (and only when the row insert succeeded); None on ephemeral runs.
+    workspace_id: str | None = None
 
 
 # =============================================================================
@@ -2585,6 +2589,11 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
         reset=req.reset,
         scenario=req.scenario,
     )
+    # E1 (#390) -- create the workspace row BEFORE the first step executes so
+    # even an early failure records the run config. create_workspace is
+    # warn-and-continue: a DB failure returns None and the run proceeds.
+    if req.preservation == "keep":
+        ctx.workspace_id = await workspace.create_workspace(req)
     wall_start = time.monotonic()
     any_fail = False
     # PRP-41 — buffer for intermediate events the HITL step emits via
@@ -2668,6 +2677,13 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
                 break
 
     wall = time.monotonic() - wall_start
+    # E1 (#390) -- settle the workspace row BEFORE the final yield so the
+    # mid-run-failure path records partial created_objects too.
+    # finalize_workspace is warn-and-continue: it never raises.
+    if ctx.workspace_id is not None:
+        await workspace.finalize_workspace(
+            ctx.workspace_id, ctx, failed=any_fail, wall_clock_s=wall
+        )
     yield StepEvent(
         event_type="pipeline_complete",
         step_name="summary",
@@ -2687,5 +2703,8 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
             # PRP-38 — expose the V2 run id when set so the Inspect deep
             # link can target /explorer/runs/{v2_run_id}.
             "v2_run_id": ctx.v2_run_id,
+            # E1 (#390) -- additive; a string on preservation='keep' runs,
+            # None otherwise (legacy clients ignore unknown keys).
+            "workspace_id": ctx.workspace_id,
         },
     )

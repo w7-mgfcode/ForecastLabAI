@@ -112,3 +112,90 @@ def test_demo_stream_websocket_busy_sends_error(monkeypatch):
         event = ws.receive_json()
         assert event["event_type"] == "error"
         assert "in progress" in event["detail"]
+
+
+# =============================================================================
+# E1 (#390) -- preservation / workspace_name passthrough
+# =============================================================================
+
+
+async def test_run_demo_accepts_preservation_fields(
+    client, monkeypatch, canned_result: DemoRunResult
+):
+    """E1 (#390) -- the new optional fields validate and reach the service."""
+    seen: dict[str, DemoRunRequest] = {}
+
+    async def fake_run_sync(_app, params: DemoRunRequest) -> DemoRunResult:
+        seen["params"] = params
+        return canned_result
+
+    monkeypatch.setattr(service, "run_pipeline_sync", fake_run_sync)
+
+    resp = await client.post(
+        "/demo/run",
+        json={"skip_seed": True, "preservation": "keep", "workspace_name": "e1-route"},
+    )
+    assert resp.status_code == 200
+    assert seen["params"].preservation == "keep"
+    assert seen["params"].workspace_name == "e1-route"
+    # The additive DemoRunResult field rides on the response (None here --
+    # the canned result doesn't set it).
+    assert resp.json()["workspace_id"] is None
+
+
+async def test_run_demo_rejects_name_without_keep_422(client):
+    """E1 (#390) -- workspace_name without preservation='keep' is a 422."""
+    resp = await client.post("/demo/run", json={"workspace_name": "bad"})
+    assert resp.status_code == 422
+    assert resp.headers["content-type"].startswith("application/problem+json")
+
+
+def test_demo_stream_websocket_accepts_preservation_fields(monkeypatch):
+    """E1 (#390) -- the WS start frame accepts the new fields end-to-end."""
+    seen: dict[str, DemoRunRequest] = {}
+
+    async def fake_stream(_app, params: DemoRunRequest) -> AsyncIterator[StepEvent]:
+        seen["params"] = params
+        yield StepEvent(
+            event_type="pipeline_complete",
+            step_name="summary",
+            step_index=11,
+            total_steps=11,
+            status="pass",
+            data={"workspace_id": "ws-route-test"},
+        )
+
+    monkeypatch.setattr(service, "stream_pipeline", fake_stream)
+
+    with TestClient(app).websocket_connect("/demo/stream") as ws:
+        ws.send_json({"preservation": "keep", "workspace_name": "ws-frame"})
+        event = ws.receive_json()
+        assert event["event_type"] == "pipeline_complete"
+        assert event["data"]["workspace_id"] == "ws-route-test"
+    assert seen["params"].preservation == "keep"
+    assert seen["params"].workspace_name == "ws-frame"
+
+
+def test_demo_stream_websocket_legacy_frame_ignores_unknown_keys(monkeypatch):
+    """E1 (#390) -- unknown start-frame keys stay ignored (the WS forward/
+    backward compatibility contract; no extra='forbid')."""
+    seen: dict[str, DemoRunRequest] = {}
+
+    async def fake_stream(_app, params: DemoRunRequest) -> AsyncIterator[StepEvent]:
+        seen["params"] = params
+        yield StepEvent(
+            event_type="pipeline_complete",
+            step_name="summary",
+            step_index=11,
+            total_steps=11,
+            status="pass",
+        )
+
+    monkeypatch.setattr(service, "stream_pipeline", fake_stream)
+
+    with TestClient(app).websocket_connect("/demo/stream") as ws:
+        ws.send_json({"seed": 7, "future_key_from_a_newer_client": True})
+        event = ws.receive_json()
+        assert event["event_type"] == "pipeline_complete"
+    assert seen["params"].seed == 7
+    assert seen["params"].preservation == "ephemeral"
