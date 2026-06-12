@@ -16,8 +16,9 @@ import pytest
 from fastapi import FastAPI
 
 from app.features.demo import pipeline
-from app.features.demo.schemas import DemoRunRequest
+from app.features.demo.schemas import DemoRunRequest, UserScope
 from app.shared.seeder.config import ScenarioPreset
+from app.shared.seeder.overrides import SeederOverrides
 
 # A bare app instance -- the fake clients ignore it; it only satisfies the
 # run_pipeline(app: FastAPI, ...) signature.
@@ -2454,3 +2455,190 @@ async def test_step_seed_retail_standard_posts_demo_scaled_profile():
     # sparsity stays 0.0 — the seeder override fires only when > 0, which is
     # what preserves the sparse preset's 50%-missing character.
     assert body["sparsity"] == 0.0
+
+
+# =============================================================================
+# E3 (#409) — seed overrides + user scope
+# =============================================================================
+
+
+async def test_step_seed_forwards_seed_overrides():
+    """E3 (#409) — the nested overrides ride the /seeder/generate body verbatim,
+    the POST scalars echo the effective dims, and scalar sparsity stays 0.0."""
+    ctx = pipeline.DemoContext(
+        seed=42,
+        skip_seed=False,
+        reset=False,
+        scenario=ScenarioPreset.DEMO_MINIMAL,
+        seed_overrides=SeederOverrides(stores=8, products=20, promotion_intensity=0.3),
+    )
+    client = _RecordingClient(
+        None,
+        responses={("POST", "/seeder/generate"): {"records_created": {"sales": 1}}},
+    )
+    status, detail, data = await pipeline.step_seed(ctx, _as_client(client))
+    assert status == "pass"
+    body = client.calls[0][2]
+    assert body is not None
+    assert body["overrides"] == {"stores": 8, "products": 20, "promotion_intensity": 0.3}
+    # Effective dims on the scalars + the detail line (the card tells the truth).
+    assert body["stores"] == 8
+    assert body["products"] == 20
+    assert body["sparsity"] == 0.0  # preset-character guard; nested wins anyway
+    assert "8 stores x 20 products" in detail
+    assert "overrides: products, promotion_intensity, stores" in detail
+    assert data["overrides_applied"] == ["products", "promotion_intensity", "stores"]
+
+
+async def test_step_seed_without_overrides_is_legacy_identical():
+    """E3 (#409) — a legacy ctx posts NO overrides key (byte-identical body)."""
+    ctx = pipeline.DemoContext(
+        seed=42, skip_seed=False, reset=False, scenario=ScenarioPreset.DEMO_MINIMAL
+    )
+    client = _RecordingClient(
+        None,
+        responses={("POST", "/seeder/generate"): {"records_created": {"sales": 1}}},
+    )
+    status, _detail, data = await pipeline.step_seed(ctx, _as_client(client))
+    assert status == "pass"
+    body = client.calls[0][2]
+    assert body is not None
+    assert "overrides" not in body
+    assert body["stores"] == 3  # demo_minimal profile
+    assert data["overrides_applied"] == []
+
+
+async def test_step_seed_window_days_overrides_profile_window():
+    """E3 (#409) — window_days drives a today-anchored window of that length."""
+    ctx = pipeline.DemoContext(
+        seed=42,
+        skip_seed=False,
+        reset=False,
+        scenario=ScenarioPreset.DEMO_MINIMAL,
+        seed_overrides=SeederOverrides(window_days=120),
+    )
+    client = _RecordingClient(
+        None,
+        responses={("POST", "/seeder/generate"): {"records_created": {"sales": 1}}},
+    )
+    status, _detail, _data = await pipeline.step_seed(ctx, _as_client(client))
+    assert status == "pass"
+    body = client.calls[0][2]
+    assert body is not None
+    start = date.fromisoformat(body["start_date"])
+    end = date.fromisoformat(body["end_date"])
+    assert end - start == timedelta(days=120)
+    assert body["overrides"] == {"window_days": 120}
+
+
+def _status_discovery_responses() -> dict[tuple[str, str], Any]:
+    """Canned responses for the legacy first-pair discovery path."""
+    return {
+        ("GET", "/seeder/status"): {
+            "date_range_start": "2026-01-01",
+            "date_range_end": "2026-03-31",
+            "sales": 900,
+        },
+        ("GET", "/dimensions/stores?page=1&page_size=1"): {"stores": [{"id": 4}]},
+        ("GET", "/dimensions/products?page=1&page_size=1"): {"products": [{"id": 9}]},
+    }
+
+
+async def test_step_status_honors_user_scope():
+    """E3 (#409) — a valid pair is validated via GET-by-id and adopted."""
+    ctx = pipeline.DemoContext(
+        seed=42,
+        skip_seed=True,
+        reset=False,
+        scenario=ScenarioPreset.DEMO_MINIMAL,
+        user_scope=UserScope(store_id=12, product_id=47),
+    )
+    client = _RecordingClient(
+        None,
+        responses={
+            ("GET", "/seeder/status"): {
+                "date_range_start": "2026-01-01",
+                "date_range_end": "2026-03-31",
+                "sales": 900,
+            },
+            ("GET", "/dimensions/stores/12"): {"id": 12, "code": "S012"},
+            ("GET", "/dimensions/products/47"): {"id": 47, "sku": "P047"},
+        },
+    )
+    status, detail, data = await pipeline.step_status(ctx, _as_client(client))
+    assert status == "pass"
+    assert ctx.store_id == 12
+    assert ctx.product_id == 47
+    assert "(user-selected)" in detail
+    assert data["user_scope_applied"] is True
+    # Both GET-by-id validations were issued; no discovery call happened.
+    paths = [path for _method, path, _body in client.calls]
+    assert "/dimensions/stores/12" in paths
+    assert "/dimensions/products/47" in paths
+    assert "/dimensions/stores?page=1&page_size=1" not in paths
+
+
+async def test_step_status_dangling_scope_warns_and_falls_back():
+    """E3 (#409) — a 404 pair WARNS (never fails) and discovery takes over."""
+    responses = _status_discovery_responses()
+    responses[("GET", "/dimensions/products/47")] = {"id": 47}
+    ctx = pipeline.DemoContext(
+        seed=42,
+        skip_seed=True,
+        reset=False,
+        scenario=ScenarioPreset.DEMO_MINIMAL,
+        user_scope=UserScope(store_id=12, product_id=47),
+    )
+    client = _RecordingClient(
+        None,
+        responses=responses,
+        errors={
+            ("GET", "/dimensions/stores/12"): pipeline._StepError(
+                "status[scope-store]", 404, {"title": "Not Found"}
+            ),
+        },
+    )
+    status, detail, data = await pipeline.step_status(ctx, _as_client(client))
+    assert status == "warn"
+    assert ctx.store_id == 4  # discovered pair
+    assert ctx.product_id == 9
+    assert "user_scope (store=12, product=47) not found" in detail
+    assert data["user_scope_applied"] is False
+
+
+async def test_step_status_without_scope_unchanged():
+    """E3 (#409) — the legacy discovery path is byte-identical (pass, no warn)."""
+    ctx = pipeline.DemoContext(
+        seed=42, skip_seed=True, reset=False, scenario=ScenarioPreset.DEMO_MINIMAL
+    )
+    client = _RecordingClient(None, responses=_status_discovery_responses())
+    status, detail, data = await pipeline.step_status(ctx, _as_client(client))
+    assert status == "pass"
+    assert ctx.store_id == 4
+    assert ctx.product_id == 9
+    assert "user_scope" not in detail
+    assert data["user_scope_applied"] is False
+
+
+async def test_run_pipeline_threads_e3_fields(monkeypatch):
+    """E3 (#409) — run_pipeline threads seed_overrides/user_scope into ctx."""
+    captured: dict[str, Any] = {}
+
+    async def _capturing_precheck(ctx: Any, _client: Any) -> Any:
+        captured["seed_overrides"] = ctx.seed_overrides
+        captured["user_scope"] = ctx.user_scope
+        return ("fail", "stop after capture", {})
+
+    monkeypatch.setattr(pipeline, "step_precheck", _capturing_precheck)
+    monkeypatch.setattr(pipeline, "_Client", _build_fake_client("unused", {}))
+
+    req = DemoRunRequest.model_validate(
+        {
+            "skip_seed": False,
+            "seed_overrides": {"stores": 8, "noise_sigma": 0.25},
+            "user_scope": {"store_id": 12, "product_id": 47},
+        }
+    )
+    _events = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=req)]
+    assert captured["seed_overrides"] == SeederOverrides(stores=8, noise_sigma=0.25)
+    assert captured["user_scope"] == UserScope(store_id=12, product_id=47)

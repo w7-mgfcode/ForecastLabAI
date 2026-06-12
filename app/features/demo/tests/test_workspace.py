@@ -76,6 +76,37 @@ async def test_create_workspace_persists_config(db_session: AsyncSession) -> Non
     assert row.result_summary is None
 
 
+async def test_create_workspace_persists_e3_slots(db_session: AsyncSession) -> None:
+    """E3 (#409) -- seed_overrides/user_scope land in the story slots, sparse."""
+    workspace_id = await workspace.create_workspace(
+        _keep_request(
+            skip_seed=False,
+            seed_overrides={"stores": 8, "promotion_intensity": 0.3},
+            user_scope={"store_id": 12, "product_id": 47},
+        )
+    )
+    assert workspace_id is not None
+
+    row = await workspace.get_workspace(db_session, workspace_id)
+    assert row is not None
+    # Sparse JSON: only the operator-set knobs appear.
+    assert row.seed_overrides == {"stores": 8, "promotion_intensity": 0.3}
+    assert row.user_scope == {"store_id": 12, "product_id": 47}
+
+
+async def test_create_workspace_without_e3_fields_persists_nulls(
+    db_session: AsyncSession,
+) -> None:
+    """E3 (#409) -- a legacy keep-run stores NULL slots (never {})."""
+    workspace_id = await workspace.create_workspace(_keep_request())
+    assert workspace_id is not None
+
+    row = await workspace.get_workspace(db_session, workspace_id)
+    assert row is not None
+    assert row.seed_overrides is None
+    assert row.user_scope is None
+
+
 async def test_finalize_workspace_completed(db_session: AsyncSession) -> None:
     """finalize(failed=False) settles to completed with collected ids."""
     workspace_id = await workspace.create_workspace(_keep_request())
