@@ -98,6 +98,65 @@ def test_handles_nan_features() -> None:
     assert bool(np.all(np.isfinite(predictions)))
 
 
+def test_constant_price_column_is_inert_to_future_price() -> None:
+    """A model fit on a constant price column ignores future prices EXACTLY.
+
+    Discriminator test for issue #237 (hypothesis 2, the verdict): a
+    ``RegressionForecaster`` trained on a matrix whose price column is the
+    constant ``1.0`` — exactly what the pre-fix seeder produced, since
+    ``sales_daily.unit_price`` never moved off ``base_price`` and so
+    ``price_factor = unit_price / median(unit_price) ≡ 1.0`` — predicts
+    byte-identically for ANY future price value. ``HistGradientBoostingRegressor``
+    never splits on a constant training column, so the scenario delta is
+    exactly 0.0, not merely small. The 0.0 the issue reproduces is
+    zero-learned-elasticity, not lost wiring (the wiring twin lives in
+    ``app/features/scenarios/tests/test_feature_frame.py``).
+    """
+    rng = np.random.default_rng(42)
+    n = 300
+    features = rng.normal(10.0, 2.0, size=(n, 5)).astype(np.float64)
+    features[:, 4] = 1.0  # the price column is CONSTANT, as on pre-fix seeded data
+    target = (40.0 + 0.5 * features[:, 0] + rng.normal(scale=0.5, size=n)).astype(np.float64)
+
+    model = RegressionForecaster(random_state=42).fit(target, features)
+
+    future = features[:14].copy()
+    future[:, 4] = 1.0
+    baseline_prediction = model.predict(14, future)
+    future[:, 4] = 0.60  # a deep -40% price cut
+    cut_prediction = model.predict(14, future)
+
+    np.testing.assert_array_equal(cut_prediction, baseline_prediction)
+
+
+def test_elastic_price_column_responds_to_future_price() -> None:
+    """The converse discriminator: trained price variance → a real response.
+
+    Fit on price-elastic synthetic data (price column uniform in [0.7, 1.1],
+    demand falling with price) and the same forecaster's prediction moves
+    when the future price moves — proving the inertia in the constant-column
+    twin is a property of the *training data*, not of the model or the
+    predict path (issue #237).
+    """
+    rng = np.random.default_rng(42)
+    n = 300
+    features = rng.normal(10.0, 2.0, size=(n, 5)).astype(np.float64)
+    features[:, 4] = rng.uniform(0.7, 1.1, size=n)
+    target = (40.0 - 20.0 * features[:, 4] + rng.normal(scale=0.5, size=n)).astype(np.float64)
+
+    model = RegressionForecaster(random_state=42).fit(target, features)
+
+    future = features[:14].copy()
+    future[:, 4] = 1.0
+    baseline_prediction = model.predict(14, future)
+    future[:, 4] = 0.85  # a -15% cut inside the training range
+    cut_prediction = model.predict(14, future)
+
+    assert not np.array_equal(cut_prediction, baseline_prediction)
+    # Demand falls with price, so a cut lifts every horizon day's forecast.
+    assert bool(np.all(cut_prediction > baseline_prediction))
+
+
 def test_get_and_set_params() -> None:
     """``get_params`` reflects construction; ``set_params`` mutates in place."""
     model = RegressionForecaster(max_iter=150, learning_rate=0.03, max_depth=4)
