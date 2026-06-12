@@ -3,14 +3,18 @@ import { Play, Loader2, Trophy, AlertTriangle, ArrowRight, Square } from 'lucide
 import { useState } from 'react'
 import { useDemoPipeline } from '@/hooks/use-demo-pipeline'
 import type { DemoStep } from '@/hooks/use-demo-pipeline'
-import { useWorkspace } from '@/hooks/use-workspaces'
+import { useWorkspace, useWorkspaceHealth } from '@/hooks/use-workspaces'
 import { DemoPhasePanel } from '@/components/demo/DemoPhasePanel'
 import { ScenarioPicker } from '@/components/demo/ScenarioPicker'
 import { ShowcaseKpiStrip } from '@/components/demo/ShowcaseKpiStrip'
 import { InspectArtifactsPanel } from '@/components/demo/InspectArtifactsPanel'
 import { RunHistoryStrip } from '@/components/demo/RunHistoryStrip'
+import { ReplayConfirmDialog } from '@/components/demo/ReplayConfirmDialog'
+import { WorkspaceLineageStrip } from '@/components/demo/WorkspaceLineageStrip'
 import { WorkspacePanel } from '@/components/demo/WorkspacePanel'
 import { WorkspaceArtifactsPanel } from '@/components/demo/WorkspaceArtifactsPanel'
+import { buildReplayRequest } from '@/components/demo/replay-request'
+import { WORKSPACE_NAME_PATTERN } from '@/components/demo/workspace-name'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -20,10 +24,6 @@ import { cn } from '@/lib/utils'
 import type { WorkspaceListItem } from '@/types/api'
 
 const TERMINAL_STATUSES = new Set(['pass', 'fail', 'skip', 'warn'])
-
-// E4 (#393) — mirrors the backend DemoRunRequest.workspace_name pattern
-// (schemas.py): lowercase letters/digits, then -/_ allowed; ≤100 chars.
-const WORKSPACE_NAME_PATTERN = /^[a-z0-9][a-z0-9\-_]*$/
 
 /**
  * PRP-38 / PRP-39 / PRP-40 — resolve the per-step Inspect deep link.
@@ -122,10 +122,17 @@ export default function ShowcasePage() {
   const [keepWorkspace, setKeepWorkspace] = useState(false)
   const [workspaceName, setWorkspaceName] = useState('')
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
+  // E2 (#408) — the workspace awaiting replay confirmation (null = no dialog).
+  const [pendingReplay, setPendingReplay] = useState<WorkspaceListItem | null>(null)
 
   // The page (not the panel) resolves the loaded workspace's detail — the
   // artifacts panel needs detail-only created_objects.
   const { data: loadedWorkspace } = useWorkspace(
+    selectedWorkspaceId ?? '',
+    !!selectedWorkspaceId
+  )
+  // E2 (#408) — probe the LOADED workspace's soft references (never per row).
+  const { data: workspaceHealth } = useWorkspaceHealth(
     selectedWorkspaceId ?? '',
     !!selectedWorkspaceId
   )
@@ -167,24 +174,24 @@ export default function ShowcasePage() {
     setSelectedWorkspaceId(ws.workspace_id)
   }
 
-  // E4 (#393) — Replay: Load, then re-submit the recorded config VERBATIM
-  // through the existing WS run path with preservation='keep' (a replay is
-  // itself a workspace run). setScenario runs first (picker-desync gotcha:
-  // start() does not sync the picker state).
+  // E2 (#408) — Replay request: every replay first opens the confirmation
+  // dialog (recorded-vs-sent preview; destructive variant on reset=true).
+  // NO code path starts a replay without it.
   const handleReplayWorkspace = (ws: WorkspaceListItem) => {
+    setPendingReplay(ws)
+  }
+
+  // E4 (#393) / E2 (#408) — the CONFIRMED replay: Load, then re-submit the
+  // recorded config VERBATIM through the existing WS run path with
+  // preservation='keep' (a replay is itself a workspace run). setScenario
+  // runs first via handleLoadWorkspace (picker-desync gotcha: start() does
+  // not sync the picker state).
+  const executeReplay = (ws: WorkspaceListItem) => {
     handleLoadWorkspace(ws)
     // The re-run's live cards take over; the original row stays untouched.
     setSelectedWorkspaceId(null)
-    start({
-      seed: ws.seed,
-      scenario: ws.scenario,
-      reset: ws.reset,
-      skip_seed: ws.skip_seed,
-      preservation: 'keep',
-      // E1 (#407) — record replay lineage on the NEW row (soft reference).
-      replayed_from_workspace_id: ws.workspace_id,
-      ...(ws.name ? { workspace_name: ws.name } : {}),
-    })
+    start(buildReplayRequest(ws))
+    setPendingReplay(null)
   }
 
   // For the Inspect link to surface store_id/product_id on the train/backtest
@@ -243,10 +250,11 @@ export default function ShowcasePage() {
         scenario={scenario}
       />
 
-      {/* E4 (#393) — server-backed saved workspaces (Load + Replay + Delete). */}
+      {/* E4 (#393) / E2 (#408) — server-backed saved workspaces (lifecycle
+          panel; Replay routes through the confirm dialog below). */}
       <WorkspacePanel
         onLoad={handleLoadWorkspace}
-        onReplay={handleReplayWorkspace}
+        onRequestReplay={handleReplayWorkspace}
         onDeleted={(workspaceId) => {
           // Deleting the currently loaded workspace detaches its artifacts
           // panel — the metadata row backing it is gone (created objects stay).
@@ -446,10 +454,28 @@ export default function ShowcasePage() {
       )}
 
       {/* E4 (#393) — re-attached artifacts of a LOADED workspace. Any started
-          run detaches it (selectedWorkspaceId cleared) so live cards take over. */}
+          run detaches it (selectedWorkspaceId cleared) so live cards take over.
+          E2 (#408) — lineage strip + link-health markers ride along. */}
       {phase !== 'running' && loadedWorkspace && (
-        <WorkspaceArtifactsPanel workspace={loadedWorkspace} />
+        <div className="space-y-2">
+          <WorkspaceLineageStrip
+            workspaceId={loadedWorkspace.workspace_id}
+            onLoadAncestor={(ancestor) => handleLoadWorkspace(ancestor)}
+          />
+          <WorkspaceArtifactsPanel
+            workspace={loadedWorkspace}
+            health={workspaceHealth ?? null}
+          />
+        </div>
       )}
+
+      {/* E2 (#408) — replay confirmation with the recorded-vs-sent preview. */}
+      <ReplayConfirmDialog
+        workspace={pendingReplay}
+        requestPreview={pendingReplay ? buildReplayRequest(pendingReplay) : null}
+        onConfirm={() => pendingReplay && executeReplay(pendingReplay)}
+        onCancel={() => setPendingReplay(null)}
+      />
     </div>
   )
 }
