@@ -1,8 +1,8 @@
 name: "PRP reliability-E6 — release gate: showcase_rich dogfood + per-epic spot checks + umbrella close-out"
 description: |
   Issue #387 (epic E6 of umbrella #380, milestone reliability-hardening).
-  Release-gate epic: NO new production code. The deliverable is executed
-  verification — a green end-to-end showcase_rich dogfood run on a fresh stack,
+  Release-gate epic: NO new production code. The deliverable is an executed
+  verification: a green end-to-end showcase_rich dogfood run on a fresh stack,
   one live spot check per closed reliability epic (E1 #334, E2 #335, E3 #332,
   E4 #268, E5 #237), all five validation gates green on dev, evidence recorded
   on #387, and umbrella #380 closed. If any check fails, the gate STOPS and
@@ -442,7 +442,7 @@ Task 8 — Evidence + close-out (gh write discipline: echo each command first):
 
 Task 9 — Teardown:
   STOP the background uvicorn + vite processes started in Task 1.
-  LEAVE the seeded DB in place (operator-visible artefacts are fine post-gate).
+  LEAVE the seeded DB in place (operator-visible artifacts are fine post-gate).
 ```
 
 ### Integration Points
