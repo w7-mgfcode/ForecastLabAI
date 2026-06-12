@@ -37,6 +37,10 @@ class ModelFamily(str, Enum):
 # Canonical map: model_type string → ModelFamily. Unknown types log a warning
 # and classify as BASELINE. Keep in sync with the ``ModelType`` Literal in
 # ``app/features/forecasting/models.py``.
+# NOTE: re-exported (private) via ``forecasting/feature_metadata.py`` solely for
+# the drift-lock test ``forecasting/tests/test_feature_metadata.py::
+# test_model_family_map_covers_every_known_model_type`` — keep that re-export when
+# moving this symbol.
 _MODEL_FAMILY_MAP: dict[str, ModelFamily] = {
     "naive": ModelFamily.BASELINE,
     "seasonal_naive": ModelFamily.BASELINE,

@@ -21,7 +21,7 @@ import `app/features/Y`) and the proximate cause of the documented lazy-import w
 2. Back-compat re-exports from the two old homes (`forecasting/schemas.py`,
    `forecasting/feature_metadata.py`) using the redundant-alias idiom (`import X as X`) so every
    existing importer — including both untouched test suites — keeps resolving under
-   `mypy --strict` (no-implicit-reexport).
+   `mypy --strict` (no_implicit_reexport).
 3. The 6 mapped lazy-import sites resolved per the verdict table below: 5 retired (promoted to
    module scope), 1 kept-but-re-documented (the genuinely mutual jobs↔forecasting pair).
 4. A new test suite `app/shared/tests/test_model_taxonomy.py` that locks the mapping, the enum
