@@ -7,9 +7,11 @@ import pytest
 from pydantic import ValidationError
 
 from app.features.demo.schemas import (
+    ApprovalEventItem,
     DemoBacktestConfig,
     DemoRunRequest,
     DemoRunResult,
+    HitlDecisionRequest,
     StepEvent,
     UserScope,
     WorkspaceDetailResponse,
@@ -622,3 +624,60 @@ def test_workspace_list_response_shape():
     assert dumped["workspaces"][0]["workspace_id"] == "a" * 32
     # ISO serialization on the wire.
     assert isinstance(dumped["workspaces"][0]["created_at"], str)
+
+
+# =============================================================================
+# E5 (#411) — HitlDecisionRequest + ApprovalEventItem
+# =============================================================================
+
+
+def test_hitl_decision_request_json_path():
+    """The JSON-dict path (FastAPI's validate_python) accepts a valid body."""
+    body = HitlDecisionRequest.model_validate(
+        {"action_id": "act-1", "decision": "rejected", "reason": "too risky"}
+    )
+    assert body.action_id == "act-1"
+    assert body.decision == "rejected"
+    assert body.reason == "too risky"
+
+
+def test_hitl_decision_request_reason_optional():
+    body = HitlDecisionRequest.model_validate({"action_id": "act-1", "decision": "approved"})
+    assert body.reason is None
+
+
+def test_hitl_decision_request_rejects_unknown_decision():
+    with pytest.raises(ValidationError):
+        HitlDecisionRequest.model_validate({"action_id": "a", "decision": "maybe"})
+
+
+def test_hitl_decision_request_forbids_extra_key():
+    with pytest.raises(ValidationError):
+        HitlDecisionRequest.model_validate({"action_id": "a", "decision": "approved", "bogus": 1})
+
+
+def test_hitl_decision_request_rejects_empty_action_and_long_reason():
+    with pytest.raises(ValidationError):
+        HitlDecisionRequest.model_validate({"action_id": "", "decision": "approved"})
+    with pytest.raises(ValidationError):
+        HitlDecisionRequest.model_validate(
+            {"action_id": "a", "decision": "approved", "reason": "x" * 501}
+        )
+
+
+def test_approval_event_item_tolerates_v1_entry():
+    """A pre-E5 base-key entry (no additive keys) still validates with defaults."""
+    item = ApprovalEventItem.model_validate(
+        {
+            "workspace_id": "a" * 32,
+            "workspace_name": "demo-1",
+            "action_id": "act-1",
+            "tool_name": "save_scenario",
+            "decision": "approved",
+            "decided_at": "2026-06-13T00:00:00+00:00",
+            "session_id": "sess-1",
+        }
+    )
+    assert item.auto_approved is None
+    assert item.execution_status is None
+    assert item.decision == "approved"

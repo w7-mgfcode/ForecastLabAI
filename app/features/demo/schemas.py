@@ -506,3 +506,64 @@ class WorkspaceHealthResponse(BaseModel):
     dead: int = Field(..., ge=0, description="Count of references that probed dead (404).")
     unknown: int = Field(..., ge=0, description="Count of references whose probe was inconclusive.")
     checked_at: datetime = Field(default_factory=_utc_now, description="When the probes ran (UTC).")
+
+
+class HitlDecisionRequest(BaseModel):
+    """Operator decision relay for the showcase HITL step (E5, issue #411).
+
+    POSTed by the Showcase step card's Approve / Reject buttons to
+    ``POST /demo/hitl-decision``; the in-flight pipeline waits on the in-memory
+    relay and forwards the real decision to the agents HITL gate. HTTP-only
+    body -- every field is JSON-native (``str`` / ``Literal``), so the
+    model-level ``strict=True`` needs no ``Field(strict=False)`` override (the
+    AST policy walker fires only on date/datetime/time/UUID/Decimal).
+    ``extra="forbid"`` so a typo'd field 422s instead of silently no-opping.
+    """
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    action_id: str = Field(..., min_length=1, description="Pending action to decide.")
+    decision: Literal["approved", "rejected"] = Field(..., description="Operator decision.")
+    reason: str | None = Field(
+        default=None,
+        max_length=500,
+        description="Optional reason (mirrors agents ApprovalRequest.reason).",
+    )
+
+
+class ApprovalEventItem(BaseModel):
+    """One flattened approval event for ``GET /demo/approval-events`` (E5, #411).
+
+    Built from JSONB story-slot dicts (NOT ORM rows) -- tolerant typing with
+    defaults so a v1 entry (pre-E5 base keys only) still validates. Response
+    model: plain ``BaseModel``, NOT strict (strict mode is request-body policy).
+    """
+
+    workspace_id: str = Field(..., description="The workspace whose run recorded this event.")
+    workspace_name: str | None = Field(default=None, description="The workspace's optional label.")
+    action_id: str | None = Field(default=None, description="The decided action's id.")
+    tool_name: str | None = Field(default=None, description="The gated tool (e.g. save_scenario).")
+    decision: str | None = Field(default=None, description="approved / rejected / timed_out.")
+    decided_at: str | None = Field(default=None, description="ISO8601 UTC decision timestamp.")
+    session_id: str | None = Field(
+        default=None, description="Agent session the action belonged to."
+    )
+    auto_approved: bool | None = Field(
+        default=None, description="True when the decision window lapsed."
+    )
+    reason: str | None = Field(default=None, description="Operator-supplied reason (reject).")
+    execution_status: str | None = Field(
+        default=None, description="Agents-API status: executed / rejected / external_4xx."
+    )
+    transcript_summary: str | None = Field(
+        default=None, description="Agent chat message (<=200 chars)."
+    )
+
+
+class ApprovalEventsResponse(BaseModel):
+    """Recent HITL approval events flattened across workspaces (E5, #411)."""
+
+    events: list[ApprovalEventItem] = Field(
+        ..., description="Flattened approval events, newest workspace first; empty when none."
+    )
+    total: int = Field(..., ge=0, description="Number of flattened entries returned (capped).")

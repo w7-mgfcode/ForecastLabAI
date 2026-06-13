@@ -219,11 +219,29 @@ async def finalize_workspace(
             row.date_start = ctx.date_start
             row.date_end = ctx.date_end
             row.created_objects = _collect_created_objects(ctx)
-            row.result_summary = {
+            # E5 (#411) -- story slots. Empty list -> None (E1: NULL = "slot
+            # never written"). Whole-value assignment so SQLAlchemy change
+            # detection fires (never mutate a loaded row's JSONB in place).
+            row.approval_events = ctx.approval_events or None
+            row.rag_events = ctx.rag_events or None
+            summary: dict[str, Any] = {
                 "winner_model_type": ctx.winner_model_type,
                 "winner_wape": ctx.winner_wape,
                 "wall_clock_s": wall_clock_s,
             }
+            # E5 (#411) D7 -- on a replay keep-run, compare the SOURCE row's
+            # story slots against this run's capture and record the verdict.
+            # One extra get-by-id select in this same session (inside the
+            # warn-and-continue try). A dangling source -> "unknown".
+            if row.replayed_from_workspace_id:
+                src_result = await db.execute(
+                    select(ShowcaseWorkspace).where(
+                        ShowcaseWorkspace.workspace_id == row.replayed_from_workspace_id
+                    )
+                )
+                src = src_result.scalar_one_or_none()
+                summary["story_reproduction"] = _story_reproduction(src, ctx)
+            row.result_summary = summary
             await db.commit()
     except Exception as exc:  # workspace must never break the demo
         logger.warning(
@@ -234,6 +252,68 @@ async def finalize_workspace(
         )
         return
     logger.info("demo.workspace_finalized", workspace_id=workspace_id, failed=failed)
+
+
+def _story_reproduction(src: ShowcaseWorkspace | None, ctx: DemoContext) -> dict[str, Any]:
+    """Compare the source row's story slots against this run's capture (E5 D7).
+
+    ``agent``: the source row had >=1 approval event -> compare with this run
+    (``reproduced`` / ``not_reproduced``); the source had none -> ``not_applicable``;
+    the source row is missing (soft reference dangles) -> ``unknown``.
+    ``knowledge``: same logic over ``rag_events`` entries whose ``event`` is
+    ``index`` / ``retrieve`` with ``status != "skip"`` (a real knowledge hit,
+    not a graceful skip).
+    """
+    if src is None:
+        return {"agent": "unknown", "knowledge": "unknown", "source_workspace_id": None}
+
+    def _verdict(source_had: bool, new_has: bool) -> str:
+        if not source_had:
+            return "not_applicable"
+        return "reproduced" if new_has else "not_reproduced"
+
+    def _has_knowledge(events: list[dict[str, Any]] | None) -> bool:
+        return any(
+            e.get("event") in ("index", "retrieve") and e.get("status") != "skip"
+            for e in (events or [])
+        )
+
+    return {
+        "agent": _verdict(bool(src.approval_events), bool(ctx.approval_events)),
+        "knowledge": _verdict(_has_knowledge(src.rag_events), _has_knowledge(ctx.rag_events)),
+        "source_workspace_id": src.workspace_id,
+    }
+
+
+async def list_approval_events(db: AsyncSession, *, limit: int = 50) -> list[dict[str, Any]]:
+    """Flatten ``approval_events`` across the newest rows that carry the slot.
+
+    Scans the newest workspace rows with a non-NULL ``approval_events`` slot
+    (an audit-glance surface, not a browse API) and flattens their entries
+    newest-row-first, each tagged with its ``workspace_id`` / ``workspace_name``,
+    capped at ``limit``. Python-side flatten over a low-cardinality table -- no
+    ``jsonb_array_elements`` SQL (D6).
+
+    Args:
+        db: An open async session (caller-owned).
+        limit: Maximum flattened entries to return (route caps 1-200).
+
+    Returns:
+        The flattened approval events, newest workspace first.
+    """
+    result = await db.execute(
+        select(ShowcaseWorkspace)
+        .where(ShowcaseWorkspace.approval_events.isnot(None))
+        .order_by(ShowcaseWorkspace.created_at.desc(), ShowcaseWorkspace.id.desc())
+        .limit(50)
+    )
+    events: list[dict[str, Any]] = []
+    for row in result.scalars():
+        for entry in row.approval_events or []:
+            events.append({"workspace_id": row.workspace_id, "workspace_name": row.name, **entry})
+            if len(events) >= limit:
+                return events
+    return events
 
 
 async def get_workspace(db: AsyncSession, workspace_id: str) -> ShowcaseWorkspace | None:

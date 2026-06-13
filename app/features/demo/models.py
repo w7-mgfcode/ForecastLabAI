@@ -130,8 +130,12 @@ class ShowcaseWorkspace(TimestampMixin, Base):
     )
     # Version of the workspace config + story-slot schema (umbrella #406
     # junk-drawer mitigation). Bump the ORM default when a slot shape changes.
+    # E5 (#411) bumped 1 -> 2: it widened the approval_events.decision enum
+    # (+timed_out), added "probe" to rag_events.event, and added the additive
+    # entry keys documented below. server_default stays text("1") -- no
+    # migration; old rows legitimately read 1.
     config_schema_version: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=1, server_default=text("1")
+        Integer, nullable=False, default=2, server_default=text("1")
     )
 
     # ── E1 (#407) — replay provenance ─────────────────────────────────────
@@ -152,13 +156,22 @@ class ShowcaseWorkspace(TimestampMixin, Base):
     #   user_scope       (E3 #409 writes) — dict: operator-selected focus,
     #                    {"store_id": int, "product_id": int} (additive keys
     #                    allowed later).
-    #   approval_events  (E5 #411 writes) — list[dict], append-only:
+    #   approval_events  (E5 #411 writes — schema v2) — list[dict], append-only:
     #                    {"action_id": str, "tool_name": str,
-    #                     "decision": "approved"|"rejected",
-    #                     "decided_at": iso8601-str, "session_id": str}.
-    #   rag_events       (E5 #411 writes) — list[dict], append-only:
-    #                    {"event": "index"|"retrieve"|"skip", "detail": str,
-    #                     "count": int, "occurred_at": iso8601-str}.
+    #                     "decision": "approved"|"rejected"|"timed_out",
+    #                     "decided_at": iso8601-str, "session_id": str,
+    #                     # v2 additive (config_schema_version >= 2):
+    #                     "auto_approved": bool, "reason": str|None,
+    #                     "execution_status": str|None,
+    #                     "tool_call_summary": {"description": str,
+    #                         "arguments_keys": list[str]},
+    #                     "transcript_summary": str, "tokens_used": int,
+    #                     "tool_calls_count": int}.
+    #   rag_events       (E5 #411 writes — schema v2) — list[dict], append-only:
+    #                    {"event": "probe"|"index"|"retrieve"|"skip",
+    #                     "status": "pass"|"warn"|"skip", "detail": str,
+    #                     "count": int, "occurred_at": iso8601-str,
+    #                     "provider": str|None, "reachable": bool|None}.
     #   job_ids          (later parallel epic) — list[str]: job / batch
     #                    sub-job ids the run submitted (soft references).
     #   phase_summaries  (later parallel epic) — list[dict], one per phase:

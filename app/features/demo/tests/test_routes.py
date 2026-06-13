@@ -822,3 +822,127 @@ async def test_workspace_health_integration_alive_and_dead(client, db_session: A
         assert body["partial_run"] is True
     finally:
         await client.delete(f"/agents/sessions/{agent_session_id}")
+
+
+# =============================================================================
+# E5 (#411) — POST /demo/hitl-decision + GET /demo/approval-events
+# =============================================================================
+
+
+@pytest.fixture(autouse=True)
+def _clear_hitl_slot():
+    """Reset the module-level HITL relay slot around every test in this file."""
+    from app.features.demo import hitl
+
+    hitl.clear()
+    yield
+    hitl.clear()
+
+
+async def test_hitl_decision_204_on_pending(client):
+    """A decision for the registered pending action returns 204."""
+    from app.features.demo import hitl
+
+    hitl.register("act-204")
+    resp = await client.post(
+        "/demo/hitl-decision",
+        json={"action_id": "act-204", "decision": "rejected", "reason": "too risky"},
+    )
+    assert resp.status_code == 204
+    # The relay recorded the operator's decision for the waiting step (use a
+    # positive timeout: wait_for(timeout=0) raises before stepping the
+    # freshly-scheduled task, even when the event is already set).
+    assert await hitl.wait_for_decision("act-204", timeout=1.0) == ("rejected", "too risky")
+
+
+async def test_hitl_decision_404_when_nothing_pending(client):
+    """No registered action -> 404 problem+json."""
+    resp = await client.post(
+        "/demo/hitl-decision",
+        json={"action_id": "ghost", "decision": "approved"},
+    )
+    assert resp.status_code == 404
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    assert "No pending HITL action" in resp.json()["detail"]
+
+
+async def test_hitl_decision_409_when_already_decided(client):
+    """A second decision for the same action -> 409 problem+json."""
+    from app.features.demo import hitl
+
+    hitl.register("act-409")
+    first = await client.post(
+        "/demo/hitl-decision", json={"action_id": "act-409", "decision": "approved"}
+    )
+    assert first.status_code == 204
+    second = await client.post(
+        "/demo/hitl-decision", json={"action_id": "act-409", "decision": "rejected"}
+    )
+    assert second.status_code == 409
+    assert second.headers["content-type"].startswith("application/problem+json")
+    assert "already decided" in second.json()["detail"]
+
+
+async def test_hitl_decision_422_bad_body(client):
+    """A bad decision literal / extra key -> 422 problem+json."""
+    bad_literal = await client.post(
+        "/demo/hitl-decision", json={"action_id": "a", "decision": "maybe"}
+    )
+    assert bad_literal.status_code == 422
+    assert bad_literal.headers["content-type"].startswith("application/problem+json")
+    extra_key = await client.post(
+        "/demo/hitl-decision",
+        json={"action_id": "a", "decision": "approved", "bogus": 1},
+    )
+    assert extra_key.status_code == 422
+
+
+async def test_approval_events_empty(client, monkeypatch):
+    """200 + empty list when no workspace carries approval events."""
+
+    async def fake_list(_db, *, limit: int = 50) -> list[dict[str, object]]:
+        return []
+
+    monkeypatch.setattr(workspace, "list_approval_events", fake_list)
+    resp = await client.get("/demo/approval-events")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"events": [], "total": 0}
+
+
+async def test_approval_events_populated(client, monkeypatch):
+    """Flattened entries carry workspace_id / workspace_name + decision."""
+
+    async def fake_list(_db, *, limit: int = 50) -> list[dict[str, object]]:
+        return [
+            {
+                "workspace_id": "a" * 32,
+                "workspace_name": "demo-1",
+                "action_id": "act-1",
+                "tool_name": "save_scenario",
+                "decision": "rejected",
+                "decided_at": "2026-06-13T00:00:00+00:00",
+                "session_id": "sess-1",
+                "auto_approved": False,
+                "reason": "too risky",
+                "execution_status": "rejected",
+                "transcript_summary": "I'll save that scenario.",
+            }
+        ]
+
+    monkeypatch.setattr(workspace, "list_approval_events", fake_list)
+    resp = await client.get("/demo/approval-events", params={"limit": 5})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["events"][0]["workspace_id"] == "a" * 32
+    assert body["events"][0]["workspace_name"] == "demo-1"
+    assert body["events"][0]["decision"] == "rejected"
+
+
+async def test_approval_events_rejects_bad_limit(client):
+    """limit is bounded 1-200 -> 422 problem+json out of range."""
+    resp = await client.get("/demo/approval-events", params={"limit": 0})
+    assert resp.status_code == 422
+    resp = await client.get("/demo/approval-events", params={"limit": 999})
+    assert resp.status_code == 422

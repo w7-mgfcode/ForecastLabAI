@@ -118,7 +118,12 @@ async def test_showcase_workspace_status_check_violation(db_session: AsyncSessio
 
 
 async def test_showcase_workspace_e1_defaults_applied(db_session: AsyncSession) -> None:
-    """A minimal insert gets the E1 defaults (ORM + server defaults agree)."""
+    """A minimal insert gets the E1 defaults.
+
+    E5 (#411) D4 -- an ORM insert now applies the bumped ORM default
+    (config_schema_version=2); the server_default stays 1 so pre-E5 rows
+    inserted outside the ORM legitimately read 1.
+    """
     row = _make_row()
     db_session.add(row)
     await db_session.commit()
@@ -129,7 +134,7 @@ async def test_showcase_workspace_e1_defaults_applied(db_session: AsyncSession) 
     assert loaded.pinned is False
     assert loaded.notes is None
     assert loaded.tags == []
-    assert loaded.config_schema_version == 1
+    assert loaded.config_schema_version == 2
     assert loaded.replayed_from_workspace_id is None
     # All six story slots stay NULL until their writer epic lands.
     assert loaded.seed_overrides is None
