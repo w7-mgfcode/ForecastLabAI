@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import type { DemoStep, DemoStepUiStatus } from '@/hooks/use-demo-pipeline'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import { api, ApiError } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { HorizonBucketsMini } from './HorizonBucketsMini'
 
@@ -361,58 +362,77 @@ function OpsSnapshotMiniGrid({ data }: { data: Record<string, unknown> }) {
 }
 
 /**
- * PRP-41 — one-click Approve button rendered on the HITL step card when
- * the backend has emitted `awaiting_approval=true` + `status='running'`.
+ * E5 (#411) — Approve / Reject buttons rendered on the HITL step card while
+ * the backend awaits a decision (`awaiting_approval=true` + `status='running'`).
  *
- * Clicking POSTs `{action_id, approved: true}` to the captured approval_url.
- * Optimistic disable on click; the backend's auto-approve absorbs a 400
- * "No pending action" if the auto-approve fires first (Task 1 contract probe).
+ * Either click relays the operator's intent to the DEMO slice via
+ * `POST /demo/hitl-decision` (through `lib/api.ts` `api()` — API_BASE_URL
+ * prefixed, never bare `fetch`, so it works off-origin). The pipeline is the
+ * sole caller of the agents approve endpoint. Both buttons disable after
+ * either click. A live "auto-approve in Ns" countdown reads the backend's
+ * `decision_window_s` (fallback 10) — never hardcoded, never derived from the
+ * 90 s hard timeout. 404/409 are absorbed silently (the auto-approve raced);
+ * only 5xx surfaces an inline error.
  */
-function ApproveButton({
-  approvalUrl,
+function HitlDecisionButtons({
   actionId,
+  decisionWindowS,
 }: {
-  approvalUrl: string
   actionId: string
+  decisionWindowS: number
 }) {
-  const [clicked, setClicked] = useState(false)
+  const [pending, setPending] = useState<'approved' | 'rejected' | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [waitingMs, setWaitingMs] = useState(0)
+  const [remaining, setRemaining] = useState(Math.max(0, Math.ceil(decisionWindowS)))
 
   useEffect(() => {
-    if (clicked) return
-    const startedAt = Date.now()
-    const id = setInterval(() => setWaitingMs(Date.now() - startedAt), 1000)
+    if (pending) return
+    const id = setInterval(() => {
+      setRemaining((prev) => (prev > 0 ? prev - 1 : 0))
+    }, 1000)
     return () => clearInterval(id)
-  }, [clicked])
+  }, [pending])
 
-  const onClick = async () => {
-    if (clicked || !approvalUrl || !actionId) return
-    setClicked(true)
+  const decide = async (decision: 'approved' | 'rejected') => {
+    if (pending || !actionId) return
+    setPending(decision)
     try {
-      const res = await fetch(approvalUrl, {
+      await api<void>('/demo/hitl-decision', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ action_id: actionId, approved: true }),
+        body: { action_id: actionId, decision },
       })
-      // Absorb 4xx absorptions silently — the auto-approve already landed
-      // and the next StepEvent will surface the terminal status.
-      if (!res.ok && res.status >= 500) {
-        setError(`approve failed (${res.status})`)
-      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'approve failed')
+      // Absorb 404 (no pending action) / 409 (already decided) — the
+      // auto-approve or a prior click raced. Surface only 5xx.
+      if (err instanceof ApiError && err.status >= 500) {
+        setError(`decision failed (${err.status})`)
+      } else if (!(err instanceof ApiError)) {
+        setError(err instanceof Error ? err.message : 'decision failed')
+      }
     }
   }
 
   return (
-    <div className="mt-3 flex items-center gap-3">
-      <Button onClick={onClick} disabled={clicked} size="sm" variant="default">
-        {clicked ? 'Approving…' : 'Approve'}
+    <div className="mt-3 flex flex-wrap items-center gap-3">
+      <Button
+        onClick={() => void decide('approved')}
+        disabled={pending !== null}
+        size="sm"
+        variant="default"
+      >
+        {pending === 'approved' ? 'Approving…' : 'Approve'}
       </Button>
-      {!clicked && waitingMs > 30_000 && (
+      <Button
+        onClick={() => void decide('rejected')}
+        disabled={pending !== null}
+        size="sm"
+        variant="destructive"
+      >
+        {pending === 'rejected' ? 'Rejecting…' : 'Reject'}
+      </Button>
+      {!pending && (
         <span className="text-xs text-muted-foreground">
-          Still waiting — auto-approve in {Math.max(0, Math.ceil((90_000 - waitingMs) / 1000))}s
+          auto-approve in {remaining}s
         </span>
       )}
       {error && <span className="text-xs text-destructive">{error}</span>}
@@ -493,14 +513,18 @@ export function DemoStepCard({ step, index, inspectHref }: DemoStepCardProps) {
           {/* PRP-41 — agents (HITL) + ops snapshot mini-summaries. */}
           {step.name === 'agent_hitl_flow' && <HitlFlowSummary data={step.data} />}
           {step.name === 'ops_snapshot' && <OpsSnapshotMiniGrid data={step.data} />}
-          {/* PRP-41 — one-click Approve only while awaiting (status==running). */}
+          {/* E5 (#411) — Approve / Reject only while awaiting (status==running);
+              countdown reads data.decision_window_s (fallback 10). */}
           {step.data.awaiting_approval === true &&
             step.status === 'running' &&
-            typeof step.data.approval_url === 'string' &&
             typeof step.data.action_id === 'string' && (
-              <ApproveButton
-                approvalUrl={step.data.approval_url}
+              <HitlDecisionButtons
                 actionId={step.data.action_id}
+                decisionWindowS={
+                  typeof step.data.decision_window_s === 'number'
+                    ? step.data.decision_window_s
+                    : 10
+                }
               />
             )}
           {showInspect && (

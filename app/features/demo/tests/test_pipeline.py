@@ -8,6 +8,7 @@ database, no network, and no real models.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
@@ -15,8 +16,13 @@ from typing import Any, cast
 import pytest
 from fastapi import FastAPI
 
-from app.features.demo import pipeline
-from app.features.demo.schemas import DemoBacktestConfig, DemoRunRequest, UserScope
+from app.features.demo import hitl, pipeline
+from app.features.demo.schemas import (
+    DemoBacktestConfig,
+    DemoRunRequest,
+    StepEvent,
+    UserScope,
+)
 from app.shared.seeder.config import ScenarioPreset
 from app.shared.seeder.overrides import SeederOverrides
 
@@ -850,8 +856,119 @@ async def test_run_pipeline_transport_error_becomes_fail(monkeypatch):
 
 
 # =============================================================================
-# PRP-38 — phase grouping + new scenarios
+# E5 (#411) — D2 concurrent intermediate-event drain
 # =============================================================================
+
+
+def _single_step_table(step_fn: Any) -> Any:
+    """Return a one-row phase table wrapping ``step_fn`` (drain-test helper)."""
+
+    def _table(_scenario: Any) -> list[Any]:
+        return [("data", "blocking", step_fn)]
+
+    return _table
+
+
+async def test_run_pipeline_drains_intermediate_event_mid_step(monkeypatch):
+    """D2 — an intermediate event is YIELDED while the step is still pending.
+
+    The stub step buffers an intermediate event, signals it has started, then
+    blocks on an asyncio.Event. The test consumes events until it sees the
+    intermediate frame, asserts the step has NOT yet returned its terminal,
+    then releases the step. Proves the drain overlaps the in-flight step in
+    wall time (not just stream order).
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _blocking_step(_ctx: Any, client: Any) -> Any:
+        client.yield_event(
+            StepEvent(
+                event_type="step_complete",
+                step_name="blocking",
+                step_index=0,
+                total_steps=0,
+                status="running",
+                detail="mid-step",
+                data={"awaiting": True},
+            )
+        )
+        started.set()
+        await release.wait()
+        return ("pass", "done", {})
+
+    monkeypatch.setattr(pipeline, "_phase_table", _single_step_table(_blocking_step))
+
+    agen = pipeline.run_pipeline(app=_FAKE_APP, req=DemoRunRequest())
+    seen: list[StepEvent] = []
+    intermediate: StepEvent | None = None
+    async for ev in agen:
+        seen.append(ev)
+        if ev.event_type == "step_complete" and ev.data.get("awaiting"):
+            intermediate = ev
+            # The step is still blocked: its terminal step_complete (status
+            # 'pass') cannot have been emitted yet.
+            assert started.is_set()
+            assert not any(e.event_type == "step_complete" and e.status == "pass" for e in seen)
+            release.set()
+            break
+
+    assert intermediate is not None
+    # The orchestrator stamped the row's index/phase fields on the drained event.
+    assert intermediate.step_index == 1
+    assert intermediate.phase_name == "data"
+    rest = [e async for e in agen]
+    terminal = [e for e in rest if e.event_type == "step_complete" and e.status == "pass"]
+    assert terminal and terminal[0].step_name == "blocking"
+    assert rest[-1].event_type == "pipeline_complete"
+
+
+async def test_run_pipeline_cancels_in_flight_step_on_generator_close(monkeypatch):
+    """D2 — closing the generator mid-step cancels the step task (Stop button).
+
+    Drives one intermediate event, then ``aclose()`` while the stub step is
+    still blocked. The finally clause must cancel the in-flight task so it ends
+    cancelled (no "Task was destroyed but it is pending" warning).
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+    cancelled = False
+
+    async def _blocking_step(_ctx: Any, client: Any) -> Any:
+        nonlocal cancelled
+        client.yield_event(
+            StepEvent(
+                event_type="step_complete",
+                step_name="blocking",
+                step_index=0,
+                total_steps=0,
+                status="running",
+                detail="mid-step",
+                data={"awaiting": True},
+            )
+        )
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        return ("pass", "done", {})  # pragma: no cover -- never reached
+
+    monkeypatch.setattr(pipeline, "_phase_table", _single_step_table(_blocking_step))
+
+    # Typed Any so .aclose() is reachable (run_pipeline is annotated as the
+    # AsyncIterator supertype, which has no aclose).
+    agen: Any = pipeline.run_pipeline(app=_FAKE_APP, req=DemoRunRequest())
+    async for ev in agen:
+        if ev.event_type == "step_complete" and ev.data.get("awaiting"):
+            break
+    # Close the generator (mirrors the WebSocketDisconnect -> aclose path).
+    await agen.aclose()
+    # Let the cancellation propagate into the orphaned-otherwise task.
+    await asyncio.sleep(0)
+    assert started.is_set()
+    assert cancelled is True
 
 
 def test_phase_table_demo_minimal_matches_legacy_11_steps_under_agents_phase():
@@ -2006,6 +2123,116 @@ async def test_rag_retrieve_probe_skips_on_embedding_auth_502():
     assert ctx.embedding_unreachable is True
 
 
+# =============================================================================
+# E5 (#411) — RAG-event capture (one ctx.rag_events entry per return path)
+# =============================================================================
+
+
+async def test_rag_event_capture_probe_records_provider_state(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: _fake_settings(
+            str(tmp_path / "reg"), rag_embedding_provider="openai", openai_api_key="sk-test"
+        ),
+    )
+    ctx = _make_showcase_ctx()
+    await pipeline.step_embedding_provider_probe(ctx, _as_client(_RecordingClient(None)))
+    assert len(ctx.rag_events) == 1
+    ev = ctx.rag_events[0]
+    assert ev["event"] == "probe"
+    assert ev["status"] == "pass"
+    assert ev["provider"] == "openai"
+    assert ev["reachable"] is True
+
+
+async def test_rag_event_capture_index_records_chunk_count(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: _fake_settings(str(tmp_path / "reg"), rag_embedding_provider="openai"),
+    )
+    ctx = _make_showcase_ctx()
+    results = [
+        {"source_path": p, "status": "indexed", "chunks_created": 4, "error": None}
+        for p in sorted(pipeline._USER_GUIDE_CURATED_FILES)
+    ]
+    client = _RecordingClient(
+        None,
+        responses={
+            ("POST", "/rag/index/project-docs"): {
+                "results": results,
+                "total_files": 5,
+                "indexed": 5,
+                "updated": 0,
+                "unchanged": 0,
+                "failed": 0,
+                "total_chunks": 20,
+            },
+        },
+    )
+    await pipeline.step_rag_index_subset(ctx, _as_client(client))
+    assert len(ctx.rag_events) == 1
+    ev = ctx.rag_events[0]
+    assert ev["event"] == "index"
+    assert ev["status"] == "pass"
+    assert ev["count"] == 20
+    assert ev["provider"] == "openai"
+
+
+async def test_rag_event_capture_index_skip_when_unreachable(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: _fake_settings(str(tmp_path / "reg"), rag_embedding_provider="ollama"),
+    )
+    ctx = _make_showcase_ctx()
+    ctx.embedding_unreachable = True
+    status, _detail, _ = await pipeline.step_rag_index_subset(
+        ctx, _as_client(_RecordingClient(None))
+    )
+    assert status == "skip"
+    assert len(ctx.rag_events) == 1
+    assert ctx.rag_events[0]["event"] == "skip"
+    assert ctx.rag_events[0]["status"] == "skip"
+
+
+async def test_rag_event_capture_retrieve_warn_on_zero_hits(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: _fake_settings(str(tmp_path / "reg"), rag_embedding_provider="openai"),
+    )
+    ctx = _make_showcase_ctx()
+    client = _RecordingClient(
+        None,
+        responses={("POST", "/rag/retrieve"): {"results": [], "total_chunks_searched": 12}},
+    )
+    status, _detail, _ = await pipeline.step_rag_retrieve_probe(ctx, _as_client(client))
+    assert status == "warn"
+    assert len(ctx.rag_events) == 1
+    ev = ctx.rag_events[0]
+    assert ev["event"] == "retrieve"
+    assert ev["status"] == "warn"
+    assert ev["count"] == 0
+
+
+async def test_rag_event_capture_demo_minimal_leaves_events_empty(monkeypatch, tmp_path):
+    """A legacy demo_minimal run never reaches the knowledge phase -> no events."""
+    artifact = tmp_path / "naive-model.joblib"
+    artifact.write_bytes(b"fake joblib artifact bytes")
+    monkeypatch.setattr(
+        pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "registry"))
+    )
+    wapes = {"naive": 0.30, "seasonal_naive": 0.15, "moving_average": 0.25}
+    monkeypatch.setattr(pipeline, "_Client", _build_fake_client(str(artifact), wapes))
+    events = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=DemoRunRequest())]
+    # demo_minimal has no knowledge steps; the accumulator stays empty.
+    assert events[-1].event_type == "pipeline_complete"
+    knowledge_steps = {"embedding_provider_probe", "rag_index_subset", "rag_retrieve_probe"}
+    assert not any(e.step_name in knowledge_steps for e in events)
+
+
 async def test_run_pipeline_showcase_rich_runs_planning_and_knowledge(monkeypatch, tmp_path):
     """PRP-40 — end-to-end SHOWCASE_RICH reaches the 5 new steps + greens."""
     artifact = tmp_path / "artifacts" / "models" / "model_abc123def456.joblib"
@@ -2112,6 +2339,9 @@ def _make_hitl_client(
             event_sink: list[Any] | None = None,
         ) -> None:
             self.calls: list[tuple[str, str]] = []
+            # E5 (#411) -- capture the approve POST body so tests can assert the
+            # relayed decision (approved=true|false + optional reason).
+            self.approve_body_sent: dict[str, Any] | None = None
             self._event_sink = event_sink if event_sink is not None else intermediate
 
         async def __aenter__(self) -> _HitlClient:
@@ -2158,16 +2388,21 @@ def _make_hitl_client(
                     "tokens_used": 80,
                 }
             if path.endswith("/approve"):
+                self.approve_body_sent = json_body
                 if approve_status >= 400:
                     raise pipeline._StepError(
                         step,
                         approve_status,
                         {"title": "Bad Request", "detail": "No pending action"},
                     )
-                return approve_body or {
+                if approve_body is not None:
+                    return approve_body
+                # Mirror the agents API: approved=false -> status "rejected".
+                approved = bool(json_body.get("approved", True)) if json_body else True
+                return {
                     "action_id": chat_action_id,
-                    "approved": True,
-                    "status": "executed",
+                    "approved": approved,
+                    "status": "executed" if approved else "rejected",
                 }
             raise AssertionError(f"unexpected request: {method} {path}")
 
@@ -2209,8 +2444,8 @@ def test_llm_key_present_cloud_still_requires_key(monkeypatch):
     assert pipeline._llm_key_present() is False
 
 
-async def test_agent_hitl_flow_happy_path(monkeypatch, tmp_path):
-    """PRP-41 — full HITL round-trip: chat -> intermediate -> approve -> pass."""
+async def test_agent_hitl_flow_window_lapse_auto_approves(monkeypatch, tmp_path):
+    """PRP-41 / E5 — no operator decision -> window lapses -> auto-approve pass."""
     monkeypatch.setattr(
         pipeline,
         "get_settings",
@@ -2222,8 +2457,8 @@ async def test_agent_hitl_flow_happy_path(monkeypatch, tmp_path):
         "_llm_key_present",
         lambda: True,
     )
-    # Short-circuit the 3s display delay so the test stays fast.
-    monkeypatch.setattr(pipeline, "_APPROVAL_DISPLAY_DELAY_S", 0.0)
+    # Zero window -> wait_for_decision lapses immediately (no operator click).
+    monkeypatch.setattr(pipeline, "_APPROVAL_DECISION_WINDOW_S", 0.0)
 
     client, intermediate = _make_hitl_client()
     ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
@@ -2232,20 +2467,90 @@ async def test_agent_hitl_flow_happy_path(monkeypatch, tmp_path):
     assert status == "pass"
     assert "approved=executed" in detail
     assert data["approval_decision"] == "executed"
+    assert data["auto_approved"] is True
     assert data["action_id"] == "action-abc-123"
     assert data["session_id"] == "sess-test-0001"
     assert data["tokens_used"] == 240
+    # The window lapse relayed approved=true to the agents HITL gate.
+    assert client.approve_body_sent == {"action_id": "action-abc-123", "approved": True}
     # The HITL step buffered exactly one intermediate event for the FE.
     assert len(intermediate) == 1
     inter = intermediate[0]
     assert inter.status == "running"
     assert inter.data["awaiting_approval"] is True
     assert inter.data["action_id"] == "action-abc-123"
+    assert inter.data["decision_url"] == "/demo/hitl-decision"
+    assert inter.data["decision_window_s"] == 0.0
     assert inter.phase_name == pipeline.PHASE_AGENTS
+    # One approval_events entry captured (auto-approved).
+    assert len(ctx.approval_events) == 1
+    entry = ctx.approval_events[0]
+    assert entry["decision"] == "approved"
+    assert entry["auto_approved"] is True
+    assert entry["tool_name"] == "save_scenario"
+    assert entry["execution_status"] == "executed"
+    assert entry["transcript_summary"] == "I'll save that scenario."
+    assert "arguments_keys" in entry["tool_call_summary"]
     # Ctx threaded for downstream cleanup + KPI consumers.
     assert ctx.approval_action_id == "action-abc-123"
     assert ctx.agent_approval_decision == "executed"
     assert ctx.session_id == "sess-test-0001"
+
+
+async def test_agent_hitl_flow_operator_approve(monkeypatch, tmp_path):
+    """E5 — operator approves within the window -> approve POST, entry approved."""
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
+    monkeypatch.setattr(pipeline, "_llm_key_present", lambda: True)
+    monkeypatch.setattr(pipeline, "_APPROVAL_DECISION_WINDOW_S", 5.0)
+
+    async def _fake_wait(_action_id: str, timeout: float) -> tuple[str, str | None]:
+        return ("approved", None)
+
+    monkeypatch.setattr(hitl, "wait_for_decision", _fake_wait)
+
+    client, _intermediate = _make_hitl_client()
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    status, _detail, data = await pipeline.step_agent_hitl_flow(ctx, client)
+
+    assert status == "pass"
+    assert data["approval_decision"] == "executed"
+    assert data["auto_approved"] is False
+    assert client.approve_body_sent == {"action_id": "action-abc-123", "approved": True}
+    assert len(ctx.approval_events) == 1
+    assert ctx.approval_events[0]["decision"] == "approved"
+    assert ctx.approval_events[0]["auto_approved"] is False
+
+
+async def test_agent_hitl_flow_operator_reject(monkeypatch, tmp_path):
+    """E5 (D5) — operator rejects -> approve POST approved=false; pass + green."""
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
+    monkeypatch.setattr(pipeline, "_llm_key_present", lambda: True)
+    monkeypatch.setattr(pipeline, "_APPROVAL_DECISION_WINDOW_S", 5.0)
+
+    async def _fake_wait(_action_id: str, timeout: float) -> tuple[str, str | None]:
+        return ("rejected", "too risky for the demo")
+
+    monkeypatch.setattr(hitl, "wait_for_decision", _fake_wait)
+
+    client, _intermediate = _make_hitl_client()
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    status, detail, data = await pipeline.step_agent_hitl_flow(ctx, client)
+
+    # D5 -- a reject is a SUCCESSFUL HITL demonstration: the run stays GREEN.
+    assert status == "pass"
+    assert detail == "rejected by operator"
+    assert data["approval_decision"] == "rejected"
+    # The reject + reason were relayed to the agents HITL gate (approved=false).
+    assert client.approve_body_sent == {
+        "action_id": "action-abc-123",
+        "approved": False,
+        "reason": "too risky for the demo",
+    }
+    assert len(ctx.approval_events) == 1
+    entry = ctx.approval_events[0]
+    assert entry["decision"] == "rejected"
+    assert entry["reason"] == "too risky for the demo"
+    assert entry["auto_approved"] is False
 
 
 async def test_agent_hitl_flow_skips_without_key(monkeypatch, tmp_path):
@@ -2297,7 +2602,7 @@ async def test_agent_hitl_flow_skips_when_agent_did_not_trigger_tool(monkeypatch
     """PRP-41 — agent answered directly (no pending_action) -> skip with detail."""
     monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
     monkeypatch.setattr(pipeline, "_llm_key_present", lambda: True)
-    monkeypatch.setattr(pipeline, "_APPROVAL_DISPLAY_DELAY_S", 0.0)
+    monkeypatch.setattr(pipeline, "_APPROVAL_DECISION_WINDOW_S", 0.0)
 
     client, intermediate = _make_hitl_client(chat_pending=False)
     ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
@@ -2309,20 +2614,26 @@ async def test_agent_hitl_flow_skips_when_agent_did_not_trigger_tool(monkeypatch
     assert intermediate == []
 
 
-async def test_agent_hitl_flow_absorbs_double_approve_400(monkeypatch, tmp_path):
-    """PRP-41 — FE pre-empted Approve -> backend approve returns 400; absorb."""
+async def test_agent_hitl_flow_absorbs_external_approve_400(monkeypatch, tmp_path):
+    """E5 (D1) — an operator pre-empted /agents/.../approve directly -> 400.
+
+    The step absorbs the 4xx and records ``execution_status="external_4xx"`` --
+    honest about the residual ambiguity (the decision landed outside the relay).
+    """
     monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
     monkeypatch.setattr(pipeline, "_llm_key_present", lambda: True)
-    monkeypatch.setattr(pipeline, "_APPROVAL_DISPLAY_DELAY_S", 0.0)
+    monkeypatch.setattr(pipeline, "_APPROVAL_DECISION_WINDOW_S", 0.0)
 
     client, intermediate = _make_hitl_client(approve_status=400)
     ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
     status, detail, data = await pipeline.step_agent_hitl_flow(ctx, client)
 
-    # 4xx absorbed: step still passes with optimistic "executed" decision.
+    # 4xx absorbed: step still passes; the decision is the honest external edge.
     assert status == "pass"
-    assert data["approval_decision"] == "executed"
-    assert "approved=executed" in detail
+    assert data["approval_decision"] == "external_4xx"
+    assert "approved=external_4xx" in detail
+    assert ctx.approval_events[0]["execution_status"] == "external_4xx"
+    assert ctx.approval_events[0]["decision"] == "approved"
     # The intermediate event was still buffered before the absorb branch.
     assert len(intermediate) == 1
 
@@ -2331,7 +2642,7 @@ async def test_agent_hitl_flow_skips_on_hard_timeout(monkeypatch, tmp_path):
     """PRP-41 — elapsed > _APPROVAL_HARD_TIMEOUT_S -> skip with timed_out."""
     monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
     monkeypatch.setattr(pipeline, "_llm_key_present", lambda: True)
-    monkeypatch.setattr(pipeline, "_APPROVAL_DISPLAY_DELAY_S", 0.0)
+    monkeypatch.setattr(pipeline, "_APPROVAL_DECISION_WINDOW_S", 0.0)
     # Force the elapsed-time check to fire: set the hard cap below the
     # display delay so any positive elapsed exceeds it.
     monkeypatch.setattr(pipeline, "_APPROVAL_HARD_TIMEOUT_S", -1.0)
@@ -2345,6 +2656,10 @@ async def test_agent_hitl_flow_skips_on_hard_timeout(monkeypatch, tmp_path):
     assert data["timed_out"] is True
     assert data["approval_decision"] == "timed_out"
     assert ctx.agent_approval_decision == "timed_out"
+    # E5 -- a timed_out entry is still recorded for the workspace story.
+    assert len(ctx.approval_events) == 1
+    assert ctx.approval_events[0]["decision"] == "timed_out"
+    assert ctx.approval_events[0]["execution_status"] is None
     # Intermediate event was emitted; approve POST never fired.
     assert len(intermediate) == 1
     assert all(call[1] != f"/agents/sessions/{data['session_id']}/approve" for call in client.calls)

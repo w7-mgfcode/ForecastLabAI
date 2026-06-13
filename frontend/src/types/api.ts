@@ -883,11 +883,65 @@ export interface WorkspaceDetail extends WorkspaceListItem {
   // E1 (#407) — operator annotation + schema version.
   notes: string | null
   config_schema_version: number
+  // E5 (#411) -- story slots: agent/HITL approval + RAG knowledge events.
+  // null until E5 writes them; legacy rows stay null.
+  approval_events: ApprovalEventDetail[] | null
+  rag_events: RagEventDetail[] | null
 }
 
 // Page shape of GET /demo/workspaces.
 export interface WorkspaceListResponse {
   workspaces: WorkspaceListItem[]
+  total: number
+}
+
+// === Showcase story capture (E5, #411) ===
+
+// One approval_events entry on WorkspaceDetail (built from JSONB; tolerant).
+export interface ApprovalEventDetail {
+  action_id: string | null
+  tool_name: string | null
+  decision: 'approved' | 'rejected' | 'timed_out' | string | null
+  decided_at: string | null
+  session_id: string | null
+  auto_approved?: boolean | null
+  reason?: string | null
+  execution_status?: string | null
+  tool_call_summary?: { description?: string; arguments_keys?: string[] } | null
+  transcript_summary?: string | null
+  tokens_used?: number | null
+  tool_calls_count?: number | null
+}
+
+// One rag_events entry on WorkspaceDetail (built from JSONB; tolerant).
+export interface RagEventDetail {
+  event: 'probe' | 'index' | 'retrieve' | 'skip' | string
+  status: 'pass' | 'warn' | 'skip' | string
+  detail: string
+  count: number
+  occurred_at: string
+  provider?: string | null
+  reachable?: boolean | null
+}
+
+// One flattened row from GET /demo/approval-events (workspace-tagged).
+export interface ApprovalEventItem {
+  workspace_id: string
+  workspace_name: string | null
+  action_id: string | null
+  tool_name: string | null
+  decision: string | null
+  decided_at: string | null
+  session_id: string | null
+  auto_approved: boolean | null
+  reason: string | null
+  execution_status: string | null
+  transcript_summary: string | null
+}
+
+// Page shape of GET /demo/approval-events.
+export interface ApprovalEventsResponse {
+  events: ApprovalEventItem[]
   total: number
 }
 

@@ -40,7 +40,7 @@ from fastapi import FastAPI
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.problem_details import EMBEDDING_AUTH_CODE, ERROR_TYPES
-from app.features.demo import workspace
+from app.features.demo import hitl, workspace
 from app.features.demo.schemas import DemoRunRequest, StepEvent, StepStatus, UserScope
 from app.shared.model_taxonomy import KNOWN_MODEL_TYPES
 from app.shared.seeder.config import ScenarioPreset
@@ -305,7 +305,7 @@ class DemoContext:
     # PRP-41 — additive HITL approval state, populated only by
     # step_agent_hitl_flow on SHOWCASE_RICH. Remain None on every other path.
     approval_action_id: str | None = None
-    agent_approval_decision: str | None = None  # "executed"|"rejected"|"expired"|"timed_out"
+    agent_approval_decision: str | None = None  # executed|rejected|external_4xx|timed_out
     # E1 (#390) -- workspace persistence. Set only on preservation="keep" runs
     # (and only when the row insert succeeded); None on ephemeral runs.
     workspace_id: str | None = None
@@ -322,6 +322,13 @@ class DemoContext:
     # metric). Defaults to the all-legacy ResolvedRunConfig so a frame without
     # the new fields behaves byte-identically.
     run_config: ResolvedRunConfig = field(default_factory=ResolvedRunConfig)
+    # E5 (#411) -- story-capture accumulators. Appended by step_agent_hitl_flow
+    # and the three knowledge steps on SHOWCASE_RICH; finalize_workspace
+    # persists them to the workspace slots (empty list -> slot stays NULL).
+    # Always append in-memory (cheap, cannot fail); only the DB write is
+    # fallible (warn-and-continue).
+    approval_events: list[dict[str, Any]] = field(default_factory=list)
+    rag_events: list[dict[str, Any]] = field(default_factory=list)
 
 
 # =============================================================================
@@ -379,15 +386,65 @@ def _llm_key_present() -> bool:
     return False
 
 
-# PRP-41 — HITL approval flow constants. Display delay gives the visitor a
-# window to click Approve on the FE before the backend auto-fires; the hard
+# PRP-41 / E5 (#411) — HITL approval flow constants. The decision window is the
+# span the FE renders Approve + Reject and the step waits on the in-memory relay
+# (D3: 10 s -- 3 s was unclickable by a human; 10 s stays well under the 90 s
+# hard timeout and the 180 s soft budget). It is emitted to the FE as
+# ``data.decision_window_s`` so the countdown never hardcodes it. The hard
 # timeout is the load-bearing fallback so a hung agent never stops the demo.
-_APPROVAL_DISPLAY_DELAY_S = 3.0
+_APPROVAL_DECISION_WINDOW_S = 10.0
 _APPROVAL_HARD_TIMEOUT_S = 90.0
 _HITL_PROMPT = (
     "Save a 10% price-cut scenario plan for the demo-production model "
     "as 'showcase-agent-savedplan'."
 )
+
+
+def _record_approval_event(
+    ctx: DemoContext,
+    *,
+    action_id: str,
+    tool_name: str,
+    decision: str,
+    session_id: str,
+    auto_approved: bool,
+    reason: str | None,
+    execution_status: str | None,
+    pending_action: dict[str, Any],
+    transcript_summary: str,
+    tokens_used: int,
+    tool_calls_count: int,
+) -> None:
+    """Append one approval-event entry to ``ctx.approval_events`` (E5, #411).
+
+    ``tool_call_summary`` carries the action description + argument KEYS only --
+    never values (security-patterns.md: never echo full payloads; values may
+    embed user-supplied text). Schema v2 -- see DOMAIN_MODEL § showcase_workspace.
+    """
+    raw_args = pending_action.get("arguments")
+    arguments_keys = sorted(raw_args) if isinstance(raw_args, dict) else []
+    description_raw = pending_action.get("description")
+    description = description_raw if isinstance(description_raw, str) else ""
+    ctx.approval_events.append(
+        {
+            "action_id": action_id,
+            "tool_name": tool_name,
+            "decision": decision,
+            "decided_at": datetime.now(UTC).isoformat(),
+            "session_id": session_id,
+            # -- E5 (#411) additive (config_schema_version >= 2) --
+            "auto_approved": auto_approved,
+            "reason": reason,
+            "execution_status": execution_status,
+            "tool_call_summary": {
+                "description": description,
+                "arguments_keys": arguments_keys,
+            },
+            "transcript_summary": transcript_summary,
+            "tokens_used": tokens_used,
+            "tool_calls_count": tool_calls_count,
+        }
+    )
 
 
 # PRP-40 — artifact-key parser for /scenarios/* run_id resolution. Two ID
@@ -1670,6 +1727,35 @@ async def step_multi_plan_compare(ctx: DemoContext, client: _Client) -> StepResu
     )
 
 
+def _record_rag_event(
+    ctx: DemoContext,
+    *,
+    event: str,
+    status: str,
+    detail: str,
+    count: int = 0,
+    provider: str | None = None,
+    reachable: bool | None = None,
+) -> None:
+    """Append one RAG-event entry to ``ctx.rag_events`` (E5, #411).
+
+    Called once on EVERY return path of the three knowledge steps so the
+    workspace story records the knowledge outcome (probe / index / retrieve /
+    skip) with the provider state. Schema v2 -- see DOMAIN_MODEL.
+    """
+    ctx.rag_events.append(
+        {
+            "event": event,
+            "status": status,
+            "detail": detail,
+            "count": count,
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "provider": provider,
+            "reachable": reachable,
+        }
+    )
+
+
 async def step_embedding_provider_probe(ctx: DemoContext, client: _Client) -> StepResult:
     """PRP-40 — probe the configured embedding provider. Always PASS.
 
@@ -1689,6 +1775,9 @@ async def step_embedding_provider_probe(ctx: DemoContext, client: _Client) -> St
         if reachable
         else f"provider={provider} unreachable — knowledge phase will skip"
     )
+    _record_rag_event(
+        ctx, event="probe", status="pass", detail=detail, provider=provider, reachable=reachable
+    )
     return ("pass", detail, {"provider": provider, "reachable": reachable})
 
 
@@ -1699,7 +1788,15 @@ async def step_rag_index_subset(ctx: DemoContext, client: _Client) -> StepResult
     Uses the additive ``path_prefix`` field on IndexProjectDocsRequest so the
     blast radius stays scoped to the user-guide subset.
     """
+    provider = get_settings().rag_embedding_provider
     if ctx.embedding_unreachable:
+        _record_rag_event(
+            ctx,
+            event="skip",
+            status="skip",
+            detail="embedding provider unreachable",
+            provider=provider,
+        )
         return ("skip", "embedding provider unreachable", {})
 
     try:
@@ -1721,6 +1818,13 @@ async def step_rag_index_subset(ctx: DemoContext, client: _Client) -> StepResult
         # context so the retrieve probe skips too, without a second 401 round-trip.
         if _is_embedding_auth_error(exc):
             ctx.embedding_unreachable = True
+            _record_rag_event(
+                ctx,
+                event="skip",
+                status="skip",
+                detail="embedding provider rejected credentials",
+                provider=provider,
+            )
             return ("skip", "embedding provider rejected credentials", {})
         raise
     results = body.get("results") or []
@@ -1734,9 +1838,18 @@ async def step_rag_index_subset(ctx: DemoContext, client: _Client) -> StepResult
         for r in results
         if isinstance(r, dict) and r.get("source_path") in _USER_GUIDE_CURATED_FILES
     )
+    detail = f"files_indexed={curated_hits}/5 chunks={total_chunks} failed={failed}"
+    _record_rag_event(
+        ctx,
+        event="index",
+        status="pass",
+        detail=detail,
+        count=total_chunks,
+        provider=provider,
+    )
     return (
         "pass",
-        f"files_indexed={curated_hits}/5 chunks={total_chunks} failed={failed}",
+        detail,
         {
             "total_files": int(body.get("total_files", 0)),
             "indexed": indexed,
@@ -1755,7 +1868,15 @@ async def step_rag_retrieve_probe(ctx: DemoContext, client: _Client) -> StepResu
     SKIPs when ``ctx.embedding_unreachable``. WARN (not FAIL) on zero hits so
     a green-but-empty corpus still lets the pipeline go green.
     """
+    provider = get_settings().rag_embedding_provider
     if ctx.embedding_unreachable:
+        _record_rag_event(
+            ctx,
+            event="skip",
+            status="skip",
+            detail="embedding provider unreachable",
+            provider=provider,
+        )
         return ("skip", "embedding provider unreachable", {})
 
     try:
@@ -1770,13 +1891,24 @@ async def step_rag_retrieve_probe(ctx: DemoContext, client: _Client) -> StepResu
         # in case retrieve is reached with a freshly-rejecting key.
         if _is_embedding_auth_error(exc):
             ctx.embedding_unreachable = True
+            _record_rag_event(
+                ctx,
+                event="skip",
+                status="skip",
+                detail="embedding provider rejected credentials",
+                provider=provider,
+            )
             return ("skip", "embedding provider rejected credentials", {})
         raise
     results = body.get("results") or []
     if not results:
+        detail = "no hits — corpus indexed but query did not match"
+        _record_rag_event(
+            ctx, event="retrieve", status="warn", detail=detail, count=0, provider=provider
+        )
         return (
             "warn",
-            "no hits — corpus indexed but query did not match",
+            detail,
             {
                 "results_count": 0,
                 "total_chunks_searched": body.get("total_chunks_searched", 0),
@@ -1789,9 +1921,18 @@ async def step_rag_retrieve_probe(ctx: DemoContext, client: _Client) -> StepResu
         score = float(score_raw)
     except (TypeError, ValueError):
         score = 0.0
+    detail = f"top hit: {title} (score={score:.3f})"
+    _record_rag_event(
+        ctx,
+        event="retrieve",
+        status="pass",
+        detail=detail,
+        count=len(results),
+        provider=provider,
+    )
     return (
         "pass",
-        f"top hit: {title} (score={score:.3f})",
+        detail,
         {
             "results_count": len(results),
             "top_source_path": title,
@@ -2414,7 +2555,7 @@ async def step_cleanup(ctx: DemoContext, client: _Client) -> StepResult:
 
 
 async def step_agent_hitl_flow(ctx: DemoContext, client: _Client) -> StepResult:
-    """PRP-41 — HITL approval round-trip on the experiment agent.
+    """PRP-41 / E5 (#411) — HITL approval round-trip on the experiment agent.
 
     Flow:
       1. ``_llm_key_present()`` -> skip when no key.
@@ -2424,22 +2565,25 @@ async def step_agent_hitl_flow(ctx: DemoContext, client: _Client) -> StepResult:
          on the ``save_scenario`` entry in ``agent_require_approval``. The
          chat response carries ``pending_approval=true`` +
          ``pending_action: PendingAction``.
-      4. ``client.yield_event(...)`` an intermediate step_complete with
-         ``status='running'`` + ``awaiting_approval=true`` so the FE can
-         render the Approve button.
-      5. Sleep ``_APPROVAL_DISPLAY_DELAY_S`` -- a one-click FE Approve may
-         pre-empt the auto-approve in this window.
-      6. ``POST /agents/sessions/{id}/approve`` with ``{action_id,
-         approved: true}``. Absorb 4xx (the FE pre-empted; the action was
-         already consumed).
-      7. Terminal: ``pass`` with the approval decision in step.data.
+      4. ``hitl.register(action_id)`` then ``client.yield_event(...)`` an
+         intermediate step_complete with ``status='running'`` +
+         ``awaiting_approval=true`` + ``decision_url`` + ``decision_window_s``
+         so the FE renders Approve + Reject (E5).
+      5. ``hitl.wait_for_decision(...)`` up to ``_APPROVAL_DECISION_WINDOW_S``
+         -- the operator's Approve/Reject relayed via POST /demo/hitl-decision;
+         ``None`` on window lapse -> auto-approve.
+      6. ``POST /agents/sessions/{id}/approve`` with the REAL decision
+         (``approved: true|false`` + optional reason). Absorb 4xx (an operator
+         pre-empted the agents endpoint directly; the action was consumed).
+      7. Append one ``approval_events`` entry, then terminal ``pass`` -- a
+         reject is GREEN by design (D5): the gated tool never executed.
 
     Skip-gracefully on every error path (session-create / chat / approve
     failure, or the agent never triggers ``save_scenario``). Never raises.
 
     Hard timeout: if the elapsed time exceeds ``_APPROVAL_HARD_TIMEOUT_S``
     before step (6) completes, returns ``skip`` with
-    ``approval_decision='timed_out'``.
+    ``approval_decision='timed_out'`` (and records a ``timed_out`` entry).
     """
     key_present = _llm_key_present()
     logger.info("demo.agent_hitl_flow.key_present", present=key_present)
@@ -2489,6 +2633,12 @@ async def step_agent_hitl_flow(ctx: DemoContext, client: _Client) -> StepResult:
     tokens_used = int(chat_body.get("tokens_used", 0))
     raw_tool_calls = chat_body.get("tool_calls", [])
     tool_count = len(raw_tool_calls) if isinstance(raw_tool_calls, list) else 0
+    # E5 (#411) -- transcript summary for the approval-events entry. Capped at
+    # 200 chars (precedent: the #335 failure-detail 300-char cap); never the
+    # full transcript (security-patterns.md).
+    transcript_summary = str(chat_body.get("message", ""))[:200]
+    raw_action_type = pending_action.get("action_type")
+    tool_name = raw_action_type if isinstance(raw_action_type, str) else "save_scenario"
 
     if not pending_approval or not pending_action:
         # The agent didn't trigger save_scenario (e.g. answered directly or
@@ -2516,102 +2666,173 @@ async def step_agent_hitl_flow(ctx: DemoContext, client: _Client) -> StepResult:
     action_id: str = action_id_raw
     ctx.approval_action_id = action_id
 
-    # (4) -- intermediate event so the FE renders Approve. step_index /
-    # total_steps / phase_index / phase_total are stamped by the orchestrator
-    # when it drains the sink (see run_pipeline).
-    elapsed_ms = (time.monotonic() - started_at) * 1000.0
-    client.yield_event(
-        StepEvent(
-            event_type="step_complete",
-            step_name="agent_hitl_flow",
-            step_index=0,
-            total_steps=0,
-            status="running",
-            detail="awaiting approval (auto-approve in 3 s)",
-            duration_ms=elapsed_ms,
-            data={
-                "awaiting_approval": True,
-                "approval_url": f"/agents/sessions/{session_id}/approve",
-                "action_id": action_id,
-                "session_id": session_id,
-                "tokens_used": tokens_used,
-                "tool_calls_count": tool_count,
-            },
-            phase_name=PHASE_AGENTS,
-        )
-    )
-
-    # (5) -- display delay.
-    elapsed_after_intermediate = time.monotonic() - started_at
-    delay = max(0.0, _APPROVAL_DISPLAY_DELAY_S - elapsed_after_intermediate)
-    if delay > 0:
-        await asyncio.sleep(delay)
-
-    # (5b) -- hard-timeout check BEFORE the approve POST.
-    elapsed_before_approve = time.monotonic() - started_at
-    if elapsed_before_approve > _APPROVAL_HARD_TIMEOUT_S:
-        ctx.agent_approval_decision = "timed_out"
-        return (
-            "skip",
-            "approval timed out -- pipeline continued",
-            {
-                "session_id": session_id,
-                "action_id": action_id,
-                "approval_decision": "timed_out",
-                "tokens_used": tokens_used,
-                "tool_calls_count": tool_count,
-                "timed_out": True,
-            },
-        )
-
-    # (6) -- POST /approve. Absorb 4xx (FE pre-empted) per Task 1 §5 #2:
-    # AgentService.approve_action returns 400 ("No pending action") when the
-    # action was already consumed by the FE's optimistic Approve click.
-    approval_decision = "executed"
+    # E5 (#411) -- open the decision window on the in-memory relay BEFORE the
+    # FE can see the action, then clear it on every exit (finally). The relay
+    # is the single intent channel: the FE Approve/Reject buttons POST
+    # /demo/hitl-decision (demo slice), this step waits on the relay, then
+    # forwards the REAL decision to the agents HITL gate.
+    hitl.register(action_id)
     try:
-        approve_body = await client.request(
-            "agent_hitl_flow[approve]",
-            "POST",
-            f"/agents/sessions/{session_id}/approve",
-            json_body={"action_id": action_id, "approved": True},
-        )
-        raw_status = approve_body.get("status", "executed")
-        if isinstance(raw_status, str):
-            approval_decision = raw_status
-    except _StepError as exc:
-        if 400 <= exc.status_code < 500:
-            # FE pre-empted -- the approval already landed. Optimistic default.
-            logger.info(
-                "demo.agent_hitl_flow.approve_pre_empted",
-                session_id=session_id,
-                action_id=action_id,
-                status_code=exc.status_code,
-            )
-            approval_decision = "executed"
-        else:
-            return (
-                "skip",
-                f"approve failed: {exc}",
-                {
-                    "session_id": session_id,
+        # (4) -- intermediate event so the FE renders Approve + Reject.
+        # step_index / total_steps / phase_index / phase_total are stamped by
+        # the orchestrator when it drains the sink (see run_pipeline). D2 makes
+        # this event reach the browser DURING the window, not after it closes.
+        window_s = _APPROVAL_DECISION_WINDOW_S
+        elapsed_ms = (time.monotonic() - started_at) * 1000.0
+        client.yield_event(
+            StepEvent(
+                event_type="step_complete",
+                step_name="agent_hitl_flow",
+                step_index=0,
+                total_steps=0,
+                status="running",
+                detail=f"awaiting approval (auto-approve in {int(window_s)} s)",
+                duration_ms=elapsed_ms,
+                data={
+                    "awaiting_approval": True,
+                    # E5 -- the relay is the new intent channel; approval_url is
+                    # kept for back-compat (an operator curl-ing it directly is
+                    # still absorbed below as execution_status="external_4xx").
+                    "decision_url": "/demo/hitl-decision",
+                    "decision_window_s": window_s,
+                    "approval_url": f"/agents/sessions/{session_id}/approve",
                     "action_id": action_id,
+                    "session_id": session_id,
                     "tokens_used": tokens_used,
                     "tool_calls_count": tool_count,
                 },
+                phase_name=PHASE_AGENTS,
+            )
+        )
+
+        # (5) -- wait up to the remaining window for an operator decision.
+        remaining = max(0.0, window_s - (time.monotonic() - started_at))
+        operator = await hitl.wait_for_decision(action_id, timeout=remaining)
+
+        # (5b) -- hard-timeout check BEFORE the approve POST (a hung agent /
+        # blocked window never stops the demo). timed_out -> skip + entry.
+        elapsed_before_approve = time.monotonic() - started_at
+        if elapsed_before_approve > _APPROVAL_HARD_TIMEOUT_S:
+            ctx.agent_approval_decision = "timed_out"
+            _record_approval_event(
+                ctx,
+                action_id=action_id,
+                tool_name=tool_name,
+                decision="timed_out",
+                session_id=session_id,
+                auto_approved=False,
+                reason=None,
+                execution_status=None,
+                pending_action=pending_action,
+                transcript_summary=transcript_summary,
+                tokens_used=tokens_used,
+                tool_calls_count=tool_count,
+            )
+            return (
+                "skip",
+                "approval timed out -- pipeline continued",
+                {
+                    "session_id": session_id,
+                    "action_id": action_id,
+                    "approval_decision": "timed_out",
+                    "tokens_used": tokens_used,
+                    "tool_calls_count": tool_count,
+                    "timed_out": True,
+                },
             )
 
-    ctx.agent_approval_decision = approval_decision
+        # Resolve the operator's intent (None == window lapsed -> auto-approve).
+        auto_approved = operator is None
+        approved = operator is None or operator[0] == "approved"
+        reason = operator[1] if operator is not None else None
 
+        # (6) -- forward the REAL decision to the agents HITL gate. Absorb 4xx
+        # (an operator pre-empted by curl-ing /agents/.../approve directly):
+        # AgentService.approve_action returns 400 once the action is consumed.
+        approve_json: dict[str, Any] = {"action_id": action_id, "approved": approved}
+        if reason:
+            approve_json["reason"] = reason
+        execution_status = "executed" if approved else "rejected"
+        try:
+            approve_body = await client.request(
+                "agent_hitl_flow[approve]",
+                "POST",
+                f"/agents/sessions/{session_id}/approve",
+                json_body=approve_json,
+            )
+            raw_status = approve_body.get("status", execution_status)
+            if isinstance(raw_status, str):
+                execution_status = raw_status
+        except _StepError as exc:
+            if 400 <= exc.status_code < 500:
+                # Pre-empted -- the decision already landed via the agents API.
+                logger.info(
+                    "demo.agent_hitl_flow.approve_pre_empted",
+                    session_id=session_id,
+                    action_id=action_id,
+                    status_code=exc.status_code,
+                )
+                execution_status = "external_4xx"
+            else:
+                return (
+                    "skip",
+                    f"approve failed: {exc}",
+                    {
+                        "session_id": session_id,
+                        "action_id": action_id,
+                        "tokens_used": tokens_used,
+                        "tool_calls_count": tool_count,
+                    },
+                )
+
+        decision = "approved" if approved else "rejected"
+        # ctx mirror keeps the agents-API execution status (executed/rejected/
+        # external_4xx); the slot entry below records the operator decision.
+        ctx.agent_approval_decision = execution_status
+        _record_approval_event(
+            ctx,
+            action_id=action_id,
+            tool_name=tool_name,
+            decision=decision,
+            session_id=session_id,
+            auto_approved=auto_approved,
+            reason=reason,
+            execution_status=execution_status,
+            pending_action=pending_action,
+            transcript_summary=transcript_summary,
+            tokens_used=tokens_used,
+            tool_calls_count=tool_count,
+        )
+    finally:
+        hitl.clear()
+
+    # (7) -- terminal. D5: a human rejection is a SUCCESSFUL demonstration of
+    # the HITL gate, not an error -- the run stays GREEN and the gated
+    # save_scenario never executed (no scenario_plan row written by the agent).
+    if not approved:
+        return (
+            "pass",
+            "rejected by operator",
+            {
+                "session_id": session_id,
+                "action_id": action_id,
+                "approval_decision": "rejected",
+                "auto_approved": False,
+                "tokens_used": tokens_used,
+                "tool_calls_count": tool_count,
+            },
+        )
     return (
         "pass",
         (
             f"session={session_id[:8]}... tokens={tokens_used} "
-            f"tool_calls={tool_count} approved={approval_decision}"
+            f"tool_calls={tool_count} approved={execution_status}"
         ),
         {
             "session_id": session_id,
             "action_id": action_id,
-            "approval_decision": approval_decision,
+            "approval_decision": execution_status,
+            "auto_approved": auto_approved,
             "tokens_used": tokens_used,
             "tool_calls_count": tool_count,
         },
@@ -2908,8 +3129,33 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
             status: StepStatus
             detail: str
             data: dict[str, Any]
+            # E5 (#411) — D2: run the step as a task and drain the intermediate
+            # event sink CONCURRENTLY with the in-flight step. PRP-41 drained
+            # the sink only AFTER the step returned, so the HITL step's
+            # ``awaiting_approval`` event reached the browser only once the
+            # decision window had already closed (the auto-approve had fired).
+            # Steps still execute strictly one at a time under the single lock;
+            # only event flushing overlaps the running step.
+            task = asyncio.ensure_future(fn(ctx, client))
             try:
-                status, detail, data = await fn(ctx, client)
+                while True:
+                    done, _pending = await asyncio.wait({task}, timeout=0.25)
+                    # Drain + stamp the row's index/phase fields so the FE state
+                    # machine processes buffered events as if the orchestrator
+                    # emitted them. Order matters: an intermediate must land
+                    # before the terminal so "awaiting_approval" precedes
+                    # "approved" in the WS stream.
+                    for ev in intermediate_events:
+                        ev.step_index = index
+                        ev.total_steps = total
+                        ev.phase_index = phase_index
+                        ev.phase_total = phase_total
+                        ev.phase_name = phase_name
+                        yield ev
+                    intermediate_events.clear()
+                    if done:
+                        break
+                status, detail, data = task.result()
             except _StepError as exc:
                 status, detail, data = "fail", str(exc), {}
             except (httpx.HTTPError, OSError) as exc:
@@ -2927,19 +3173,25 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
                     f"unexpected error: {type(exc).__name__}: {exc}",
                     {},
                 )
+            finally:
+                # LOAD-BEARING (PRP Gotcha / quality Finding 3): the Stop button
+                # closes the WebSocket -> the async generator is closed, throwing
+                # GeneratorExit (a BaseException no except clause above catches)
+                # into the mid-step ``yield ev`` suspension point. This finally
+                # is the only hook that runs on EVERY exit path; without it the
+                # in-flight step task is orphaned ("Task was destroyed but it is
+                # pending") while the _Client closes underneath it.
+                if not task.done():
+                    task.cancel()
             duration_ms = (time.monotonic() - t0) * 1000
-            # PRP-41 — drain any intermediate events the step buffered BEFORE
-            # the terminal step_complete. Stamp the row's index/phase fields
-            # so the FE state machine processes them as if they were emitted
-            # by the orchestrator. Order matters: intermediate events must
-            # land before the terminal so "awaiting_approval" precedes
-            # "approved" in the WS stream.
+            # Final flush: drain anything the step buffered after the last
+            # 0.25s tick (mid-step loop drained the rest). Keeps the
+            # intermediate-before-terminal ordering identical to pre-D2.
             for ev in intermediate_events:
                 ev.step_index = index
                 ev.total_steps = total
                 ev.phase_index = phase_index
                 ev.phase_total = phase_total
-                # phase_name is set by the step fn already, but mirror in case.
                 ev.phase_name = phase_name
                 yield ev
             intermediate_events.clear()

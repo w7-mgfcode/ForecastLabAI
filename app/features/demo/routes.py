@@ -40,10 +40,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.exceptions import ConflictError, NotFoundError
 from app.core.logging import get_logger
-from app.features.demo import link_health, service, workspace
+from app.features.demo import hitl, link_health, service, workspace
 from app.features.demo.schemas import (
+    ApprovalEventItem,
+    ApprovalEventsResponse,
     DemoRunRequest,
     DemoRunResult,
+    HitlDecisionRequest,
     StepEvent,
     WorkspaceDetailResponse,
     WorkspaceHealthResponse,
@@ -84,6 +87,64 @@ async def run_demo_pipeline(request: Request, params: DemoRunRequest) -> DemoRun
         return await service.run_pipeline_sync(request.app, params)
     except service.PipelineBusyError as exc:
         raise ConflictError(str(exc)) from exc
+
+
+@router.post(
+    "/hitl-decision",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Relay an operator decision to the in-flight HITL step",
+    description=(
+        "Relay the Showcase HITL step card's Approve / Reject to the running "
+        "pipeline (E5, #411). The pipeline forwards the real decision to the "
+        "agents HITL gate. 404 when no matching action is pending; 409 when the "
+        "action was already decided; 422 on a malformed body."
+    ),
+)
+async def submit_hitl_decision(body: HitlDecisionRequest) -> None:
+    """Relay an operator Approve/Reject to the in-flight HITL step (E5, #411).
+
+    Args:
+        body: The operator decision (action_id, approved/rejected, optional reason).
+
+    Raises:
+        NotFoundError: When no HITL action is pending under ``action_id`` (404).
+        ConflictError: When the action was already decided (409).
+    """
+    outcome = hitl.resolve(body.action_id, body.decision, body.reason)
+    if outcome == "not_found":
+        raise NotFoundError(message=f"No pending HITL action: {body.action_id}")
+    if outcome == "already_decided":
+        raise ConflictError(f"Action already decided: {body.action_id}")
+
+
+@router.get(
+    "/approval-events",
+    response_model=ApprovalEventsResponse,
+    summary="Recent HITL approval events across saved workspaces",
+    description=(
+        "Flatten ``approval_events`` across the newest saved workspaces that "
+        "carry the slot, newest-workspace-first (E5, #411). An audit-glance "
+        "surface -- no pagination. Returns 200 + an empty list when none."
+    ),
+)
+async def list_hitl_approval_events(
+    db: AsyncSession = Depends(get_db),
+    limit: int = Query(default=50, ge=1, le=200, description="Maximum flattened entries."),
+) -> ApprovalEventsResponse:
+    """List recent HITL approval events flattened across workspaces (E5, #411).
+
+    Args:
+        db: Async database session from dependency.
+        limit: Maximum flattened entries to return (1-200).
+
+    Returns:
+        The flattened approval events plus the returned count.
+    """
+    events = await workspace.list_approval_events(db, limit=limit)
+    return ApprovalEventsResponse(
+        events=[ApprovalEventItem.model_validate(event) for event in events],
+        total=len(events),
+    )
 
 
 @router.get(

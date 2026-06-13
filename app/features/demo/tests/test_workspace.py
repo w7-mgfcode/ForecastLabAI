@@ -279,7 +279,8 @@ async def test_create_workspace_without_replayed_from_is_none(db_session: AsyncS
     assert row.archived is False
     assert row.pinned is False
     assert row.tags == []
-    assert row.config_schema_version == 1
+    # E5 (#411) D4 -- new rows carry the bumped story-slot schema version.
+    assert row.config_schema_version == 2
 
 
 # =============================================================================
@@ -379,3 +380,143 @@ async def test_update_workspace_empty_request_noop(db_session: AsyncSession) -> 
     assert row is not None
     assert row.name == "it-noop"
     assert row.status == WORKSPACE_STATUS_RUNNING
+
+
+# =============================================================================
+# E5 (#411) — story-slot capture + reproduction marker + approval-events list
+# =============================================================================
+
+
+def _ctx_with_story() -> DemoContext:
+    """A finished ctx carrying one approval event + one index rag event."""
+    ctx = _finished_ctx()
+    ctx.approval_events = [
+        {
+            "action_id": "act-1",
+            "tool_name": "save_scenario",
+            "decision": "rejected",
+            "decided_at": "2026-06-13T00:00:00+00:00",
+            "session_id": "sess-0123abcd",
+            "auto_approved": False,
+            "reason": "too risky",
+            "execution_status": "rejected",
+            "tool_call_summary": {"description": "save plan", "arguments_keys": ["name"]},
+            "transcript_summary": "I'll save that scenario.",
+            "tokens_used": 240,
+            "tool_calls_count": 1,
+        }
+    ]
+    ctx.rag_events = [
+        {
+            "event": "index",
+            "status": "pass",
+            "detail": "files_indexed=5/5 chunks=20",
+            "count": 20,
+            "occurred_at": "2026-06-13T00:00:00+00:00",
+            "provider": "openai",
+            "reachable": None,
+        }
+    ]
+    return ctx
+
+
+async def test_finalize_writes_story_slots(db_session: AsyncSession) -> None:
+    """finalize persists approval_events + rag_events when the run captured them."""
+    workspace_id = await workspace.create_workspace(_keep_request(workspace_name="it-story"))
+    assert workspace_id is not None
+    await workspace.finalize_workspace(
+        workspace_id, _ctx_with_story(), failed=False, wall_clock_s=5.0
+    )
+    row = await workspace.get_workspace(db_session, workspace_id)
+    assert row is not None
+    assert row.approval_events is not None
+    assert len(row.approval_events) == 1
+    assert row.approval_events[0]["decision"] == "rejected"
+    assert row.rag_events is not None
+    assert row.rag_events[0]["event"] == "index"
+
+
+async def test_finalize_leaves_story_slots_null_when_empty(db_session: AsyncSession) -> None:
+    """Empty accumulators -> slots stay NULL (never []), per E1's slot contract."""
+    workspace_id = await workspace.create_workspace(_keep_request(workspace_name="it-empty"))
+    assert workspace_id is not None
+    await workspace.finalize_workspace(
+        workspace_id, _finished_ctx(), failed=False, wall_clock_s=5.0
+    )
+    row = await workspace.get_workspace(db_session, workspace_id)
+    assert row is not None
+    assert row.approval_events is None
+    assert row.rag_events is None
+    assert "story_reproduction" not in (row.result_summary or {})
+
+
+async def test_finalize_replay_records_reproduced(db_session: AsyncSession) -> None:
+    """A replay of a workspace WITH a story whose run also has a story -> reproduced."""
+    source_id = await workspace.create_workspace(_keep_request(workspace_name="it-src"))
+    assert source_id is not None
+    await workspace.finalize_workspace(source_id, _ctx_with_story(), failed=False, wall_clock_s=5.0)
+    replay_id = await workspace.create_workspace(
+        _keep_request(workspace_name="it-replay", replayed_from_workspace_id=source_id)
+    )
+    assert replay_id is not None
+    await workspace.finalize_workspace(replay_id, _ctx_with_story(), failed=False, wall_clock_s=5.0)
+    row = await workspace.get_workspace(db_session, replay_id)
+    assert row is not None
+    repro = (row.result_summary or {})["story_reproduction"]
+    assert repro["agent"] == "reproduced"
+    assert repro["knowledge"] == "reproduced"
+    assert repro["source_workspace_id"] == source_id
+
+
+async def test_finalize_replay_records_not_applicable(db_session: AsyncSession) -> None:
+    """Source row had NO story -> not_applicable regardless of this run's capture."""
+    source_id = await workspace.create_workspace(_keep_request(workspace_name="it-src2"))
+    assert source_id is not None
+    await workspace.finalize_workspace(source_id, _finished_ctx(), failed=False, wall_clock_s=5.0)
+    replay_id = await workspace.create_workspace(
+        _keep_request(workspace_name="it-replay2", replayed_from_workspace_id=source_id)
+    )
+    assert replay_id is not None
+    await workspace.finalize_workspace(replay_id, _ctx_with_story(), failed=False, wall_clock_s=5.0)
+    row = await workspace.get_workspace(db_session, replay_id)
+    assert row is not None
+    repro = (row.result_summary or {})["story_reproduction"]
+    assert repro["agent"] == "not_applicable"
+    assert repro["knowledge"] == "not_applicable"
+
+
+async def test_finalize_replay_dangling_source_is_unknown(db_session: AsyncSession) -> None:
+    """A dangling replay source (deleted / never existed) -> unknown."""
+    replay_id = await workspace.create_workspace(
+        _keep_request(workspace_name="it-dangle", replayed_from_workspace_id="0" * 32)
+    )
+    assert replay_id is not None
+    await workspace.finalize_workspace(replay_id, _ctx_with_story(), failed=False, wall_clock_s=5.0)
+    row = await workspace.get_workspace(db_session, replay_id)
+    assert row is not None
+    repro = (row.result_summary or {})["story_reproduction"]
+    assert repro["agent"] == "unknown"
+    assert repro["knowledge"] == "unknown"
+    assert repro["source_workspace_id"] is None
+
+
+async def test_list_approval_events_flattens_newest_first(db_session: AsyncSession) -> None:
+    """list_approval_events flattens entries newest-row-first and respects limit."""
+    for index in range(2):
+        wid = await workspace.create_workspace(_keep_request(workspace_name=f"it-ae-{index}"))
+        assert wid is not None
+        await workspace.finalize_workspace(wid, _ctx_with_story(), failed=False, wall_clock_s=1.0)
+    # A workspace with no approval_events must be excluded from the flatten.
+    plain = await workspace.create_workspace(_keep_request(workspace_name="it-ae-plain"))
+    assert plain is not None
+    await workspace.finalize_workspace(plain, _finished_ctx(), failed=False, wall_clock_s=1.0)
+
+    events = await workspace.list_approval_events(db_session, limit=50)
+    assert len(events) == 2
+    assert all(e["workspace_name"].startswith("it-ae-") for e in events)
+    assert all("workspace_id" in e and e["decision"] == "rejected" for e in events)
+    # Newest workspace first.
+    assert events[0]["workspace_name"] == "it-ae-1"
+
+    capped = await workspace.list_approval_events(db_session, limit=1)
+    assert len(capped) == 1
