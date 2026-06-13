@@ -34,8 +34,11 @@ const fullWorkspace: WorkspaceDetail = {
   replayed_from_workspace_id: null,
   seed_overrides: null,
   user_scope: null,
+  run_config: null,
   notes: null,
   config_schema_version: 1,
+  approval_events: null,
+  rag_events: null,
 }
 
 function renderPanel(workspace: WorkspaceDetail, health: WorkspaceHealth | null = null) {

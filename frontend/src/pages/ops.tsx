@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom'
 import { Activity, AlertTriangle, CheckCircle2, Clock, Download, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { useModelHealth, useOpsSummary, useRetrainingCandidates } from '@/hooks/use-ops'
+import { useApprovalEvents } from '@/hooks/use-approval-events'
 import { useProviderHealth } from '@/hooks/use-config'
 import { useCreateJob } from '@/hooks/use-jobs'
 import { useCreateAlias, useRun, useAliases } from '@/hooks/use-runs'
@@ -97,6 +98,8 @@ export default function OpsPage() {
   const summaryQuery = useOpsSummary()
   const candidatesQuery = useRetrainingCandidates()
   const modelHealthQuery = useModelHealth()
+  // E5 (#411) — recent HITL approval events flattened across saved workspaces.
+  const approvalEventsQuery = useApprovalEvents()
   const providerQuery = useProviderHealth()
   const aliasesQuery = useAliases()
   const createJob = useCreateJob()
@@ -236,6 +239,18 @@ export default function OpsPage() {
     }
     setActionBusy(false)
     setPromoteTarget(null)
+  }
+
+  const approvalEvents = approvalEventsQuery.data?.events ?? []
+
+  /** E5 (#411) — approval decision → StatusBadge variant. */
+  function decisionBadgeVariant(
+    decision: string | null,
+  ): 'success' | 'error' | 'warning' | 'default' {
+    if (decision === 'approved') return 'success'
+    if (decision === 'rejected') return 'error'
+    if (decision === 'timed_out') return 'warning'
+    return 'default'
   }
 
   /** PRP-36 enum → human-readable reason chip label. */
@@ -436,6 +451,65 @@ export default function OpsPage() {
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground">
                           {formatWhen(item.occurred_at)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* E5 (#411) — Approval History. Recent HITL approval decisions
+              captured on saved showcase workspaces (demo slice endpoint;
+              frontend-only surface). */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Approval History</CardTitle>
+              <CardDescription>
+                Recent human-in-the-loop approval decisions captured on saved
+                showcase workspaces — approve, reject, or window-lapse auto-approve.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {approvalEventsQuery.isLoading ? (
+                <LoadingState message="Loading approval history..." />
+              ) : approvalEvents.length === 0 ? (
+                <p className="py-6 text-center text-sm text-muted-foreground">
+                  No approval events yet — run a showcase pipeline with the HITL
+                  step to capture one.
+                </p>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Decision</TableHead>
+                      <TableHead>Tool</TableHead>
+                      <TableHead>Workspace</TableHead>
+                      <TableHead>Transcript</TableHead>
+                      <TableHead>When</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {approvalEvents.map((event, index) => (
+                      <TableRow key={`${event.workspace_id}-${event.action_id ?? index}`}>
+                        <TableCell>
+                          <StatusBadge variant={decisionBadgeVariant(event.decision)}>
+                            {event.decision ?? 'unknown'}
+                            {event.auto_approved === true ? ' (auto)' : ''}
+                          </StatusBadge>
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {event.tool_name ?? '—'}
+                        </TableCell>
+                        <TableCell className="text-sm">
+                          {event.workspace_name ?? event.workspace_id.slice(0, 8)}
+                        </TableCell>
+                        <TableCell className="max-w-md truncate text-sm text-muted-foreground">
+                          {event.transcript_summary ?? '—'}
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">
+                          {formatWhen(event.decided_at)}
                         </TableCell>
                       </TableRow>
                     ))}

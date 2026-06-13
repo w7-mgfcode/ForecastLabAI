@@ -13,6 +13,7 @@ import { ReplayConfirmDialog } from '@/components/demo/ReplayConfirmDialog'
 import { WorkspaceLineageStrip } from '@/components/demo/WorkspaceLineageStrip'
 import { WorkspacePanel } from '@/components/demo/WorkspacePanel'
 import { WorkspaceArtifactsPanel } from '@/components/demo/WorkspaceArtifactsPanel'
+import { WorkspaceStoryPanel } from '@/components/demo/WorkspaceStoryPanel'
 import { SeedConfigPanel } from '@/components/demo/SeedConfigPanel'
 import { ScopeSelector } from '@/components/demo/ScopeSelector'
 import { RunConfigPanel } from '@/components/demo/RunConfigPanel'
@@ -554,6 +555,8 @@ export default function ShowcasePage() {
             workspace={loadedWorkspace}
             health={workspaceHealth ?? null}
           />
+          {/* E5 (#411) — captured agent/HITL + RAG story; self-hides on legacy rows. */}
+          <WorkspaceStoryPanel workspace={loadedWorkspace} />
         </div>
       )}
 
