@@ -1,4 +1,5 @@
 import type { DemoRunRequest, WorkspaceListItem } from '@/types/api'
+import { parseRunConfig } from './run-config-utils'
 
 /**
  * E2 (#408) — the EXACT request a confirmed replay sends. Single source for
@@ -6,6 +7,9 @@ import type { DemoRunRequest, WorkspaceListItem } from '@/types/api'
  * the preview can never lie about what goes on the wire.
  */
 export function buildReplayRequest(ws: WorkspaceListItem): DemoRunRequest {
+  // E4 (#410) — replay-verbatim covers the recorded run config; null on
+  // default-config rows, so their replay frame stays byte-identical.
+  const runConfig = parseRunConfig(ws.run_config)
   return {
     seed: ws.seed,
     scenario: ws.scenario,
@@ -19,5 +23,8 @@ export function buildReplayRequest(ws: WorkspaceListItem): DemoRunRequest {
     // legacy rows (null) so their replay frame stays byte-identical.
     ...(ws.seed_overrides ? { seed_overrides: ws.seed_overrides } : {}),
     ...(ws.user_scope ? { user_scope: ws.user_scope } : {}),
+    ...(runConfig
+      ? { train_model_types: runConfig.trainModels, backtest: runConfig.backtest }
+      : {}),
   }
 }

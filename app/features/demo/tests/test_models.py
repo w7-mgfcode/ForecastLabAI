@@ -191,3 +191,41 @@ async def test_showcase_workspace_replayed_from_recorded(db_session: AsyncSessio
     loaded = await get_workspace(db_session, row.workspace_id)
     assert loaded is not None
     assert loaded.replayed_from_workspace_id == dangling_source
+
+
+# =============================================================================
+# E4 (#410) -- run_config replay-input column
+# =============================================================================
+
+
+async def test_showcase_workspace_run_config_roundtrip(db_session: AsyncSession) -> None:
+    """run_config round-trips through JSONB intact."""
+    run_config = {
+        "train_model_types": ["naive", "regression"],
+        "backtest": {
+            "horizon": 21,
+            "strategy": "expanding",
+            "n_splits": 4,
+            "min_train_size": 30,
+            "gap": 0,
+            "metric": "rmse",
+        },
+    }
+    row = _make_row(run_config=run_config)
+    db_session.add(row)
+    await db_session.commit()
+
+    loaded = await get_workspace(db_session, row.workspace_id)
+    assert loaded is not None
+    assert loaded.run_config == run_config
+
+
+async def test_showcase_workspace_run_config_null_default(db_session: AsyncSession) -> None:
+    """run_config stays NULL on a default-config insert."""
+    row = _make_row()
+    db_session.add(row)
+    await db_session.commit()
+
+    loaded = await get_workspace(db_session, row.workspace_id)
+    assert loaded is not None
+    assert loaded.run_config is None

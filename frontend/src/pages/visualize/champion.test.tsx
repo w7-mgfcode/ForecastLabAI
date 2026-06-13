@@ -29,6 +29,7 @@ const CATALOG: ModelCatalogResponse = {
       default_params: {},
       supports_auto_predict: true,
       description: 'Repeats the last observed value.',
+      enabled: true,
     },
     {
       model_type: 'regression',
@@ -39,6 +40,7 @@ const CATALOG: ModelCatalogResponse = {
       default_params: {},
       supports_auto_predict: false,
       description: 'Histogram gradient boosting.',
+      enabled: true,
     },
   ],
   default_candidate_model_types: ['naive', 'regression'],

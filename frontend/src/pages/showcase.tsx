@@ -15,6 +15,14 @@ import { WorkspacePanel } from '@/components/demo/WorkspacePanel'
 import { WorkspaceArtifactsPanel } from '@/components/demo/WorkspaceArtifactsPanel'
 import { SeedConfigPanel } from '@/components/demo/SeedConfigPanel'
 import { ScopeSelector } from '@/components/demo/ScopeSelector'
+import { RunConfigPanel } from '@/components/demo/RunConfigPanel'
+import {
+  DEFAULT_BACKTEST,
+  DEFAULT_TRAIN_MODELS,
+  isDefaultBacktest,
+  isDefaultSelection,
+  parseRunConfig,
+} from '@/components/demo/run-config-utils'
 import { buildReplayRequest } from '@/components/demo/replay-request'
 import { WORKSPACE_NAME_PATTERN } from '@/components/demo/workspace-name'
 import { Button } from '@/components/ui/button'
@@ -23,7 +31,12 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { ROUTES } from '@/lib/constants'
 import { cn } from '@/lib/utils'
-import type { SeedOverrides, UserScope, WorkspaceListItem } from '@/types/api'
+import type {
+  DemoBacktestConfig,
+  SeedOverrides,
+  UserScope,
+  WorkspaceListItem,
+} from '@/types/api'
 
 const TERMINAL_STATUSES = new Set(['pass', 'fail', 'skip', 'warn'])
 
@@ -130,6 +143,10 @@ export default function ShowcasePage() {
   // operator-selected focus pair (null = auto-discover first pair).
   const [seedOverrides, setSeedOverrides] = useState<SeedOverrides | null>(null)
   const [userScope, setUserScope] = useState<UserScope | null>(null)
+  // E4 (#410) — run-config phase controls. Default = the legacy trio + split;
+  // the dirty-only rule (below) omits both keys from the frame when untouched.
+  const [trainModels, setTrainModels] = useState<string[]>([...DEFAULT_TRAIN_MODELS])
+  const [backtestCfg, setBacktestCfg] = useState<DemoBacktestConfig>({ ...DEFAULT_BACKTEST })
 
   // The page (not the panel) resolves the loaded workspace's detail — the
   // artifacts panel needs detail-only created_objects.
@@ -169,6 +186,11 @@ export default function ShowcasePage() {
       // them on skip_seed=true); omit both keys for legacy byte-compat.
       ...(reseed && seedOverrides ? { seed_overrides: seedOverrides } : {}),
       ...(userScope ? { user_scope: userScope } : {}),
+      // E4 (#410) — dirty-only inclusion: omit train_model_types / backtest
+      // when they equal the defaults, so untouched controls send a
+      // byte-identical legacy frame (umbrella criterion).
+      ...(isDefaultSelection(trainModels) ? {} : { train_model_types: trainModels }),
+      ...(isDefaultBacktest(backtestCfg) ? {} : { backtest: backtestCfg }),
     })
   }
 
@@ -184,6 +206,11 @@ export default function ShowcasePage() {
     // E3 (#409) — repopulate the seed-config panel + scope selector.
     setSeedOverrides(ws.seed_overrides ?? null)
     setUserScope(ws.user_scope ?? null)
+    // E4 (#410) — repopulate the run-config panel; reset to defaults when the
+    // row carried no custom config (null run_config).
+    const runConfig = parseRunConfig(ws.run_config)
+    setTrainModels(runConfig ? runConfig.trainModels : [...DEFAULT_TRAIN_MODELS])
+    setBacktestCfg(runConfig ? runConfig.backtest : { ...DEFAULT_BACKTEST })
     setSelectedWorkspaceId(ws.workspace_id)
   }
 
@@ -292,7 +319,11 @@ export default function ShowcasePage() {
         <CardContent className="space-y-4">
           <div className="flex flex-wrap items-end gap-6">
             <ScenarioPicker value={scenario} onChange={setScenario} disabled={isRunning} />
-            <Button onClick={handleRun} disabled={isRunning || nameInvalid} size="lg">
+            <Button
+              onClick={handleRun}
+              disabled={isRunning || nameInvalid || trainModels.length === 0}
+              size="lg"
+            >
               {isRunning ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
@@ -417,6 +448,17 @@ export default function ShowcasePage() {
               </p>
             )}
           </div>
+
+          {/* E4 (#410) — run-config phase controls (model set + backtest +
+              preview). Collapsed by default; untouched sends a legacy frame. */}
+          <RunConfigPanel
+            scenario={scenario}
+            disabled={isRunning}
+            selection={trainModels}
+            onSelectionChange={setTrainModels}
+            backtest={backtestCfg}
+            onBacktestChange={setBacktestCfg}
+          />
 
           {phase === 'running' && (
             <p className="text-sm text-muted-foreground">

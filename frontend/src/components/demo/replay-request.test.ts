@@ -18,6 +18,7 @@ const baseItem: WorkspaceListItem = {
   replayed_from_workspace_id: null,
   seed_overrides: null,
   user_scope: null,
+  run_config: null,
 }
 
 describe('buildReplayRequest', () => {
@@ -44,6 +45,31 @@ describe('buildReplayRequest', () => {
     const request = buildReplayRequest(baseItem)
     expect('seed_overrides' in request).toBe(false)
     expect('user_scope' in request).toBe(false)
+  })
+
+  // E4 (#410) — replay-verbatim covers the recorded run config.
+  it('omits run-config keys on a default-config row (null run_config)', () => {
+    const request = buildReplayRequest(baseItem)
+    expect('train_model_types' in request).toBe(false)
+    expect('backtest' in request).toBe(false)
+  })
+
+  it('re-submits recorded run_config (model set + backtest) verbatim', () => {
+    const configured: WorkspaceListItem = {
+      ...baseItem,
+      run_config: {
+        train_model_types: ['naive', 'seasonal_average'],
+        backtest: { horizon: 21, n_splits: 4, metric: 'rmse' },
+      },
+    }
+    const request = buildReplayRequest(configured)
+    expect(request.train_model_types).toEqual(['naive', 'seasonal_average'])
+    expect(request.backtest?.horizon).toBe(21)
+    expect(request.backtest?.n_splits).toBe(4)
+    expect(request.backtest?.metric).toBe('rmse')
+    // Missing knobs are filled from the defaults (verbatim-complete frame).
+    expect(request.backtest?.strategy).toBe('expanding')
+    expect(request.backtest?.min_train_size).toBe(30)
   })
 
   it('re-submits recorded seed_overrides and user_scope verbatim', () => {

@@ -63,6 +63,7 @@ class ShowcaseWorkspace(TimestampMixin, Base):
         date_end: Seeded data window end; NULL when unknown.
         created_objects: Soft-reference ids of everything the run created (JSONB).
         result_summary: Winner / WAPE / wall-clock display payload (JSONB).
+        run_config: Replay-input run config -- model set + backtest knobs (E4 #410); NULL on defaults.
         archived: Operator curation flag -- archived rows still list in E1.
         pinned: Operator curation flag -- no behavioral semantics in E1.
         notes: Free-text operator annotation (capped at the Pydantic boundary).
@@ -102,6 +103,14 @@ class ShowcaseWorkspace(TimestampMixin, Base):
     )
     # winner_model_type / winner_wape / wall_clock_s -- display payload.
     result_summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # E4 (#410) -- replay-input run config (NOT an E1 story slot; see
+    # DOMAIN_MODEL.md D1). Shape: {"train_model_types": [...], "backtest": {...}}
+    # via model_dump(mode="json"); NULL when the run used default config.
+    # Written by create_workspace at insert time (a replay input known before
+    # step 1, like seed/scenario); consumed by Load/Replay. config_schema_version
+    # is deliberately NOT bumped -- it versions the STORY-SLOT schema; run_config
+    # presence is NULL-detectable and carries its own documented shape.
+    run_config: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     # ── E1 (#407) — lifecycle metadata ────────────────────────────────────
     # Orthogonal to ``status`` (which the pipeline owns): archive/pin are

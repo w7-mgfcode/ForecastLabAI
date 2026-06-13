@@ -16,7 +16,7 @@ import pytest
 from fastapi import FastAPI
 
 from app.features.demo import pipeline
-from app.features.demo.schemas import DemoRunRequest, UserScope
+from app.features.demo.schemas import DemoBacktestConfig, DemoRunRequest, UserScope
 from app.shared.seeder.config import ScenarioPreset
 from app.shared.seeder.overrides import SeederOverrides
 
@@ -378,6 +378,9 @@ def _fake_settings(
     *,
     rag_embedding_provider: str = "openai",
     openai_api_key: str = "sk-test",
+    forecast_enable_lightgbm: bool = False,
+    forecast_enable_xgboost: bool = False,
+    forecast_enable_random_forest: bool = False,
 ) -> SimpleNamespace:
     """Fake settings: usable registry root, no agent LLM key (agent skips).
 
@@ -385,6 +388,11 @@ def _fake_settings(
     PRP-40 knowledge phase runs to completion in test fixtures; the
     knowledge-skip tests override via ``rag_embedding_provider="openai"`` +
     ``openai_api_key=""`` (or "ollama" with an unreachable canned probe).
+
+    E4 (#410) -- the ``forecast_enable_*`` flags default False (matching
+    app/core/config.py), so the legacy demo trio (all always-on) still trains;
+    step_train's disabled-model fail-fast path is exercised by overriding a flag
+    AND selecting that model.
     """
     return SimpleNamespace(
         registry_artifact_root=registry_root,
@@ -393,6 +401,9 @@ def _fake_settings(
         openai_api_key=openai_api_key,
         google_api_key="",
         rag_embedding_provider=rag_embedding_provider,
+        forecast_enable_lightgbm=forecast_enable_lightgbm,
+        forecast_enable_xgboost=forecast_enable_xgboost,
+        forecast_enable_random_forest=forecast_enable_random_forest,
     )
 
 
@@ -414,6 +425,247 @@ def test_select_winner_skips_nan():
 def test_select_winner_none_when_no_usable_wape():
     assert pipeline._select_winner({}) is None
     assert pipeline._select_winner({"naive": {"wape": float("nan")}}) is None
+
+
+# =============================================================================
+# E4 (#410) -- run-config resolution, selection, split, metric, echo
+# =============================================================================
+
+
+def _ctx_for_step(
+    scenario: ScenarioPreset = ScenarioPreset.DEMO_MINIMAL,
+    run_config: pipeline.ResolvedRunConfig | None = None,
+) -> pipeline.DemoContext:
+    """A DemoContext positioned at the modeling phase (grain + window set)."""
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False, scenario=scenario)
+    ctx.store_id = 7
+    ctx.product_id = 3
+    ctx.date_start = date(2024, 1, 1)
+    ctx.date_end = date(2024, 12, 31)
+    if run_config is not None:
+        ctx.run_config = run_config
+    return ctx
+
+
+def test_resolve_run_config_defaults_and_custom():
+    """E4 (#410) -- None/None -> legacy; partial configs fill the other half."""
+    legacy = pipeline._resolve_run_config(DemoRunRequest())
+    assert legacy.customized is False
+    assert legacy.model_types == pipeline.DEMO_MODEL_TYPES
+    assert legacy.horizon == pipeline.DEMO_HORIZON
+    assert legacy.n_splits == pipeline.DEMO_BACKTEST_SPLITS
+    assert legacy.min_train_size == pipeline.DEMO_MIN_TRAIN_SIZE
+    assert legacy.gap == 0
+    assert legacy.metric == "wape"
+
+    sel_only = pipeline._resolve_run_config(
+        DemoRunRequest(train_model_types=["naive", "seasonal_average"])
+    )
+    assert sel_only.customized is True
+    assert sel_only.model_types == ("naive", "seasonal_average")
+    assert sel_only.horizon == pipeline.DEMO_HORIZON  # backtest defaults stay legacy
+    assert sel_only.metric == "wape"
+
+    bt_only = pipeline._resolve_run_config(
+        DemoRunRequest(backtest=DemoBacktestConfig(horizon=21, n_splits=4, metric="rmse"))
+    )
+    assert bt_only.customized is True
+    assert bt_only.model_types == pipeline.DEMO_MODEL_TYPES  # selection stays legacy
+    assert bt_only.horizon == 21
+    assert bt_only.n_splits == 4
+    assert bt_only.metric == "rmse"
+
+
+def test_model_config_payload_minimal_fallback_for_all_known_types():
+    """E4 (#410) -- every KNOWN type resolves; explicit branches keep params."""
+    from app.shared.model_taxonomy import KNOWN_MODEL_TYPES
+
+    for mt in KNOWN_MODEL_TYPES:
+        assert pipeline._model_config_payload(mt)["model_type"] == mt
+    assert pipeline._model_config_payload("seasonal_naive") == {
+        "model_type": "seasonal_naive",
+        "season_length": 7,
+    }
+    assert pipeline._model_config_payload("moving_average") == {
+        "model_type": "moving_average",
+        "window_size": 7,
+    }
+    with pytest.raises(ValueError, match="Unsupported demo model_type"):
+        pipeline._model_config_payload("not_a_model")
+
+
+def test_select_winner_honors_metric():
+    """E4 (#410, D5) -- the metric param drives selection; NaN/missing skip."""
+    results = {
+        "naive": {"wape": 0.30, "mae": 5.0, "rmse": 9.0},
+        "seasonal_naive": {"wape": 0.12, "mae": 6.0, "rmse": 7.0},
+    }
+    assert pipeline._select_winner(results, "wape") == ("seasonal_naive", 0.12)
+    assert pipeline._select_winner(results, "mae") == ("naive", 5.0)
+    assert pipeline._select_winner(results, "rmse") == ("seasonal_naive", 7.0)
+    sparse = {"a": {"wape": 0.2}, "b": {"mae": 4.0}}
+    assert pipeline._select_winner(sparse, "mae") == ("b", 4.0)
+    nan = {"a": {"rmse": float("nan")}, "b": {"rmse": 3.0}}
+    assert pipeline._select_winner(nan, "rmse") == ("b", 3.0)
+
+
+async def test_step_train_trains_selected_models(monkeypatch, tmp_path):
+    """E4 (#410) -- step_train trains exactly the configured selection."""
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
+    rc = pipeline._resolve_run_config(
+        DemoRunRequest(train_model_types=["naive", "seasonal_average"])
+    )
+    ctx = _ctx_for_step(run_config=rc)
+    rec = _RecordingClient(
+        None,
+        responses={("POST", "/forecasting/train"): {"model_path": "demo/x-model_abc.joblib"}},
+    )
+    status, _detail, data = await pipeline.step_train(ctx, _as_client(rec))
+    assert status == "pass"
+    assert set(ctx.train_results) == {"naive", "seasonal_average"}
+    assert data["requested_models"] == ["naive", "seasonal_average"]
+    posted = [
+        b["config"]["model_type"]
+        for (_m, p, b) in rec.calls
+        if p == "/forecasting/train" and b is not None
+    ]
+    assert sorted(posted) == ["naive", "seasonal_average"]
+
+
+async def test_step_train_fails_fast_on_disabled_flag(monkeypatch, tmp_path):
+    """E4 (#410, D6) -- a disabled opt-in model fails before any train POST."""
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: _fake_settings(str(tmp_path / "reg"), forecast_enable_lightgbm=False),
+    )
+    rc = pipeline._resolve_run_config(DemoRunRequest(train_model_types=["naive", "lightgbm"]))
+    ctx = _ctx_for_step(run_config=rc)
+    rec = _RecordingClient(None, responses={("POST", "/forecasting/train"): {"model_path": "x"}})
+    status, detail, data = await pipeline.step_train(ctx, _as_client(rec))
+    assert status == "fail"
+    assert "forecast_enable" in detail
+    assert "lightgbm" in detail
+    assert data["disabled_models"] == ["lightgbm"]
+    assert rec.calls == []  # fail-fast: no train requests issued
+
+
+async def test_step_backtest_sends_configured_split_config():
+    """E4 (#410) -- the configured split + metric ride into POST /backtesting/run."""
+    rc = pipeline._resolve_run_config(
+        DemoRunRequest(
+            train_model_types=["naive", "seasonal_average"],
+            backtest=DemoBacktestConfig(
+                horizon=21, strategy="sliding", n_splits=4, min_train_size=40, gap=2, metric="rmse"
+            ),
+        )
+    )
+    ctx = _ctx_for_step(run_config=rc)
+    rec = _RecordingClient(
+        None,
+        responses={
+            ("POST", "/backtesting/run"): {
+                "main_model_results": {"aggregated_metrics": {"wape": 0.3, "mae": 5.0, "rmse": 9.0}}
+            }
+        },
+    )
+    status, detail, data = await pipeline.step_backtest(ctx, _as_client(rec))
+    assert status == "pass"
+    assert data["metric"] == "rmse"
+    bodies = [b for (_m, p, b) in rec.calls if p == "/backtesting/run" and b is not None]
+    assert len(bodies) == 2  # exactly the selected models, no separate baselines call
+    for body in bodies:
+        assert body["config"]["split_config"] == {
+            "strategy": "sliding",
+            "n_splits": 4,
+            "min_train_size": 40,
+            "gap": 2,
+            "horizon": 21,
+        }
+        assert body["config"]["include_baselines"] is False
+    assert detail.startswith("2 models") and "rmse=" in detail
+
+
+async def test_step_backtest_custom_selection_appends_prophet_like_on_showcase_rich():
+    """E4 (#410, D4) -- prophet_like is appended on showcase_rich custom runs."""
+    rc = pipeline._resolve_run_config(
+        DemoRunRequest(train_model_types=["naive", "seasonal_average"])
+    )
+    ctx = _ctx_for_step(scenario=ScenarioPreset.SHOWCASE_RICH, run_config=rc)
+    rec = _RecordingClient(
+        None,
+        responses={
+            ("POST", "/backtesting/run"): {
+                "main_model_results": {
+                    "aggregated_metrics": {"wape": 0.3},
+                    "bucketed_aggregated_metrics": {"h_1_7": {"wape": 0.25}},
+                }
+            }
+        },
+    )
+    status, _detail, _data = await pipeline.step_backtest(ctx, _as_client(rec))
+    assert status == "pass"
+    posted = [
+        b["config"]["model_config_main"]["model_type"]
+        for (_m, p, b) in rec.calls
+        if p == "/backtesting/run" and b is not None
+    ]
+    assert posted == ["naive", "seasonal_average", "prophet_like"]
+    # bucketed metrics captured from the prophet_like (V2) call.
+    assert ctx.bucketed_aggregated_metrics == {"h_1_7": {"wape": 0.25}}
+
+
+async def test_step_backtest_legacy_path_unchanged_when_not_customized():
+    """E4 (#410, D4) -- a non-customized run keeps the legacy 3-baseline loop."""
+    ctx = _ctx_for_step()  # demo_minimal, default (not customized) run_config
+    rec = _RecordingClient(
+        None,
+        responses={
+            ("POST", "/backtesting/run"): {
+                "main_model_results": {"aggregated_metrics": {"wape": 0.3}}
+            }
+        },
+    )
+    status, detail, data = await pipeline.step_backtest(ctx, _as_client(rec))
+    assert status == "pass"
+    bodies = [b for (_m, p, b) in rec.calls if p == "/backtesting/run" and b is not None]
+    posted = [b["config"]["model_config_main"]["model_type"] for b in bodies]
+    assert posted == list(pipeline.DEMO_MODEL_TYPES)
+    for body in bodies:
+        assert body["config"]["split_config"] == {
+            "strategy": "expanding",
+            "n_splits": pipeline.DEMO_BACKTEST_SPLITS,
+            "min_train_size": pipeline.DEMO_MIN_TRAIN_SIZE,
+            "gap": 0,
+            "horizon": pipeline.DEMO_HORIZON,
+        }
+        assert body["config"]["include_baselines"] is False
+    assert data["metric"] == "wape"
+    assert "wape=" in detail
+
+
+async def test_pipeline_complete_echoes_run_config(monkeypatch, tmp_path):
+    """E4 (#410) -- pipeline_complete echoes run_config on custom runs, None on legacy."""
+    artifact = tmp_path / "naive-model.joblib"
+    artifact.write_bytes(b"fake joblib artifact bytes")
+    registry_root = tmp_path / "registry"
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(registry_root)))
+    wapes = {"naive": 0.30, "seasonal_average": 0.15}
+    monkeypatch.setattr(pipeline, "_Client", _build_fake_client(str(artifact), wapes))
+
+    req = DemoRunRequest(
+        train_model_types=["naive", "seasonal_average"],
+        backtest=DemoBacktestConfig(horizon=14, n_splits=3, metric="rmse"),
+    )
+    events = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=req)]
+    final = events[-1]
+    assert final.event_type == "pipeline_complete"
+    assert final.data["run_config"] is not None
+    assert final.data["run_config"]["train_model_types"] == ["naive", "seasonal_average"]
+    assert final.data["run_config"]["backtest"]["metric"] == "rmse"
+
+    legacy = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=DemoRunRequest())]
+    assert legacy[-1].data["run_config"] is None
 
 
 # =============================================================================

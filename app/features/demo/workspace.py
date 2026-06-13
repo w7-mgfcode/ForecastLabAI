@@ -87,6 +87,22 @@ def _apply_filters[SelectT: Select[Any]](
     return stmt
 
 
+def _run_config_payload(req: DemoRunRequest) -> dict[str, Any] | None:
+    """Build the ``run_config`` JSONB payload for a kept run (E4, #410).
+
+    Returns ``None`` when the run used default config (BOTH fields absent) so
+    the column stays NULL and Load/Replay can NULL-detect "defaults". Otherwise
+    a sparse dict carrying only the operator-set portions, JSON-serialised via
+    ``model_dump(mode="json")`` so a verbatim Replay re-submits it unchanged.
+    """
+    if req.train_model_types is None and req.backtest is None:
+        return None
+    return {
+        "train_model_types": req.train_model_types,
+        "backtest": req.backtest.model_dump(mode="json") if req.backtest is not None else None,
+    }
+
+
 async def create_workspace(req: DemoRunRequest) -> str | None:
     """Insert a ``running`` workspace row for a ``preservation="keep"`` run.
 
@@ -127,6 +143,9 @@ async def create_workspace(req: DemoRunRequest) -> str | None:
                         if req.user_scope is not None
                         else None
                     ),
+                    # E4 (#409 sibling, #410): replay-input run config -- model
+                    # set + backtest knobs, recorded verbatim (NULL on defaults).
+                    run_config=_run_config_payload(req),
                 )
             )
             await db.commit()

@@ -34,6 +34,16 @@ def test_catalog_families_are_valid_literals() -> None:
         assert model.family in {"baseline", "tree", "additive"}
 
 
+def test_capabilities_stays_pure_default_enabled_true() -> None:
+    """E4 (#410, D3) -- the pure catalog leaves enabled=True (no settings read).
+
+    The forecast_enable_* overlay is the SERVICE's job; build_model_catalog
+    stays I/O-free, so every item carries the schema default.
+    """
+    for model in build_model_catalog().models:
+        assert model.enabled is True
+
+
 def test_requires_extra_flags_lightgbm_xgboost_only() -> None:
     """Only the opt-in extras (lightgbm/xgboost) carry requires_extra=True."""
     catalog = build_model_catalog()

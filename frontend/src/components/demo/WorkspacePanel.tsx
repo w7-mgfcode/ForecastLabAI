@@ -69,6 +69,7 @@ import { ROUTES } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 import type { WorkspaceListItem, WorkspaceListParams } from '@/types/api'
 import { WorkspaceEditDialog } from './WorkspaceEditDialog'
+import { parseRunConfig } from './run-config-utils'
 
 interface WorkspacePanelProps {
   /** Called when the operator clicks Load — restore config + artifacts, no run. */
@@ -113,6 +114,15 @@ function winnerOf(ws: WorkspaceListItem): string | null {
 
 function labelOf(ws: WorkspaceListItem): string {
   return ws.name ?? ws.workspace_id.slice(0, 8)
+}
+
+// E4 (#410) — compact run-config summary, e.g. "custom: 4 models · rmse · 4×h21".
+// Null when the row used default config (run_config null) — no badge rendered.
+function runConfigSummary(ws: WorkspaceListItem): string | null {
+  const parsed = parseRunConfig(ws.run_config)
+  if (!parsed) return null
+  const { trainModels, backtest } = parsed
+  return `${trainModels.length} models · ${backtest.metric} · ${backtest.n_splits}×h${backtest.horizon}`
 }
 
 export function WorkspacePanel({
@@ -353,6 +363,11 @@ export function WorkspacePanel({
                     <span className="font-semibold">{labelOf(ws)}</span>
                     {ws.archived && <Badge variant="outline">archived</Badge>}
                     {ws.replayed_from_workspace_id && <Badge variant="outline">replay</Badge>}
+                    {runConfigSummary(ws) && (
+                      <Badge variant="secondary" data-testid="run-config-summary-badge">
+                        custom: {runConfigSummary(ws)}
+                      </Badge>
+                    )}
                     <span className="rounded bg-muted px-2 py-0.5">{ws.scenario}</span>
                     <span>seed {ws.seed}</span>
                     <span className={statusClass(ws.status)}>{ws.status.toUpperCase()}</span>
