@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.2.23](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.22...v0.2.23) (2026-06-13)
+
+
+### Features
+
+* **api,db:** showcase run-config start-frame contract + workspace column ([#410](https://github.com/w7-mgfcode/ForecastLabAI/issues/410)) ([c5e68e5](https://github.com/w7-mgfcode/ForecastLabAI/commit/c5e68e52738cd58581b4cbb3e28ea1878d83b808))
+* **api,db:** showcase-completion E1 — workspace metadata & provenance backbone ([#407](https://github.com/w7-mgfcode/ForecastLabAI/issues/407)) ([3611908](https://github.com/w7-mgfcode/ForecastLabAI/commit/36119081bab25b105e9b6acc66afa2cee43e9a8b))
+* **api,ui:** add showcase workspace delete endpoint and panel action ([#404](https://github.com/w7-mgfcode/ForecastLabAI/issues/404)) ([bdf85f6](https://github.com/w7-mgfcode/ForecastLabAI/commit/bdf85f6bdf57a0041f47a74d86ca611e2077cecb))
+* **api,ui:** add showcase workspace delete endpoint and panel action ([#404](https://github.com/w7-mgfcode/ForecastLabAI/issues/404)) ([967588e](https://github.com/w7-mgfcode/ForecastLabAI/commit/967588e4c805b0c5b118eaafc60f3c586699033a))
+* **api,ui:** showcase advanced seed config and scope selection ([#409](https://github.com/w7-mgfcode/ForecastLabAI/issues/409)) ([195b384](https://github.com/w7-mgfcode/ForecastLabAI/commit/195b3840152f21f5e4be1f86306aebd61b60fb26))
+* **api,ui:** showcase-completion E2 — safe replay & workspace lifecycle ([#408](https://github.com/w7-mgfcode/ForecastLabAI/issues/408)) ([0708d7d](https://github.com/w7-mgfcode/ForecastLabAI/commit/0708d7daf2d1f4aaae7812353cac219a9e564cce))
+* **api,ui:** showcase-completion E4 — run-config phase controls ([#410](https://github.com/w7-mgfcode/ForecastLabAI/issues/410)) ([ce12037](https://github.com/w7-mgfcode/ForecastLabAI/commit/ce12037db807f4899b43896b19a7499f6e550179))
+* **api,ui:** showcase-completion E5 — agent/hitl + rag story capture ([#411](https://github.com/w7-mgfcode/ForecastLabAI/issues/411)) ([e38e66c](https://github.com/w7-mgfcode/ForecastLabAI/commit/e38e66cab488c1dcf8ca530e73b0687c7b0c7400))
+* **api,ui:** showcase-completion E6 — export bundle mvp ([#412](https://github.com/w7-mgfcode/ForecastLabAI/issues/412)) ([0381edb](https://github.com/w7-mgfcode/ForecastLabAI/commit/0381edb27a5b4d56998abb05427ca2816beb8e10))
+* **api:** add hitl decision relay and story capture to demo pipeline ([#411](https://github.com/w7-mgfcode/ForecastLabAI/issues/411)) ([de16625](https://github.com/w7-mgfcode/ForecastLabAI/commit/de16625a5b8a0b84b7ff3b565402c73fa5dfd0aa))
+* **api:** add showcase workspace export bundle endpoint ([#412](https://github.com/w7-mgfcode/ForecastLabAI/issues/412)) ([0671264](https://github.com/w7-mgfcode/ForecastLabAI/commit/06712644704280f84eaac1d3e6a25ad60e3c7f1e))
+* **api:** add workspace list filters and link-health endpoint ([#408](https://github.com/w7-mgfcode/ForecastLabAI/issues/408)) ([ab18715](https://github.com/w7-mgfcode/ForecastLabAI/commit/ab1871534dd6fdb310c6aab3b71f63d2ce22d5f4))
+* **api:** add workspace patch lifecycle endpoint and replay provenance ([#407](https://github.com/w7-mgfcode/ForecastLabAI/issues/407)) ([9e12aad](https://github.com/w7-mgfcode/ForecastLabAI/commit/9e12aadc1246f07691d461a7db0308e8b2990f43))
+* **api:** honor run config in demo pipeline + catalog enabled overlay ([#410](https://github.com/w7-mgfcode/ForecastLabAI/issues/410)) ([a750d7d](https://github.com/w7-mgfcode/ForecastLabAI/commit/a750d7d1acfbf6cca9e6abe4a9d86a4c9c0f92d6))
+* **api:** thread seed overrides and user scope through demo pipeline ([#409](https://github.com/w7-mgfcode/ForecastLabAI/issues/409)) ([859b24b](https://github.com/w7-mgfcode/ForecastLabAI/commit/859b24b63909444262ea727cd5bb5a5acdf20dab))
+* **data:** add allow-listed nested seed overrides to seeder contract ([#409](https://github.com/w7-mgfcode/ForecastLabAI/issues/409)) ([890675b](https://github.com/w7-mgfcode/ForecastLabAI/commit/890675bc3c9a3d48e234b7e44ae1cd6e73aaa213))
+* **db:** extend showcase_workspace with metadata and provenance columns ([#407](https://github.com/w7-mgfcode/ForecastLabAI/issues/407)) ([a5f7253](https://github.com/w7-mgfcode/ForecastLabAI/commit/a5f72533775b790c5d10808c20ccd368e91e76b3))
+* **ui:** add advanced seed config panel and scope selector to showcase ([#409](https://github.com/w7-mgfcode/ForecastLabAI/issues/409)) ([ee59cbd](https://github.com/w7-mgfcode/ForecastLabAI/commit/ee59cbd392ff15affd7142633159fbcb50aab37d))
+* **ui:** add export button to saved-workspaces panel ([#412](https://github.com/w7-mgfcode/ForecastLabAI/issues/412)) ([93282ed](https://github.com/w7-mgfcode/ForecastLabAI/commit/93282edcc59d9e78ccad248d12f19740ac19fd26))
+* **ui:** add reject button, run story panel and ops approval history ([#411](https://github.com/w7-mgfcode/ForecastLabAI/issues/411)) ([8277e45](https://github.com/w7-mgfcode/ForecastLabAI/commit/8277e45b1c1486b687c28fad6506efadb92af32a))
+* **ui:** add safe replay and workspace lifecycle to showcase ([#408](https://github.com/w7-mgfcode/ForecastLabAI/issues/408)) ([7012fd0](https://github.com/w7-mgfcode/ForecastLabAI/commit/7012fd08b2eb314aea372d5afbf931c95e3b640d))
+* **ui:** add two-workspace compare page ([#408](https://github.com/w7-mgfcode/ForecastLabAI/issues/408)) ([c957de8](https://github.com/w7-mgfcode/ForecastLabAI/commit/c957de80bcf1c5d826adb716ed3ab9c4bf32b3e8))
+* **ui:** add workspace lifecycle types and hooks ([#408](https://github.com/w7-mgfcode/ForecastLabAI/issues/408)) ([f26507f](https://github.com/w7-mgfcode/ForecastLabAI/commit/f26507f7f4e0d6a456f862d5e11125fe0b9b3a2e))
+* **ui:** send replayed_from_workspace_id on showcase replay ([#407](https://github.com/w7-mgfcode/ForecastLabAI/issues/407)) ([e26de84](https://github.com/w7-mgfcode/ForecastLabAI/commit/e26de84e5aec87898f0b0b5b5c9d2955dc6dd072))
+* **ui:** showcase run-config panel, preview, and replay wiring ([#410](https://github.com/w7-mgfcode/ForecastLabAI/issues/410)) ([061b85e](https://github.com/w7-mgfcode/ForecastLabAI/commit/061b85e06fc5330e44d92e0fae208a33abde2012))
+
+
+### Documentation
+
+* **api:** document workspace lifecycle and health contracts ([#408](https://github.com/w7-mgfcode/ForecastLabAI/issues/408)) ([0560e0e](https://github.com/w7-mgfcode/ForecastLabAI/commit/0560e0eba6e56958f8605087d4dd099a088a3da2))
+* **docs,repo:** showcase workspace e5 release gate — runbook + domain model + prp ([#401](https://github.com/w7-mgfcode/ForecastLabAI/issues/401)) ([8ec1cb7](https://github.com/w7-mgfcode/ForecastLabAI/commit/8ec1cb755dd45b233946f1e472f48b54f8afee45))
+* **docs:** add showcase workspace runbook and domain model entries ([#401](https://github.com/w7-mgfcode/ForecastLabAI/issues/401)) ([fe32e7b](https://github.com/w7-mgfcode/ForecastLabAI/commit/fe32e7bea0dda4d3a49849233bbdbab8311479f8))
+* **docs:** document approval and rag story capture contracts ([#411](https://github.com/w7-mgfcode/ForecastLabAI/issues/411)) ([d41f80b](https://github.com/w7-mgfcode/ForecastLabAI/commit/d41f80b803e5a640a4568f6131220f75ed9cc429))
+* **docs:** document seed override contract and workspace slots ([#409](https://github.com/w7-mgfcode/ForecastLabAI/issues/409)) ([bf0ccbf](https://github.com/w7-mgfcode/ForecastLabAI/commit/bf0ccbfa6d2e8e3eca9532fc783abc4c28d0eb7a))
+* **docs:** document showcase run-config contract ([#410](https://github.com/w7-mgfcode/ForecastLabAI/issues/410)) ([3ece453](https://github.com/w7-mgfcode/ForecastLabAI/commit/3ece4535972968d5f87f02d486f595eb54a34fce))
+* **docs:** document workspace export bundle contract ([#412](https://github.com/w7-mgfcode/ForecastLabAI/issues/412)) ([9a4f12d](https://github.com/w7-mgfcode/ForecastLabAI/commit/9a4f12dd55eb9806d312556be02dfa9250c9a6c2))
+* **docs:** document workspace story slots and patch contract ([#407](https://github.com/w7-mgfcode/ForecastLabAI/issues/407)) ([493a9a4](https://github.com/w7-mgfcode/ForecastLabAI/commit/493a9a436cce5810e68d0053f7cb23d494edf95b))
+* **docs:** reconcile domain model showcase export out-of-scope note ([#420](https://github.com/w7-mgfcode/ForecastLabAI/issues/420)) ([4d1b9ae](https://github.com/w7-mgfcode/ForecastLabAI/commit/4d1b9ae1fb0f12897e2a3830c9f7b9a75edccf08))
+* **repo:** showcase-completion E7 release-gate — domain-model reconciliation + gate PRP ([#420](https://github.com/w7-mgfcode/ForecastLabAI/issues/420)) ([2332459](https://github.com/w7-mgfcode/ForecastLabAI/commit/2332459de7b0346414feeb341e1b5bcf0f614ac7))
+* **repo:** track showcase completion e7 release-gate prp ([#420](https://github.com/w7-mgfcode/ForecastLabAI/issues/420)) ([3c49373](https://github.com/w7-mgfcode/ForecastLabAI/commit/3c49373f53d68d78b404312cad51e1cdb116d657))
+* **repo:** track showcase workspace e5 prp ([#401](https://github.com/w7-mgfcode/ForecastLabAI/issues/401)) ([5f3507a](https://github.com/w7-mgfcode/ForecastLabAI/commit/5f3507a40d69d7da7bcec0fcd485284b5f96c14b))
+* **repo:** track showcase-completion e1-e5 prps ([#406](https://github.com/w7-mgfcode/ForecastLabAI/issues/406)) ([a68b0d0](https://github.com/w7-mgfcode/ForecastLabAI/commit/a68b0d0e6d087047bf2ba16b669d8c8469b78b61))
+* **repo:** track showcase-completion e1-e5 prps ([#406](https://github.com/w7-mgfcode/ForecastLabAI/issues/406)) ([fc390bf](https://github.com/w7-mgfcode/ForecastLabAI/commit/fc390bfad5841a38c41e6473a3b4b3e776dba340))
+
 ## [0.2.22](https://github.com/w7-mgfcode/ForecastLabAI/compare/v0.2.21...v0.2.22) (2026-06-12)
 
 
