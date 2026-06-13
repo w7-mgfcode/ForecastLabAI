@@ -111,12 +111,28 @@ class ModelSelectionService:
     # -------------------------------------------------------------------------
 
     def get_model_catalog(self) -> ModelCatalogResponse:
-        """Return the backend-owned candidate-model catalog (static, no I/O).
+        """Return the backend-owned candidate-model catalog with the enabled overlay.
 
-        Thin pass-through to the pure :func:`capabilities.build_model_catalog`;
-        kept on the service for symmetry with ``get_availability`` / ``run``.
+        Thin orchestration over the pure :func:`capabilities.build_model_catalog`
+        (which stays I/O-free): the service overlays the runtime
+        ``forecast_enable_*`` flags onto each item's ``enabled`` field (E4 #410,
+        D3) so the showcase model picker can hide disabled opt-in models. Every
+        always-on model stays ``enabled=True``.
         """
-        return build_model_catalog()
+        base = build_model_catalog()
+        settings = get_settings()
+        flag_by_model = {
+            "lightgbm": settings.forecast_enable_lightgbm,
+            "xgboost": settings.forecast_enable_xgboost,
+            "random_forest": settings.forecast_enable_random_forest,
+        }
+        return ModelCatalogResponse(
+            models=[
+                model.model_copy(update={"enabled": flag_by_model.get(model.model_type, True)})
+                for model in base.models
+            ],
+            default_candidate_model_types=base.default_candidate_model_types,
+        )
 
     # -------------------------------------------------------------------------
     # Availability

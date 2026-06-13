@@ -8,6 +8,7 @@ database, no network, and no real models.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
@@ -15,9 +16,15 @@ from typing import Any, cast
 import pytest
 from fastapi import FastAPI
 
-from app.features.demo import pipeline
-from app.features.demo.schemas import DemoRunRequest
+from app.features.demo import hitl, pipeline
+from app.features.demo.schemas import (
+    DemoBacktestConfig,
+    DemoRunRequest,
+    StepEvent,
+    UserScope,
+)
 from app.shared.seeder.config import ScenarioPreset
+from app.shared.seeder.overrides import SeederOverrides
 
 # A bare app instance -- the fake clients ignore it; it only satisfies the
 # run_pipeline(app: FastAPI, ...) signature.
@@ -377,6 +384,9 @@ def _fake_settings(
     *,
     rag_embedding_provider: str = "openai",
     openai_api_key: str = "sk-test",
+    forecast_enable_lightgbm: bool = False,
+    forecast_enable_xgboost: bool = False,
+    forecast_enable_random_forest: bool = False,
 ) -> SimpleNamespace:
     """Fake settings: usable registry root, no agent LLM key (agent skips).
 
@@ -384,6 +394,11 @@ def _fake_settings(
     PRP-40 knowledge phase runs to completion in test fixtures; the
     knowledge-skip tests override via ``rag_embedding_provider="openai"`` +
     ``openai_api_key=""`` (or "ollama" with an unreachable canned probe).
+
+    E4 (#410) -- the ``forecast_enable_*`` flags default False (matching
+    app/core/config.py), so the legacy demo trio (all always-on) still trains;
+    step_train's disabled-model fail-fast path is exercised by overriding a flag
+    AND selecting that model.
     """
     return SimpleNamespace(
         registry_artifact_root=registry_root,
@@ -392,6 +407,9 @@ def _fake_settings(
         openai_api_key=openai_api_key,
         google_api_key="",
         rag_embedding_provider=rag_embedding_provider,
+        forecast_enable_lightgbm=forecast_enable_lightgbm,
+        forecast_enable_xgboost=forecast_enable_xgboost,
+        forecast_enable_random_forest=forecast_enable_random_forest,
     )
 
 
@@ -413,6 +431,247 @@ def test_select_winner_skips_nan():
 def test_select_winner_none_when_no_usable_wape():
     assert pipeline._select_winner({}) is None
     assert pipeline._select_winner({"naive": {"wape": float("nan")}}) is None
+
+
+# =============================================================================
+# E4 (#410) -- run-config resolution, selection, split, metric, echo
+# =============================================================================
+
+
+def _ctx_for_step(
+    scenario: ScenarioPreset = ScenarioPreset.DEMO_MINIMAL,
+    run_config: pipeline.ResolvedRunConfig | None = None,
+) -> pipeline.DemoContext:
+    """A DemoContext positioned at the modeling phase (grain + window set)."""
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False, scenario=scenario)
+    ctx.store_id = 7
+    ctx.product_id = 3
+    ctx.date_start = date(2024, 1, 1)
+    ctx.date_end = date(2024, 12, 31)
+    if run_config is not None:
+        ctx.run_config = run_config
+    return ctx
+
+
+def test_resolve_run_config_defaults_and_custom():
+    """E4 (#410) -- None/None -> legacy; partial configs fill the other half."""
+    legacy = pipeline._resolve_run_config(DemoRunRequest())
+    assert legacy.customized is False
+    assert legacy.model_types == pipeline.DEMO_MODEL_TYPES
+    assert legacy.horizon == pipeline.DEMO_HORIZON
+    assert legacy.n_splits == pipeline.DEMO_BACKTEST_SPLITS
+    assert legacy.min_train_size == pipeline.DEMO_MIN_TRAIN_SIZE
+    assert legacy.gap == 0
+    assert legacy.metric == "wape"
+
+    sel_only = pipeline._resolve_run_config(
+        DemoRunRequest(train_model_types=["naive", "seasonal_average"])
+    )
+    assert sel_only.customized is True
+    assert sel_only.model_types == ("naive", "seasonal_average")
+    assert sel_only.horizon == pipeline.DEMO_HORIZON  # backtest defaults stay legacy
+    assert sel_only.metric == "wape"
+
+    bt_only = pipeline._resolve_run_config(
+        DemoRunRequest(backtest=DemoBacktestConfig(horizon=21, n_splits=4, metric="rmse"))
+    )
+    assert bt_only.customized is True
+    assert bt_only.model_types == pipeline.DEMO_MODEL_TYPES  # selection stays legacy
+    assert bt_only.horizon == 21
+    assert bt_only.n_splits == 4
+    assert bt_only.metric == "rmse"
+
+
+def test_model_config_payload_minimal_fallback_for_all_known_types():
+    """E4 (#410) -- every KNOWN type resolves; explicit branches keep params."""
+    from app.shared.model_taxonomy import KNOWN_MODEL_TYPES
+
+    for mt in KNOWN_MODEL_TYPES:
+        assert pipeline._model_config_payload(mt)["model_type"] == mt
+    assert pipeline._model_config_payload("seasonal_naive") == {
+        "model_type": "seasonal_naive",
+        "season_length": 7,
+    }
+    assert pipeline._model_config_payload("moving_average") == {
+        "model_type": "moving_average",
+        "window_size": 7,
+    }
+    with pytest.raises(ValueError, match="Unsupported demo model_type"):
+        pipeline._model_config_payload("not_a_model")
+
+
+def test_select_winner_honors_metric():
+    """E4 (#410, D5) -- the metric param drives selection; NaN/missing skip."""
+    results = {
+        "naive": {"wape": 0.30, "mae": 5.0, "rmse": 9.0},
+        "seasonal_naive": {"wape": 0.12, "mae": 6.0, "rmse": 7.0},
+    }
+    assert pipeline._select_winner(results, "wape") == ("seasonal_naive", 0.12)
+    assert pipeline._select_winner(results, "mae") == ("naive", 5.0)
+    assert pipeline._select_winner(results, "rmse") == ("seasonal_naive", 7.0)
+    sparse = {"a": {"wape": 0.2}, "b": {"mae": 4.0}}
+    assert pipeline._select_winner(sparse, "mae") == ("b", 4.0)
+    nan = {"a": {"rmse": float("nan")}, "b": {"rmse": 3.0}}
+    assert pipeline._select_winner(nan, "rmse") == ("b", 3.0)
+
+
+async def test_step_train_trains_selected_models(monkeypatch, tmp_path):
+    """E4 (#410) -- step_train trains exactly the configured selection."""
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
+    rc = pipeline._resolve_run_config(
+        DemoRunRequest(train_model_types=["naive", "seasonal_average"])
+    )
+    ctx = _ctx_for_step(run_config=rc)
+    rec = _RecordingClient(
+        None,
+        responses={("POST", "/forecasting/train"): {"model_path": "demo/x-model_abc.joblib"}},
+    )
+    status, _detail, data = await pipeline.step_train(ctx, _as_client(rec))
+    assert status == "pass"
+    assert set(ctx.train_results) == {"naive", "seasonal_average"}
+    assert data["requested_models"] == ["naive", "seasonal_average"]
+    posted = [
+        b["config"]["model_type"]
+        for (_m, p, b) in rec.calls
+        if p == "/forecasting/train" and b is not None
+    ]
+    assert sorted(posted) == ["naive", "seasonal_average"]
+
+
+async def test_step_train_fails_fast_on_disabled_flag(monkeypatch, tmp_path):
+    """E4 (#410, D6) -- a disabled opt-in model fails before any train POST."""
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: _fake_settings(str(tmp_path / "reg"), forecast_enable_lightgbm=False),
+    )
+    rc = pipeline._resolve_run_config(DemoRunRequest(train_model_types=["naive", "lightgbm"]))
+    ctx = _ctx_for_step(run_config=rc)
+    rec = _RecordingClient(None, responses={("POST", "/forecasting/train"): {"model_path": "x"}})
+    status, detail, data = await pipeline.step_train(ctx, _as_client(rec))
+    assert status == "fail"
+    assert "forecast_enable" in detail
+    assert "lightgbm" in detail
+    assert data["disabled_models"] == ["lightgbm"]
+    assert rec.calls == []  # fail-fast: no train requests issued
+
+
+async def test_step_backtest_sends_configured_split_config():
+    """E4 (#410) -- the configured split + metric ride into POST /backtesting/run."""
+    rc = pipeline._resolve_run_config(
+        DemoRunRequest(
+            train_model_types=["naive", "seasonal_average"],
+            backtest=DemoBacktestConfig(
+                horizon=21, strategy="sliding", n_splits=4, min_train_size=40, gap=2, metric="rmse"
+            ),
+        )
+    )
+    ctx = _ctx_for_step(run_config=rc)
+    rec = _RecordingClient(
+        None,
+        responses={
+            ("POST", "/backtesting/run"): {
+                "main_model_results": {"aggregated_metrics": {"wape": 0.3, "mae": 5.0, "rmse": 9.0}}
+            }
+        },
+    )
+    status, detail, data = await pipeline.step_backtest(ctx, _as_client(rec))
+    assert status == "pass"
+    assert data["metric"] == "rmse"
+    bodies = [b for (_m, p, b) in rec.calls if p == "/backtesting/run" and b is not None]
+    assert len(bodies) == 2  # exactly the selected models, no separate baselines call
+    for body in bodies:
+        assert body["config"]["split_config"] == {
+            "strategy": "sliding",
+            "n_splits": 4,
+            "min_train_size": 40,
+            "gap": 2,
+            "horizon": 21,
+        }
+        assert body["config"]["include_baselines"] is False
+    assert detail.startswith("2 models") and "rmse=" in detail
+
+
+async def test_step_backtest_custom_selection_appends_prophet_like_on_showcase_rich():
+    """E4 (#410, D4) -- prophet_like is appended on showcase_rich custom runs."""
+    rc = pipeline._resolve_run_config(
+        DemoRunRequest(train_model_types=["naive", "seasonal_average"])
+    )
+    ctx = _ctx_for_step(scenario=ScenarioPreset.SHOWCASE_RICH, run_config=rc)
+    rec = _RecordingClient(
+        None,
+        responses={
+            ("POST", "/backtesting/run"): {
+                "main_model_results": {
+                    "aggregated_metrics": {"wape": 0.3},
+                    "bucketed_aggregated_metrics": {"h_1_7": {"wape": 0.25}},
+                }
+            }
+        },
+    )
+    status, _detail, _data = await pipeline.step_backtest(ctx, _as_client(rec))
+    assert status == "pass"
+    posted = [
+        b["config"]["model_config_main"]["model_type"]
+        for (_m, p, b) in rec.calls
+        if p == "/backtesting/run" and b is not None
+    ]
+    assert posted == ["naive", "seasonal_average", "prophet_like"]
+    # bucketed metrics captured from the prophet_like (V2) call.
+    assert ctx.bucketed_aggregated_metrics == {"h_1_7": {"wape": 0.25}}
+
+
+async def test_step_backtest_legacy_path_unchanged_when_not_customized():
+    """E4 (#410, D4) -- a non-customized run keeps the legacy 3-baseline loop."""
+    ctx = _ctx_for_step()  # demo_minimal, default (not customized) run_config
+    rec = _RecordingClient(
+        None,
+        responses={
+            ("POST", "/backtesting/run"): {
+                "main_model_results": {"aggregated_metrics": {"wape": 0.3}}
+            }
+        },
+    )
+    status, detail, data = await pipeline.step_backtest(ctx, _as_client(rec))
+    assert status == "pass"
+    bodies = [b for (_m, p, b) in rec.calls if p == "/backtesting/run" and b is not None]
+    posted = [b["config"]["model_config_main"]["model_type"] for b in bodies]
+    assert posted == list(pipeline.DEMO_MODEL_TYPES)
+    for body in bodies:
+        assert body["config"]["split_config"] == {
+            "strategy": "expanding",
+            "n_splits": pipeline.DEMO_BACKTEST_SPLITS,
+            "min_train_size": pipeline.DEMO_MIN_TRAIN_SIZE,
+            "gap": 0,
+            "horizon": pipeline.DEMO_HORIZON,
+        }
+        assert body["config"]["include_baselines"] is False
+    assert data["metric"] == "wape"
+    assert "wape=" in detail
+
+
+async def test_pipeline_complete_echoes_run_config(monkeypatch, tmp_path):
+    """E4 (#410) -- pipeline_complete echoes run_config on custom runs, None on legacy."""
+    artifact = tmp_path / "naive-model.joblib"
+    artifact.write_bytes(b"fake joblib artifact bytes")
+    registry_root = tmp_path / "registry"
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(registry_root)))
+    wapes = {"naive": 0.30, "seasonal_average": 0.15}
+    monkeypatch.setattr(pipeline, "_Client", _build_fake_client(str(artifact), wapes))
+
+    req = DemoRunRequest(
+        train_model_types=["naive", "seasonal_average"],
+        backtest=DemoBacktestConfig(horizon=14, n_splits=3, metric="rmse"),
+    )
+    events = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=req)]
+    final = events[-1]
+    assert final.event_type == "pipeline_complete"
+    assert final.data["run_config"] is not None
+    assert final.data["run_config"]["train_model_types"] == ["naive", "seasonal_average"]
+    assert final.data["run_config"]["backtest"]["metric"] == "rmse"
+
+    legacy = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=DemoRunRequest())]
+    assert legacy[-1].data["run_config"] is None
 
 
 # =============================================================================
@@ -597,8 +856,119 @@ async def test_run_pipeline_transport_error_becomes_fail(monkeypatch):
 
 
 # =============================================================================
-# PRP-38 — phase grouping + new scenarios
+# E5 (#411) — D2 concurrent intermediate-event drain
 # =============================================================================
+
+
+def _single_step_table(step_fn: Any) -> Any:
+    """Return a one-row phase table wrapping ``step_fn`` (drain-test helper)."""
+
+    def _table(_scenario: Any) -> list[Any]:
+        return [("data", "blocking", step_fn)]
+
+    return _table
+
+
+async def test_run_pipeline_drains_intermediate_event_mid_step(monkeypatch):
+    """D2 — an intermediate event is YIELDED while the step is still pending.
+
+    The stub step buffers an intermediate event, signals it has started, then
+    blocks on an asyncio.Event. The test consumes events until it sees the
+    intermediate frame, asserts the step has NOT yet returned its terminal,
+    then releases the step. Proves the drain overlaps the in-flight step in
+    wall time (not just stream order).
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _blocking_step(_ctx: Any, client: Any) -> Any:
+        client.yield_event(
+            StepEvent(
+                event_type="step_complete",
+                step_name="blocking",
+                step_index=0,
+                total_steps=0,
+                status="running",
+                detail="mid-step",
+                data={"awaiting": True},
+            )
+        )
+        started.set()
+        await release.wait()
+        return ("pass", "done", {})
+
+    monkeypatch.setattr(pipeline, "_phase_table", _single_step_table(_blocking_step))
+
+    agen = pipeline.run_pipeline(app=_FAKE_APP, req=DemoRunRequest())
+    seen: list[StepEvent] = []
+    intermediate: StepEvent | None = None
+    async for ev in agen:
+        seen.append(ev)
+        if ev.event_type == "step_complete" and ev.data.get("awaiting"):
+            intermediate = ev
+            # The step is still blocked: its terminal step_complete (status
+            # 'pass') cannot have been emitted yet.
+            assert started.is_set()
+            assert not any(e.event_type == "step_complete" and e.status == "pass" for e in seen)
+            release.set()
+            break
+
+    assert intermediate is not None
+    # The orchestrator stamped the row's index/phase fields on the drained event.
+    assert intermediate.step_index == 1
+    assert intermediate.phase_name == "data"
+    rest = [e async for e in agen]
+    terminal = [e for e in rest if e.event_type == "step_complete" and e.status == "pass"]
+    assert terminal and terminal[0].step_name == "blocking"
+    assert rest[-1].event_type == "pipeline_complete"
+
+
+async def test_run_pipeline_cancels_in_flight_step_on_generator_close(monkeypatch):
+    """D2 — closing the generator mid-step cancels the step task (Stop button).
+
+    Drives one intermediate event, then ``aclose()`` while the stub step is
+    still blocked. The finally clause must cancel the in-flight task so it ends
+    cancelled (no "Task was destroyed but it is pending" warning).
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+    cancelled = False
+
+    async def _blocking_step(_ctx: Any, client: Any) -> Any:
+        nonlocal cancelled
+        client.yield_event(
+            StepEvent(
+                event_type="step_complete",
+                step_name="blocking",
+                step_index=0,
+                total_steps=0,
+                status="running",
+                detail="mid-step",
+                data={"awaiting": True},
+            )
+        )
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        return ("pass", "done", {})  # pragma: no cover -- never reached
+
+    monkeypatch.setattr(pipeline, "_phase_table", _single_step_table(_blocking_step))
+
+    # Typed Any so .aclose() is reachable (run_pipeline is annotated as the
+    # AsyncIterator supertype, which has no aclose).
+    agen: Any = pipeline.run_pipeline(app=_FAKE_APP, req=DemoRunRequest())
+    async for ev in agen:
+        if ev.event_type == "step_complete" and ev.data.get("awaiting"):
+            break
+    # Close the generator (mirrors the WebSocketDisconnect -> aclose path).
+    await agen.aclose()
+    # Let the cancellation propagate into the orphaned-otherwise task.
+    await asyncio.sleep(0)
+    assert started.is_set()
+    assert cancelled is True
 
 
 def test_phase_table_demo_minimal_matches_legacy_11_steps_under_agents_phase():
@@ -1753,6 +2123,116 @@ async def test_rag_retrieve_probe_skips_on_embedding_auth_502():
     assert ctx.embedding_unreachable is True
 
 
+# =============================================================================
+# E5 (#411) — RAG-event capture (one ctx.rag_events entry per return path)
+# =============================================================================
+
+
+async def test_rag_event_capture_probe_records_provider_state(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: _fake_settings(
+            str(tmp_path / "reg"), rag_embedding_provider="openai", openai_api_key="sk-test"
+        ),
+    )
+    ctx = _make_showcase_ctx()
+    await pipeline.step_embedding_provider_probe(ctx, _as_client(_RecordingClient(None)))
+    assert len(ctx.rag_events) == 1
+    ev = ctx.rag_events[0]
+    assert ev["event"] == "probe"
+    assert ev["status"] == "pass"
+    assert ev["provider"] == "openai"
+    assert ev["reachable"] is True
+
+
+async def test_rag_event_capture_index_records_chunk_count(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: _fake_settings(str(tmp_path / "reg"), rag_embedding_provider="openai"),
+    )
+    ctx = _make_showcase_ctx()
+    results = [
+        {"source_path": p, "status": "indexed", "chunks_created": 4, "error": None}
+        for p in sorted(pipeline._USER_GUIDE_CURATED_FILES)
+    ]
+    client = _RecordingClient(
+        None,
+        responses={
+            ("POST", "/rag/index/project-docs"): {
+                "results": results,
+                "total_files": 5,
+                "indexed": 5,
+                "updated": 0,
+                "unchanged": 0,
+                "failed": 0,
+                "total_chunks": 20,
+            },
+        },
+    )
+    await pipeline.step_rag_index_subset(ctx, _as_client(client))
+    assert len(ctx.rag_events) == 1
+    ev = ctx.rag_events[0]
+    assert ev["event"] == "index"
+    assert ev["status"] == "pass"
+    assert ev["count"] == 20
+    assert ev["provider"] == "openai"
+
+
+async def test_rag_event_capture_index_skip_when_unreachable(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: _fake_settings(str(tmp_path / "reg"), rag_embedding_provider="ollama"),
+    )
+    ctx = _make_showcase_ctx()
+    ctx.embedding_unreachable = True
+    status, _detail, _ = await pipeline.step_rag_index_subset(
+        ctx, _as_client(_RecordingClient(None))
+    )
+    assert status == "skip"
+    assert len(ctx.rag_events) == 1
+    assert ctx.rag_events[0]["event"] == "skip"
+    assert ctx.rag_events[0]["status"] == "skip"
+
+
+async def test_rag_event_capture_retrieve_warn_on_zero_hits(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        pipeline,
+        "get_settings",
+        lambda: _fake_settings(str(tmp_path / "reg"), rag_embedding_provider="openai"),
+    )
+    ctx = _make_showcase_ctx()
+    client = _RecordingClient(
+        None,
+        responses={("POST", "/rag/retrieve"): {"results": [], "total_chunks_searched": 12}},
+    )
+    status, _detail, _ = await pipeline.step_rag_retrieve_probe(ctx, _as_client(client))
+    assert status == "warn"
+    assert len(ctx.rag_events) == 1
+    ev = ctx.rag_events[0]
+    assert ev["event"] == "retrieve"
+    assert ev["status"] == "warn"
+    assert ev["count"] == 0
+
+
+async def test_rag_event_capture_demo_minimal_leaves_events_empty(monkeypatch, tmp_path):
+    """A legacy demo_minimal run never reaches the knowledge phase -> no events."""
+    artifact = tmp_path / "naive-model.joblib"
+    artifact.write_bytes(b"fake joblib artifact bytes")
+    monkeypatch.setattr(
+        pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "registry"))
+    )
+    wapes = {"naive": 0.30, "seasonal_naive": 0.15, "moving_average": 0.25}
+    monkeypatch.setattr(pipeline, "_Client", _build_fake_client(str(artifact), wapes))
+    events = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=DemoRunRequest())]
+    # demo_minimal has no knowledge steps; the accumulator stays empty.
+    assert events[-1].event_type == "pipeline_complete"
+    knowledge_steps = {"embedding_provider_probe", "rag_index_subset", "rag_retrieve_probe"}
+    assert not any(e.step_name in knowledge_steps for e in events)
+
+
 async def test_run_pipeline_showcase_rich_runs_planning_and_knowledge(monkeypatch, tmp_path):
     """PRP-40 — end-to-end SHOWCASE_RICH reaches the 5 new steps + greens."""
     artifact = tmp_path / "artifacts" / "models" / "model_abc123def456.joblib"
@@ -1859,6 +2339,9 @@ def _make_hitl_client(
             event_sink: list[Any] | None = None,
         ) -> None:
             self.calls: list[tuple[str, str]] = []
+            # E5 (#411) -- capture the approve POST body so tests can assert the
+            # relayed decision (approved=true|false + optional reason).
+            self.approve_body_sent: dict[str, Any] | None = None
             self._event_sink = event_sink if event_sink is not None else intermediate
 
         async def __aenter__(self) -> _HitlClient:
@@ -1905,16 +2388,21 @@ def _make_hitl_client(
                     "tokens_used": 80,
                 }
             if path.endswith("/approve"):
+                self.approve_body_sent = json_body
                 if approve_status >= 400:
                     raise pipeline._StepError(
                         step,
                         approve_status,
                         {"title": "Bad Request", "detail": "No pending action"},
                     )
-                return approve_body or {
+                if approve_body is not None:
+                    return approve_body
+                # Mirror the agents API: approved=false -> status "rejected".
+                approved = bool(json_body.get("approved", True)) if json_body else True
+                return {
                     "action_id": chat_action_id,
-                    "approved": True,
-                    "status": "executed",
+                    "approved": approved,
+                    "status": "executed" if approved else "rejected",
                 }
             raise AssertionError(f"unexpected request: {method} {path}")
 
@@ -1956,8 +2444,8 @@ def test_llm_key_present_cloud_still_requires_key(monkeypatch):
     assert pipeline._llm_key_present() is False
 
 
-async def test_agent_hitl_flow_happy_path(monkeypatch, tmp_path):
-    """PRP-41 — full HITL round-trip: chat -> intermediate -> approve -> pass."""
+async def test_agent_hitl_flow_window_lapse_auto_approves(monkeypatch, tmp_path):
+    """PRP-41 / E5 — no operator decision -> window lapses -> auto-approve pass."""
     monkeypatch.setattr(
         pipeline,
         "get_settings",
@@ -1969,8 +2457,8 @@ async def test_agent_hitl_flow_happy_path(monkeypatch, tmp_path):
         "_llm_key_present",
         lambda: True,
     )
-    # Short-circuit the 3s display delay so the test stays fast.
-    monkeypatch.setattr(pipeline, "_APPROVAL_DISPLAY_DELAY_S", 0.0)
+    # Zero window -> wait_for_decision lapses immediately (no operator click).
+    monkeypatch.setattr(pipeline, "_APPROVAL_DECISION_WINDOW_S", 0.0)
 
     client, intermediate = _make_hitl_client()
     ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
@@ -1979,20 +2467,90 @@ async def test_agent_hitl_flow_happy_path(monkeypatch, tmp_path):
     assert status == "pass"
     assert "approved=executed" in detail
     assert data["approval_decision"] == "executed"
+    assert data["auto_approved"] is True
     assert data["action_id"] == "action-abc-123"
     assert data["session_id"] == "sess-test-0001"
     assert data["tokens_used"] == 240
+    # The window lapse relayed approved=true to the agents HITL gate.
+    assert client.approve_body_sent == {"action_id": "action-abc-123", "approved": True}
     # The HITL step buffered exactly one intermediate event for the FE.
     assert len(intermediate) == 1
     inter = intermediate[0]
     assert inter.status == "running"
     assert inter.data["awaiting_approval"] is True
     assert inter.data["action_id"] == "action-abc-123"
+    assert inter.data["decision_url"] == "/demo/hitl-decision"
+    assert inter.data["decision_window_s"] == 0.0
     assert inter.phase_name == pipeline.PHASE_AGENTS
+    # One approval_events entry captured (auto-approved).
+    assert len(ctx.approval_events) == 1
+    entry = ctx.approval_events[0]
+    assert entry["decision"] == "approved"
+    assert entry["auto_approved"] is True
+    assert entry["tool_name"] == "save_scenario"
+    assert entry["execution_status"] == "executed"
+    assert entry["transcript_summary"] == "I'll save that scenario."
+    assert "arguments_keys" in entry["tool_call_summary"]
     # Ctx threaded for downstream cleanup + KPI consumers.
     assert ctx.approval_action_id == "action-abc-123"
     assert ctx.agent_approval_decision == "executed"
     assert ctx.session_id == "sess-test-0001"
+
+
+async def test_agent_hitl_flow_operator_approve(monkeypatch, tmp_path):
+    """E5 — operator approves within the window -> approve POST, entry approved."""
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
+    monkeypatch.setattr(pipeline, "_llm_key_present", lambda: True)
+    monkeypatch.setattr(pipeline, "_APPROVAL_DECISION_WINDOW_S", 5.0)
+
+    async def _fake_wait(_action_id: str, timeout: float) -> tuple[str, str | None]:
+        return ("approved", None)
+
+    monkeypatch.setattr(hitl, "wait_for_decision", _fake_wait)
+
+    client, _intermediate = _make_hitl_client()
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    status, _detail, data = await pipeline.step_agent_hitl_flow(ctx, client)
+
+    assert status == "pass"
+    assert data["approval_decision"] == "executed"
+    assert data["auto_approved"] is False
+    assert client.approve_body_sent == {"action_id": "action-abc-123", "approved": True}
+    assert len(ctx.approval_events) == 1
+    assert ctx.approval_events[0]["decision"] == "approved"
+    assert ctx.approval_events[0]["auto_approved"] is False
+
+
+async def test_agent_hitl_flow_operator_reject(monkeypatch, tmp_path):
+    """E5 (D5) — operator rejects -> approve POST approved=false; pass + green."""
+    monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
+    monkeypatch.setattr(pipeline, "_llm_key_present", lambda: True)
+    monkeypatch.setattr(pipeline, "_APPROVAL_DECISION_WINDOW_S", 5.0)
+
+    async def _fake_wait(_action_id: str, timeout: float) -> tuple[str, str | None]:
+        return ("rejected", "too risky for the demo")
+
+    monkeypatch.setattr(hitl, "wait_for_decision", _fake_wait)
+
+    client, _intermediate = _make_hitl_client()
+    ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
+    status, detail, data = await pipeline.step_agent_hitl_flow(ctx, client)
+
+    # D5 -- a reject is a SUCCESSFUL HITL demonstration: the run stays GREEN.
+    assert status == "pass"
+    assert detail == "rejected by operator"
+    assert data["approval_decision"] == "rejected"
+    # The reject + reason were relayed to the agents HITL gate (approved=false).
+    assert client.approve_body_sent == {
+        "action_id": "action-abc-123",
+        "approved": False,
+        "reason": "too risky for the demo",
+    }
+    assert len(ctx.approval_events) == 1
+    entry = ctx.approval_events[0]
+    assert entry["decision"] == "rejected"
+    assert entry["reason"] == "too risky for the demo"
+    assert entry["auto_approved"] is False
 
 
 async def test_agent_hitl_flow_skips_without_key(monkeypatch, tmp_path):
@@ -2044,7 +2602,7 @@ async def test_agent_hitl_flow_skips_when_agent_did_not_trigger_tool(monkeypatch
     """PRP-41 — agent answered directly (no pending_action) -> skip with detail."""
     monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
     monkeypatch.setattr(pipeline, "_llm_key_present", lambda: True)
-    monkeypatch.setattr(pipeline, "_APPROVAL_DISPLAY_DELAY_S", 0.0)
+    monkeypatch.setattr(pipeline, "_APPROVAL_DECISION_WINDOW_S", 0.0)
 
     client, intermediate = _make_hitl_client(chat_pending=False)
     ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
@@ -2056,20 +2614,26 @@ async def test_agent_hitl_flow_skips_when_agent_did_not_trigger_tool(monkeypatch
     assert intermediate == []
 
 
-async def test_agent_hitl_flow_absorbs_double_approve_400(monkeypatch, tmp_path):
-    """PRP-41 — FE pre-empted Approve -> backend approve returns 400; absorb."""
+async def test_agent_hitl_flow_absorbs_external_approve_400(monkeypatch, tmp_path):
+    """E5 (D1) — an operator pre-empted /agents/.../approve directly -> 400.
+
+    The step absorbs the 4xx and records ``execution_status="external_4xx"`` --
+    honest about the residual ambiguity (the decision landed outside the relay).
+    """
     monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
     monkeypatch.setattr(pipeline, "_llm_key_present", lambda: True)
-    monkeypatch.setattr(pipeline, "_APPROVAL_DISPLAY_DELAY_S", 0.0)
+    monkeypatch.setattr(pipeline, "_APPROVAL_DECISION_WINDOW_S", 0.0)
 
     client, intermediate = _make_hitl_client(approve_status=400)
     ctx = pipeline.DemoContext(seed=42, skip_seed=True, reset=False)
     status, detail, data = await pipeline.step_agent_hitl_flow(ctx, client)
 
-    # 4xx absorbed: step still passes with optimistic "executed" decision.
+    # 4xx absorbed: step still passes; the decision is the honest external edge.
     assert status == "pass"
-    assert data["approval_decision"] == "executed"
-    assert "approved=executed" in detail
+    assert data["approval_decision"] == "external_4xx"
+    assert "approved=external_4xx" in detail
+    assert ctx.approval_events[0]["execution_status"] == "external_4xx"
+    assert ctx.approval_events[0]["decision"] == "approved"
     # The intermediate event was still buffered before the absorb branch.
     assert len(intermediate) == 1
 
@@ -2078,7 +2642,7 @@ async def test_agent_hitl_flow_skips_on_hard_timeout(monkeypatch, tmp_path):
     """PRP-41 — elapsed > _APPROVAL_HARD_TIMEOUT_S -> skip with timed_out."""
     monkeypatch.setattr(pipeline, "get_settings", lambda: _fake_settings(str(tmp_path / "reg")))
     monkeypatch.setattr(pipeline, "_llm_key_present", lambda: True)
-    monkeypatch.setattr(pipeline, "_APPROVAL_DISPLAY_DELAY_S", 0.0)
+    monkeypatch.setattr(pipeline, "_APPROVAL_DECISION_WINDOW_S", 0.0)
     # Force the elapsed-time check to fire: set the hard cap below the
     # display delay so any positive elapsed exceeds it.
     monkeypatch.setattr(pipeline, "_APPROVAL_HARD_TIMEOUT_S", -1.0)
@@ -2092,6 +2656,10 @@ async def test_agent_hitl_flow_skips_on_hard_timeout(monkeypatch, tmp_path):
     assert data["timed_out"] is True
     assert data["approval_decision"] == "timed_out"
     assert ctx.agent_approval_decision == "timed_out"
+    # E5 -- a timed_out entry is still recorded for the workspace story.
+    assert len(ctx.approval_events) == 1
+    assert ctx.approval_events[0]["decision"] == "timed_out"
+    assert ctx.approval_events[0]["execution_status"] is None
     # Intermediate event was emitted; approve POST never fired.
     assert len(intermediate) == 1
     assert all(call[1] != f"/agents/sessions/{data['session_id']}/approve" for call in client.calls)
@@ -2454,3 +3022,190 @@ async def test_step_seed_retail_standard_posts_demo_scaled_profile():
     # sparsity stays 0.0 — the seeder override fires only when > 0, which is
     # what preserves the sparse preset's 50%-missing character.
     assert body["sparsity"] == 0.0
+
+
+# =============================================================================
+# E3 (#409) — seed overrides + user scope
+# =============================================================================
+
+
+async def test_step_seed_forwards_seed_overrides():
+    """E3 (#409) — the nested overrides ride the /seeder/generate body verbatim,
+    the POST scalars echo the effective dims, and scalar sparsity stays 0.0."""
+    ctx = pipeline.DemoContext(
+        seed=42,
+        skip_seed=False,
+        reset=False,
+        scenario=ScenarioPreset.DEMO_MINIMAL,
+        seed_overrides=SeederOverrides(stores=8, products=20, promotion_intensity=0.3),
+    )
+    client = _RecordingClient(
+        None,
+        responses={("POST", "/seeder/generate"): {"records_created": {"sales": 1}}},
+    )
+    status, detail, data = await pipeline.step_seed(ctx, _as_client(client))
+    assert status == "pass"
+    body = client.calls[0][2]
+    assert body is not None
+    assert body["overrides"] == {"stores": 8, "products": 20, "promotion_intensity": 0.3}
+    # Effective dims on the scalars + the detail line (the card tells the truth).
+    assert body["stores"] == 8
+    assert body["products"] == 20
+    assert body["sparsity"] == 0.0  # preset-character guard; nested wins anyway
+    assert "8 stores x 20 products" in detail
+    assert "overrides: products, promotion_intensity, stores" in detail
+    assert data["overrides_applied"] == ["products", "promotion_intensity", "stores"]
+
+
+async def test_step_seed_without_overrides_is_legacy_identical():
+    """E3 (#409) — a legacy ctx posts NO overrides key (byte-identical body)."""
+    ctx = pipeline.DemoContext(
+        seed=42, skip_seed=False, reset=False, scenario=ScenarioPreset.DEMO_MINIMAL
+    )
+    client = _RecordingClient(
+        None,
+        responses={("POST", "/seeder/generate"): {"records_created": {"sales": 1}}},
+    )
+    status, _detail, data = await pipeline.step_seed(ctx, _as_client(client))
+    assert status == "pass"
+    body = client.calls[0][2]
+    assert body is not None
+    assert "overrides" not in body
+    assert body["stores"] == 3  # demo_minimal profile
+    assert data["overrides_applied"] == []
+
+
+async def test_step_seed_window_days_overrides_profile_window():
+    """E3 (#409) — window_days drives a today-anchored window of that length."""
+    ctx = pipeline.DemoContext(
+        seed=42,
+        skip_seed=False,
+        reset=False,
+        scenario=ScenarioPreset.DEMO_MINIMAL,
+        seed_overrides=SeederOverrides(window_days=120),
+    )
+    client = _RecordingClient(
+        None,
+        responses={("POST", "/seeder/generate"): {"records_created": {"sales": 1}}},
+    )
+    status, _detail, _data = await pipeline.step_seed(ctx, _as_client(client))
+    assert status == "pass"
+    body = client.calls[0][2]
+    assert body is not None
+    start = date.fromisoformat(body["start_date"])
+    end = date.fromisoformat(body["end_date"])
+    assert end - start == timedelta(days=120)
+    assert body["overrides"] == {"window_days": 120}
+
+
+def _status_discovery_responses() -> dict[tuple[str, str], Any]:
+    """Canned responses for the legacy first-pair discovery path."""
+    return {
+        ("GET", "/seeder/status"): {
+            "date_range_start": "2026-01-01",
+            "date_range_end": "2026-03-31",
+            "sales": 900,
+        },
+        ("GET", "/dimensions/stores?page=1&page_size=1"): {"stores": [{"id": 4}]},
+        ("GET", "/dimensions/products?page=1&page_size=1"): {"products": [{"id": 9}]},
+    }
+
+
+async def test_step_status_honors_user_scope():
+    """E3 (#409) — a valid pair is validated via GET-by-id and adopted."""
+    ctx = pipeline.DemoContext(
+        seed=42,
+        skip_seed=True,
+        reset=False,
+        scenario=ScenarioPreset.DEMO_MINIMAL,
+        user_scope=UserScope(store_id=12, product_id=47),
+    )
+    client = _RecordingClient(
+        None,
+        responses={
+            ("GET", "/seeder/status"): {
+                "date_range_start": "2026-01-01",
+                "date_range_end": "2026-03-31",
+                "sales": 900,
+            },
+            ("GET", "/dimensions/stores/12"): {"id": 12, "code": "S012"},
+            ("GET", "/dimensions/products/47"): {"id": 47, "sku": "P047"},
+        },
+    )
+    status, detail, data = await pipeline.step_status(ctx, _as_client(client))
+    assert status == "pass"
+    assert ctx.store_id == 12
+    assert ctx.product_id == 47
+    assert "(user-selected)" in detail
+    assert data["user_scope_applied"] is True
+    # Both GET-by-id validations were issued; no discovery call happened.
+    paths = [path for _method, path, _body in client.calls]
+    assert "/dimensions/stores/12" in paths
+    assert "/dimensions/products/47" in paths
+    assert "/dimensions/stores?page=1&page_size=1" not in paths
+
+
+async def test_step_status_dangling_scope_warns_and_falls_back():
+    """E3 (#409) — a 404 pair WARNS (never fails) and discovery takes over."""
+    responses = _status_discovery_responses()
+    responses[("GET", "/dimensions/products/47")] = {"id": 47}
+    ctx = pipeline.DemoContext(
+        seed=42,
+        skip_seed=True,
+        reset=False,
+        scenario=ScenarioPreset.DEMO_MINIMAL,
+        user_scope=UserScope(store_id=12, product_id=47),
+    )
+    client = _RecordingClient(
+        None,
+        responses=responses,
+        errors={
+            ("GET", "/dimensions/stores/12"): pipeline._StepError(
+                "status[scope-store]", 404, {"title": "Not Found"}
+            ),
+        },
+    )
+    status, detail, data = await pipeline.step_status(ctx, _as_client(client))
+    assert status == "warn"
+    assert ctx.store_id == 4  # discovered pair
+    assert ctx.product_id == 9
+    assert "user_scope (store=12, product=47) not found" in detail
+    assert data["user_scope_applied"] is False
+
+
+async def test_step_status_without_scope_unchanged():
+    """E3 (#409) — the legacy discovery path is byte-identical (pass, no warn)."""
+    ctx = pipeline.DemoContext(
+        seed=42, skip_seed=True, reset=False, scenario=ScenarioPreset.DEMO_MINIMAL
+    )
+    client = _RecordingClient(None, responses=_status_discovery_responses())
+    status, detail, data = await pipeline.step_status(ctx, _as_client(client))
+    assert status == "pass"
+    assert ctx.store_id == 4
+    assert ctx.product_id == 9
+    assert "user_scope" not in detail
+    assert data["user_scope_applied"] is False
+
+
+async def test_run_pipeline_threads_e3_fields(monkeypatch):
+    """E3 (#409) — run_pipeline threads seed_overrides/user_scope into ctx."""
+    captured: dict[str, Any] = {}
+
+    async def _capturing_precheck(ctx: Any, _client: Any) -> Any:
+        captured["seed_overrides"] = ctx.seed_overrides
+        captured["user_scope"] = ctx.user_scope
+        return ("fail", "stop after capture", {})
+
+    monkeypatch.setattr(pipeline, "step_precheck", _capturing_precheck)
+    monkeypatch.setattr(pipeline, "_Client", _build_fake_client("unused", {}))
+
+    req = DemoRunRequest.model_validate(
+        {
+            "skip_seed": False,
+            "seed_overrides": {"stores": 8, "noise_sigma": 0.25},
+            "user_scope": {"store_id": 12, "product_id": 47},
+        }
+    )
+    _events = [e async for e in pipeline.run_pipeline(app=_FAKE_APP, req=req)]
+    assert captured["seed_overrides"] == SeederOverrides(stores=8, noise_sigma=0.25)
+    assert captured["user_scope"] == UserScope(store_id=12, product_id=47)

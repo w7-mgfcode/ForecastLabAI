@@ -3,13 +3,16 @@
  * and the Inspect deep-link hrefs they expose.
  */
 
-import { afterEach, describe, expect, it } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import type { DemoStep } from '@/hooks/use-demo-pipeline'
 import { DemoStepCard } from './demo-step-card'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 function makeStep(
   name: string,
@@ -144,28 +147,101 @@ describe('DemoStepCard PRP-39 mini-summaries', () => {
     expect(text).toContain('approval=executed')
   })
 
-  it('agent_hitl_flow — running + awaiting_approval=true surfaces the Approve button', () => {
+  it('agent_hitl_flow — running + awaiting_approval=true surfaces Approve and Reject', () => {
     const step = makeStep('agent_hitl_flow', 'running', {
       session_id: 'sess-x',
       awaiting_approval: true,
       action_id: 'act-y',
-      approval_url: '/agents/sessions/sess-x/approve',
+      decision_window_s: 10,
     })
     const { container } = renderCard(step, null)
     const buttons = Array.from(container.querySelectorAll('button')).map((b) => b.textContent)
     expect(buttons).toContain('Approve')
+    expect(buttons).toContain('Reject')
   })
 
-  it('agent_hitl_flow — terminal status hides the Approve button', () => {
+  it('agent_hitl_flow — terminal status hides the decision buttons', () => {
     const step = makeStep('agent_hitl_flow', 'pass', {
       session_id: 'sess-x',
       awaiting_approval: true, // stale flag from intermediate event
       action_id: 'act-y',
-      approval_url: '/agents/sessions/sess-x/approve',
+      decision_window_s: 10,
     })
     const { container } = renderCard(step, null)
     const buttons = Array.from(container.querySelectorAll('button')).map((b) => b.textContent)
     expect(buttons).not.toContain('Approve')
+    expect(buttons).not.toContain('Reject')
+  })
+
+  it('agent_hitl_flow — countdown reads data.decision_window_s', () => {
+    const step = makeStep('agent_hitl_flow', 'running', {
+      session_id: 'sess-x',
+      awaiting_approval: true,
+      action_id: 'act-y',
+      decision_window_s: 7,
+    })
+    const { container } = renderCard(step, null)
+    expect(container.textContent).toContain('auto-approve in 7s')
+  })
+
+  it('agent_hitl_flow — Approve POSTs the demo relay with the approved decision', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const step = makeStep('agent_hitl_flow', 'running', {
+      session_id: 'sess-x',
+      awaiting_approval: true,
+      action_id: 'act-y',
+      decision_window_s: 10,
+    })
+    renderCard(step, null)
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    const call = fetchMock.mock.calls[0]!
+    expect(String(call[0])).toContain('/demo/hitl-decision')
+    const init = call[1] as RequestInit
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(String(init.body))).toEqual({ action_id: 'act-y', decision: 'approved' })
+    // Both buttons disable after a click.
+    expect(screen.getByRole('button', { name: 'Approving…' })).toBeTruthy()
+    expect((screen.getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('agent_hitl_flow — Reject POSTs the demo relay with the rejected decision', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const step = makeStep('agent_hitl_flow', 'running', {
+      session_id: 'sess-x',
+      awaiting_approval: true,
+      action_id: 'act-z',
+      decision_window_s: 10,
+    })
+    renderCard(step, null)
+    fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    const init = fetchMock.mock.calls[0]![1] as RequestInit
+    expect(JSON.parse(String(init.body))).toEqual({ action_id: 'act-z', decision: 'rejected' })
+    expect(screen.getByRole('button', { name: 'Rejecting…' })).toBeTruthy()
+  })
+
+  it('agent_hitl_flow — absorbs a 404 (auto-approve raced) without surfacing an error', async () => {
+    const problem = JSON.stringify({ status: 404, detail: 'No pending HITL action' })
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(problem, {
+        status: 404,
+        headers: { 'content-type': 'application/problem+json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const step = makeStep('agent_hitl_flow', 'running', {
+      session_id: 'sess-x',
+      awaiting_approval: true,
+      action_id: 'act-y',
+      decision_window_s: 10,
+    })
+    const { container } = renderCard(step, null)
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(container.textContent).not.toMatch(/decision failed/)
   })
 
   it('ops_snapshot — renders the 5-tile mini grid with values', () => {

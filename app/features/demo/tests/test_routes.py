@@ -14,8 +14,14 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.features.demo import service, workspace
-from app.features.demo.schemas import DemoRunRequest, DemoRunResult, StepEvent
+from app.features.demo import export, service, workspace
+from app.features.demo.schemas import (
+    DemoRunRequest,
+    DemoRunResult,
+    ExportFileEntry,
+    StepEvent,
+    WorkspaceExportResult,
+)
 from app.main import app
 
 
@@ -236,10 +242,10 @@ def _orm_like_row(workspace_id: str = "a" * 32, **overrides: object) -> SimpleNa
 async def test_list_workspaces_empty(client, monkeypatch):
     """E4 (#393) -- empty table yields 200 + an empty page (no 404)."""
 
-    async def fake_list(_db, *, limit: int, offset: int) -> list[SimpleNamespace]:
+    async def fake_list(_db, **_kwargs: object) -> list[SimpleNamespace]:
         return []
 
-    async def fake_count(_db) -> int:
+    async def fake_count(_db, **_kwargs: object) -> int:
         return 0
 
     monkeypatch.setattr(workspace, "list_workspaces", fake_list)
@@ -252,14 +258,13 @@ async def test_list_workspaces_empty(client, monkeypatch):
 
 async def test_list_workspaces_passes_pagination(client, monkeypatch):
     """E4 (#393) -- limit/offset query params reach the helper."""
-    seen: dict[str, int] = {}
+    seen: dict[str, object] = {}
 
-    async def fake_list(_db, *, limit: int, offset: int) -> list[SimpleNamespace]:
-        seen["limit"] = limit
-        seen["offset"] = offset
+    async def fake_list(_db, **kwargs: object) -> list[SimpleNamespace]:
+        seen.update(kwargs)
         return [_orm_like_row()]
 
-    async def fake_count(_db) -> int:
+    async def fake_count(_db, **_kwargs: object) -> int:
         return 5
 
     monkeypatch.setattr(workspace, "list_workspaces", fake_list)
@@ -267,7 +272,8 @@ async def test_list_workspaces_passes_pagination(client, monkeypatch):
 
     resp = await client.get("/demo/workspaces", params={"limit": 2, "offset": 3})
     assert resp.status_code == 200
-    assert seen == {"limit": 2, "offset": 3}
+    assert seen["limit"] == 2
+    assert seen["offset"] == 3
     body = resp.json()
     assert body["total"] == 5
     assert body["workspaces"][0]["workspace_id"] == "a" * 32
@@ -281,6 +287,136 @@ async def test_list_workspaces_rejects_bad_pagination(client):
     assert resp.status_code == 422
     resp = await client.get("/demo/workspaces", params={"offset": -1})
     assert resp.status_code == 422
+
+
+# =============================================================================
+# E2 (#408) -- list filters / sort + GET /demo/workspaces/{id}/health (unit)
+# =============================================================================
+
+
+async def test_list_workspaces_passes_filters_and_sort(client, monkeypatch):
+    """E2 (#408) -- q/tags/include_archived/sort params reach BOTH helpers."""
+    seen_list: dict[str, object] = {}
+    seen_count: dict[str, object] = {}
+
+    async def fake_list(_db, **kwargs: object) -> list[SimpleNamespace]:
+        seen_list.update(kwargs)
+        return []
+
+    async def fake_count(_db, **kwargs: object) -> int:
+        seen_count.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(workspace, "list_workspaces", fake_list)
+    monkeypatch.setattr(workspace, "count_workspaces", fake_count)
+
+    resp = await client.get(
+        "/demo/workspaces",
+        params=[
+            ("q", "demo"),
+            ("tags", "smoke"),
+            ("tags", "e2"),
+            ("include_archived", "true"),
+            ("sort_by", "name"),
+            ("sort_order", "asc"),
+        ],
+    )
+    assert resp.status_code == 200
+    assert seen_list["q"] == "demo"
+    assert seen_list["tags"] == ["smoke", "e2"]
+    assert seen_list["include_archived"] is True
+    assert seen_list["sort_by"] == "name"
+    assert seen_list["sort_order"] == "asc"
+    # The count helper gets the SAME filters -- total respects them.
+    assert seen_count["q"] == "demo"
+    assert seen_count["tags"] == ["smoke", "e2"]
+    assert seen_count["include_archived"] is True
+
+
+async def test_list_workspaces_defaults_hide_archived(client, monkeypatch):
+    """E2 (#408) -- a legacy no-param call defaults to include_archived=False."""
+    seen: dict[str, object] = {}
+
+    async def fake_list(_db, **kwargs: object) -> list[SimpleNamespace]:
+        seen.update(kwargs)
+        return []
+
+    async def fake_count(_db, **_kwargs: object) -> int:
+        return 0
+
+    monkeypatch.setattr(workspace, "list_workspaces", fake_list)
+    monkeypatch.setattr(workspace, "count_workspaces", fake_count)
+
+    resp = await client.get("/demo/workspaces")
+    assert resp.status_code == 200
+    assert seen["include_archived"] is False
+    assert seen["q"] is None
+    assert seen["tags"] is None
+    assert seen["sort_by"] is None
+
+
+async def test_list_workspaces_rejects_bad_sort_order(client):
+    """E2 (#408) -- sort_order is pattern-constrained (asc|desc only)."""
+    resp = await client.get("/demo/workspaces", params={"sort_order": "sideways"})
+    assert resp.status_code == 422
+    assert resp.headers["content-type"].startswith("application/problem+json")
+
+
+async def test_workspace_health_404(client, monkeypatch):
+    """E2 (#408) -- health on a missing workspace is a 404 problem+json."""
+
+    async def fake_get(_db, _workspace_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(workspace, "get_workspace", fake_get)
+
+    resp = await client.get("/demo/workspaces/" + "0" * 32 + "/health")
+    assert resp.status_code == 404
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    assert "Workspace not found" in resp.json()["detail"]
+
+
+async def test_workspace_health_happy_path(client, monkeypatch):
+    """E2 (#408) -- the route resolves the row and returns the probe result."""
+    from app.features.demo import link_health
+    from app.features.demo.schemas import WorkspaceHealthResponse, WorkspaceRefHealth
+
+    row = _orm_like_row(status="failed")
+
+    async def fake_get(_db, workspace_id: str) -> SimpleNamespace:
+        return row
+
+    async def fake_probe(_app, ws) -> WorkspaceHealthResponse:
+        assert ws is row  # the route passes the resolved ORM row through
+        return WorkspaceHealthResponse(
+            workspace_id="a" * 32,
+            workspace_status="failed",
+            partial_run=True,
+            references=[
+                WorkspaceRefHealth(
+                    key="winning_run_id",
+                    ref_type="model_run",
+                    ref_id="run-abc",
+                    status="dead",
+                    probe_path="/registry/runs/run-abc",
+                )
+            ],
+            alive=0,
+            dead=1,
+            unknown=0,
+        )
+
+    monkeypatch.setattr(workspace, "get_workspace", fake_get)
+    monkeypatch.setattr(link_health, "probe_workspace_links", fake_probe)
+
+    resp = await client.get("/demo/workspaces/" + "a" * 32 + "/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["workspace_id"] == "a" * 32
+    assert body["partial_run"] is True
+    assert body["dead"] == 1
+    assert body["references"][0]["status"] == "dead"
+    assert body["references"][0]["probe_path"] == "/registry/runs/run-abc"
 
 
 async def test_get_workspace_404(client, monkeypatch):
@@ -314,6 +450,195 @@ async def test_get_workspace_success(client, monkeypatch):
     assert body["product_id"] == 7
     assert body["date_start"] == "2026-01-01"
     assert body["date_end"] == "2026-03-31"
+
+
+# =============================================================================
+# DELETE /demo/workspaces/{workspace_id} (unit)
+# =============================================================================
+
+
+async def test_delete_workspace_204(client, monkeypatch):
+    """A deleted workspace row yields 204 with an empty body."""
+    seen: dict[str, str] = {}
+
+    async def fake_delete(_db, workspace_id: str) -> bool:
+        seen["workspace_id"] = workspace_id
+        return True
+
+    monkeypatch.setattr(workspace, "delete_workspace", fake_delete)
+
+    resp = await client.delete("/demo/workspaces/" + "c" * 32)
+    assert resp.status_code == 204
+    assert resp.content == b""
+    assert seen["workspace_id"] == "c" * 32
+
+
+async def test_delete_workspace_404(client, monkeypatch):
+    """An unknown workspace_id is a 404 problem+json."""
+
+    async def fake_delete(_db, _workspace_id: str) -> bool:
+        return False
+
+    monkeypatch.setattr(workspace, "delete_workspace", fake_delete)
+
+    resp = await client.delete("/demo/workspaces/" + "0" * 32)
+    assert resp.status_code == 404
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    assert "Workspace not found" in resp.json()["detail"]
+
+
+# =============================================================================
+# E6 (#412) -- POST /demo/workspaces/{workspace_id}/export (unit)
+# =============================================================================
+
+
+async def test_export_workspace_404(client, monkeypatch):
+    """An unknown workspace_id is a 404 problem+json (export never runs)."""
+
+    async def fake_get(_db, _workspace_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(workspace, "get_workspace", fake_get)
+
+    resp = await client.post("/demo/workspaces/" + "0" * 32 + "/export")
+    assert resp.status_code == 404
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    assert "Workspace not found" in resp.json()["detail"]
+
+
+async def test_export_workspace_409_when_running(client, monkeypatch):
+    """A still-running workspace is a 409 problem+json (refs not settled)."""
+
+    async def fake_get(_db, workspace_id: str) -> SimpleNamespace:
+        return _orm_like_row(workspace_id=workspace_id, status="running")
+
+    monkeypatch.setattr(workspace, "get_workspace", fake_get)
+
+    resp = await client.post("/demo/workspaces/" + "a" * 32 + "/export")
+    assert resp.status_code == 409
+    assert resp.headers["content-type"].startswith("application/problem+json")
+
+
+async def test_export_workspace_200_happy_path(client, monkeypatch):
+    """A completed workspace returns the export result the writer produced."""
+
+    async def fake_get(_db, workspace_id: str) -> SimpleNamespace:
+        return _orm_like_row(workspace_id=workspace_id, status="completed")
+
+    canned = WorkspaceExportResult(
+        workspace_id="a" * 32,
+        bundle_path="artifacts/showcase/" + "a" * 32,
+        bundle_format_version=1,
+        exported_at=_dt.datetime(2026, 6, 12, 14, 0, tzinfo=_dt.UTC),
+        files=[
+            ExportFileEntry(path="manifest.json", sha256="0" * 64, size_bytes=128),
+            ExportFileEntry(path="checksums.sha256", sha256="1" * 64, size_bytes=80),
+        ],
+        scenario_plans_exported=0,
+        model_runs_referenced=1,
+        unresolved_references=[],
+        validated=True,
+    )
+
+    async def fake_export(_db, _app, workspace_id: str) -> WorkspaceExportResult:
+        return canned
+
+    monkeypatch.setattr(workspace, "get_workspace", fake_get)
+    monkeypatch.setattr(export, "export_workspace", fake_export)
+
+    resp = await client.post("/demo/workspaces/" + "a" * 32 + "/export")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["validated"] is True
+    assert body["bundle_format_version"] == 1
+    assert body["model_runs_referenced"] == 1
+    assert len(body["files"]) == 2
+
+
+# =============================================================================
+# E1 (#407) -- PATCH /demo/workspaces/{workspace_id} (unit)
+# =============================================================================
+
+
+async def test_patch_workspace_happy_path(client, monkeypatch):
+    """E1 (#407) -- provided fields update; response echoes the full detail."""
+    seen: dict[str, object] = {}
+
+    async def fake_update(_db, workspace_id: str, update) -> SimpleNamespace:
+        seen["workspace_id"] = workspace_id
+        seen["changes"] = update.model_dump(exclude_unset=True)
+        return _orm_like_row(
+            workspace_id=workspace_id,
+            name="renamed",
+            pinned=True,
+            tags=["t1"],
+        )
+
+    monkeypatch.setattr(workspace, "update_workspace", fake_update)
+
+    resp = await client.patch(
+        "/demo/workspaces/" + "a" * 32,
+        json={"name": "renamed", "pinned": True, "tags": ["t1"]},
+    )
+    assert resp.status_code == 200
+    assert seen["workspace_id"] == "a" * 32
+    assert seen["changes"] == {"name": "renamed", "pinned": True, "tags": ["t1"]}
+    body = resp.json()
+    assert body["name"] == "renamed"
+    assert body["pinned"] is True
+    assert body["tags"] == ["t1"]
+    # Untouched fields ride through from the row.
+    assert body["status"] == "completed"
+    assert body["seed"] == 42
+
+
+async def test_patch_workspace_missing_404_problem_json(client, monkeypatch):
+    """E1 (#407) -- an unknown workspace_id is a 404 problem+json."""
+
+    async def fake_update(_db, _workspace_id: str, _update) -> None:
+        return None
+
+    monkeypatch.setattr(workspace, "update_workspace", fake_update)
+
+    resp = await client.patch("/demo/workspaces/" + "0" * 32, json={"pinned": True})
+    assert resp.status_code == 404
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    assert "Workspace not found" in resp.json()["detail"]
+
+
+async def test_patch_workspace_unknown_field_422(client):
+    """E1 (#407) -- extra='forbid': a typo'd field is a 422 problem+json."""
+    resp = await client.patch("/demo/workspaces/" + "a" * 32, json={"bogus": 1})
+    assert resp.status_code == 422
+    assert resp.headers["content-type"].startswith("application/problem+json")
+
+
+async def test_patch_workspace_explicit_null_archived_422(client):
+    """E1 (#407) -- explicit null on a NOT NULL-backed field is a 422."""
+    resp = await client.patch("/demo/workspaces/" + "a" * 32, json={"archived": None})
+    assert resp.status_code == 422
+    assert resp.headers["content-type"].startswith("application/problem+json")
+
+
+async def test_patch_workspace_empty_body_noop_200(client, monkeypatch):
+    """E1 (#407) -- an empty body is a 200 no-op returning the current row."""
+
+    async def fake_update(_db, workspace_id: str, update) -> SimpleNamespace:
+        assert update.model_dump(exclude_unset=True) == {}
+        return _orm_like_row(workspace_id=workspace_id)
+
+    monkeypatch.setattr(workspace, "update_workspace", fake_update)
+
+    resp = await client.patch("/demo/workspaces/" + "a" * 32, json={})
+    assert resp.status_code == 200
+    assert resp.json()["workspace_id"] == "a" * 32
+
+
+async def test_run_demo_rejects_replayed_from_without_keep_422(client):
+    """E1 (#407) -- a lineage pointer without preservation='keep' is a 422."""
+    resp = await client.post("/demo/run", json={"replayed_from_workspace_id": "a" * 32})
+    assert resp.status_code == 422
+    assert resp.headers["content-type"].startswith("application/problem+json")
 
 
 # =============================================================================
@@ -368,3 +693,330 @@ async def test_get_workspace_integration_round_trip(client, db_session: AsyncSes
     missing = await client.get("/demo/workspaces/" + "f" * 32)
     assert missing.status_code == 404
     assert missing.headers["content-type"].startswith("application/problem+json")
+
+
+@pytest.mark.integration
+async def test_patch_workspace_integration_round_trip(client, db_session: AsyncSession):
+    """E1 (#407) -- PATCH round-trips rename/notes/tags/archive/pin on a real row."""
+    workspace_id = await workspace.create_workspace(
+        DemoRunRequest.model_validate({"preservation": "keep", "workspace_name": "e1-patch"})
+    )
+    assert workspace_id is not None
+
+    resp = await client.patch(
+        f"/demo/workspaces/{workspace_id}",
+        json={
+            "name": "e1-renamed",
+            "notes": "kept for review",
+            "tags": ["smoke", "workspace:e1"],
+            "archived": True,
+            "pinned": True,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["name"] == "e1-renamed"
+    assert body["notes"] == "kept for review"
+    assert body["tags"] == ["smoke", "workspace:e1"]
+    assert body["archived"] is True
+    assert body["pinned"] is True
+    # The pipeline-owned lifecycle status is untouched.
+    assert body["status"] == "running"
+
+    # The change persisted -- the detail endpoint reads it back.
+    detail = await client.get(f"/demo/workspaces/{workspace_id}")
+    assert detail.status_code == 200
+    assert detail.json()["name"] == "e1-renamed"
+    assert detail.json()["archived"] is True
+
+
+@pytest.mark.integration
+async def test_delete_workspace_integration_round_trip(client, db_session: AsyncSession):
+    """DELETE removes exactly the target metadata row; a re-delete is 404."""
+    kept = await workspace.create_workspace(
+        DemoRunRequest.model_validate({"preservation": "keep", "workspace_name": "del-kept"})
+    )
+    target = await workspace.create_workspace(
+        DemoRunRequest.model_validate({"preservation": "keep", "workspace_name": "del-target"})
+    )
+    assert kept is not None and target is not None
+
+    resp = await client.delete(f"/demo/workspaces/{target}")
+    assert resp.status_code == 204
+
+    # The deleted row is gone; the sibling row is untouched.
+    assert (await client.get(f"/demo/workspaces/{target}")).status_code == 404
+    survivors = await client.get("/demo/workspaces")
+    assert [w["workspace_id"] for w in survivors.json()["workspaces"]] == [kept]
+
+    # Deleting again is a 404 problem+json (no idempotent 204).
+    again = await client.delete(f"/demo/workspaces/{target}")
+    assert again.status_code == 404
+    assert again.headers["content-type"].startswith("application/problem+json")
+
+
+@pytest.mark.integration
+async def test_delete_workspace_integration_keeps_created_objects(client, db_session: AsyncSession):
+    """Deleting a workspace never deletes (or resolves) its soft references.
+
+    The workspace references one REAL cross-slice object (an agent session)
+    plus one dangling run id -- the delete must succeed without touching the
+    former or resolving the latter (no-FK soft-reference contract).
+    """
+    session_resp = await client.post("/agents/sessions", json={"agent_type": "experiment"})
+    assert session_resp.status_code == 201
+    agent_session_id = session_resp.json()["session_id"]
+    try:
+        workspace_id = await workspace.create_workspace(
+            DemoRunRequest.model_validate({"preservation": "keep", "workspace_name": "del-softref"})
+        )
+        assert workspace_id is not None
+        row = await workspace.get_workspace(db_session, workspace_id)
+        assert row is not None
+        row.created_objects = {
+            "agent_session_id": agent_session_id,
+            "winning_run_id": "run-dangling-never-created",
+        }
+        await db_session.commit()
+
+        resp = await client.delete(f"/demo/workspaces/{workspace_id}")
+        assert resp.status_code == 204
+
+        # The metadata row is gone...
+        assert (await client.get(f"/demo/workspaces/{workspace_id}")).status_code == 404
+        # ...but the soft-referenced agent session still exists.
+        still_there = await client.get(f"/agents/sessions/{agent_session_id}")
+        assert still_there.status_code == 200
+    finally:
+        await client.delete(f"/agents/sessions/{agent_session_id}")
+
+
+# =============================================================================
+# E2 (#408) -- list filters / sort + health against real Postgres (integration)
+# =============================================================================
+
+
+@pytest.mark.integration
+async def test_list_workspaces_integration_filters_and_sort(client, db_session: AsyncSession):
+    """Filters, sort, pinned-first ordering, and filtered totals on real rows."""
+    ids: dict[str, str] = {}
+    # Creation order matters for the default created_at sort assertions.
+    for name in ("alpha-match", "beta", "zeta-pinned"):
+        workspace_id = await workspace.create_workspace(
+            DemoRunRequest.model_validate({"preservation": "keep", "workspace_name": name})
+        )
+        assert workspace_id is not None
+        ids[name] = workspace_id
+    unnamed = await workspace.create_workspace(
+        DemoRunRequest.model_validate({"preservation": "keep"})
+    )
+    assert unnamed is not None
+
+    # Curate via the PATCH surface (E1): pin zeta, archive beta, tag alpha.
+    assert (
+        await client.patch(f"/demo/workspaces/{ids['zeta-pinned']}", json={"pinned": True})
+    ).status_code == 200
+    assert (
+        await client.patch(f"/demo/workspaces/{ids['beta']}", json={"archived": True})
+    ).status_code == 200
+    assert (
+        await client.patch(f"/demo/workspaces/{ids['alpha-match']}", json={"tags": ["smoke", "e2"]})
+    ).status_code == 200
+
+    # Default list: archived hidden, pinned first, then newest-first.
+    resp = await client.get("/demo/workspaces")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 3  # beta (archived) excluded from the total too
+    listed = [w["workspace_id"] for w in body["workspaces"]]
+    assert ids["beta"] not in listed
+    assert listed == [ids["zeta-pinned"], unnamed, ids["alpha-match"]]
+
+    # include_archived=true surfaces the archived row again.
+    resp = await client.get("/demo/workspaces", params={"include_archived": "true"})
+    assert resp.json()["total"] == 4
+    assert ids["beta"] in [w["workspace_id"] for w in resp.json()["workspaces"]]
+
+    # q: case-insensitive name substring; total respects the filter.
+    resp = await client.get("/demo/workspaces", params={"q": "ALPHA"})
+    body = resp.json()
+    assert body["total"] == 1
+    assert [w["workspace_id"] for w in body["workspaces"]] == [ids["alpha-match"]]
+
+    # tags: containment -- ALL listed tags must match.
+    resp = await client.get("/demo/workspaces", params=[("tags", "smoke"), ("tags", "e2")])
+    assert [w["workspace_id"] for w in resp.json()["workspaces"]] == [ids["alpha-match"]]
+    resp = await client.get("/demo/workspaces", params=[("tags", "smoke"), ("tags", "nope")])
+    assert resp.json()["total"] == 0
+
+    # sort_by=name asc: pinned row STILL first, unnamed row sinks (NULLS LAST).
+    resp = await client.get("/demo/workspaces", params={"sort_by": "name", "sort_order": "asc"})
+    names = [w["name"] for w in resp.json()["workspaces"]]
+    assert names == ["zeta-pinned", "alpha-match", None]
+
+    # Unknown sort_by silently falls back to the default order (no 422).
+    resp = await client.get("/demo/workspaces", params={"sort_by": "bogus"})
+    assert resp.status_code == 200
+    assert [w["workspace_id"] for w in resp.json()["workspaces"]] == [
+        ids["zeta-pinned"],
+        unnamed,
+        ids["alpha-match"],
+    ]
+
+
+@pytest.mark.integration
+async def test_workspace_health_integration_alive_and_dead(client, db_session: AsyncSession):
+    """A real reference probes alive; a bogus one probes dead (E2, #408)."""
+    session_resp = await client.post("/agents/sessions", json={"agent_type": "experiment"})
+    assert session_resp.status_code == 201
+    agent_session_id = session_resp.json()["session_id"]
+    try:
+        workspace_id = await workspace.create_workspace(
+            DemoRunRequest.model_validate({"preservation": "keep", "workspace_name": "e2-health"})
+        )
+        assert workspace_id is not None
+        row = await workspace.get_workspace(db_session, workspace_id)
+        assert row is not None
+        row.created_objects = {
+            "agent_session_id": agent_session_id,
+            "winning_run_id": "run-dangling-never-created",
+        }
+        await db_session.commit()
+
+        resp = await client.get(f"/demo/workspaces/{workspace_id}/health")
+        assert resp.status_code == 200
+        body = resp.json()
+        by_key = {r["key"]: r["status"] for r in body["references"]}
+        assert by_key["agent_session_id"] == "alive"
+        assert by_key["winning_run_id"] == "dead"
+        assert body["alive"] == 1
+        assert body["dead"] == 1
+        assert body["unknown"] == 0
+        # The row was inserted as 'running' (never finalized) -> partial run.
+        assert body["partial_run"] is True
+    finally:
+        await client.delete(f"/agents/sessions/{agent_session_id}")
+
+
+# =============================================================================
+# E5 (#411) — POST /demo/hitl-decision + GET /demo/approval-events
+# =============================================================================
+
+
+@pytest.fixture(autouse=True)
+def _clear_hitl_slot():
+    """Reset the module-level HITL relay slot around every test in this file."""
+    from app.features.demo import hitl
+
+    hitl.clear()
+    yield
+    hitl.clear()
+
+
+async def test_hitl_decision_204_on_pending(client):
+    """A decision for the registered pending action returns 204."""
+    from app.features.demo import hitl
+
+    hitl.register("act-204")
+    resp = await client.post(
+        "/demo/hitl-decision",
+        json={"action_id": "act-204", "decision": "rejected", "reason": "too risky"},
+    )
+    assert resp.status_code == 204
+    # The relay recorded the operator's decision for the waiting step (use a
+    # positive timeout: wait_for(timeout=0) raises before stepping the
+    # freshly-scheduled task, even when the event is already set).
+    assert await hitl.wait_for_decision("act-204", timeout=1.0) == ("rejected", "too risky")
+
+
+async def test_hitl_decision_404_when_nothing_pending(client):
+    """No registered action -> 404 problem+json."""
+    resp = await client.post(
+        "/demo/hitl-decision",
+        json={"action_id": "ghost", "decision": "approved"},
+    )
+    assert resp.status_code == 404
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    assert "No pending HITL action" in resp.json()["detail"]
+
+
+async def test_hitl_decision_409_when_already_decided(client):
+    """A second decision for the same action -> 409 problem+json."""
+    from app.features.demo import hitl
+
+    hitl.register("act-409")
+    first = await client.post(
+        "/demo/hitl-decision", json={"action_id": "act-409", "decision": "approved"}
+    )
+    assert first.status_code == 204
+    second = await client.post(
+        "/demo/hitl-decision", json={"action_id": "act-409", "decision": "rejected"}
+    )
+    assert second.status_code == 409
+    assert second.headers["content-type"].startswith("application/problem+json")
+    assert "already decided" in second.json()["detail"]
+
+
+async def test_hitl_decision_422_bad_body(client):
+    """A bad decision literal / extra key -> 422 problem+json."""
+    bad_literal = await client.post(
+        "/demo/hitl-decision", json={"action_id": "a", "decision": "maybe"}
+    )
+    assert bad_literal.status_code == 422
+    assert bad_literal.headers["content-type"].startswith("application/problem+json")
+    extra_key = await client.post(
+        "/demo/hitl-decision",
+        json={"action_id": "a", "decision": "approved", "bogus": 1},
+    )
+    assert extra_key.status_code == 422
+
+
+async def test_approval_events_empty(client, monkeypatch):
+    """200 + empty list when no workspace carries approval events."""
+
+    async def fake_list(_db, *, limit: int = 50) -> list[dict[str, object]]:
+        return []
+
+    monkeypatch.setattr(workspace, "list_approval_events", fake_list)
+    resp = await client.get("/demo/approval-events")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"events": [], "total": 0}
+
+
+async def test_approval_events_populated(client, monkeypatch):
+    """Flattened entries carry workspace_id / workspace_name + decision."""
+
+    async def fake_list(_db, *, limit: int = 50) -> list[dict[str, object]]:
+        return [
+            {
+                "workspace_id": "a" * 32,
+                "workspace_name": "demo-1",
+                "action_id": "act-1",
+                "tool_name": "save_scenario",
+                "decision": "rejected",
+                "decided_at": "2026-06-13T00:00:00+00:00",
+                "session_id": "sess-1",
+                "auto_approved": False,
+                "reason": "too risky",
+                "execution_status": "rejected",
+                "transcript_summary": "I'll save that scenario.",
+            }
+        ]
+
+    monkeypatch.setattr(workspace, "list_approval_events", fake_list)
+    resp = await client.get("/demo/approval-events", params={"limit": 5})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["events"][0]["workspace_id"] == "a" * 32
+    assert body["events"][0]["workspace_name"] == "demo-1"
+    assert body["events"][0]["decision"] == "rejected"
+
+
+async def test_approval_events_rejects_bad_limit(client):
+    """limit is bounded 1-200 -> 422 problem+json out of range."""
+    resp = await client.get("/demo/approval-events", params={"limit": 0})
+    assert resp.status_code == 422
+    resp = await client.get("/demo/approval-events", params={"limit": 999})
+    assert resp.status_code == 422

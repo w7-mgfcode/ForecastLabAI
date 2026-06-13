@@ -774,6 +774,42 @@ export interface StepEvent {
   phase_total?: number | null
 }
 
+// E3 (#409) — curated, allow-listed seed overrides (7 knobs; unknown keys 422
+// server-side via extra='forbid'). Requires skip_seed=false on the start frame.
+export interface SeedOverrides {
+  stores?: number
+  products?: number
+  window_days?: number
+  sparsity?: number
+  promotion_intensity?: number
+  stockout_intensity?: number
+  noise_sigma?: number
+}
+
+// E3 (#409) — operator-selected focus pair (REAL ids from /dimensions —
+// sequences never reset, so ids are not 1-based).
+export interface UserScope {
+  store_id: number
+  product_id: number
+}
+
+// E4 (#410) — winner-ranking metric for the showcase backtest. A subset of
+// RankingMetric (the champion selector's wape/smape/mae/bias) — issue #410
+// names exactly WAPE/MAE/RMSE, all lower-is-better.
+export type DemoRankingMetric = 'wape' | 'mae' | 'rmse'
+
+// E4 (#410) — showcase backtest config. Mirrors the backend
+// app/features/demo/schemas.py:DemoBacktestConfig (which itself mirrors
+// SplitConfig bounds; the demo n_splits default is 3, not SplitConfig's 5).
+export interface DemoBacktestConfig {
+  horizon: number // 1..90, def 14; must be > gap
+  strategy: SplitStrategy // def 'expanding'
+  n_splits: number // 2..20, def 3
+  min_train_size: number // >= 7, def 30
+  gap: number // 0..30, def 0
+  metric: DemoRankingMetric // def 'wape'
+}
+
 // Start frame for WS /demo/stream and request body for POST /demo/run.
 export interface DemoRunRequest {
   seed?: number
@@ -785,6 +821,16 @@ export interface DemoRunRequest {
   // Omit both to keep the legacy ephemeral behavior byte-identical.
   preservation?: 'ephemeral' | 'keep'
   workspace_name?: string
+  // E1 (#407) — replay provenance: the source workspace_id a Replay re-runs.
+  replayed_from_workspace_id?: string
+  // E3 (#409) — advanced seed config + focus pair; omit both for legacy runs.
+  seed_overrides?: SeedOverrides
+  user_scope?: UserScope
+  // E4 (#410) — run-config phase controls. Omit both (dirty-only rule) to keep
+  // the legacy frame byte-identical; None server-side → the legacy baseline
+  // trio + default split.
+  train_model_types?: string[]
+  backtest?: DemoBacktestConfig
 }
 
 // Aggregate result returned by the synchronous POST /demo/run.
@@ -813,6 +859,18 @@ export interface WorkspaceListItem {
   skip_seed: boolean
   result_summary: Record<string, unknown> | null
   created_at: string
+  // E1 (#407) — lifecycle + provenance fields (consumed by E2 #408).
+  archived: boolean
+  pinned: boolean
+  tags: string[]
+  replayed_from_workspace_id: string | null
+  // E3 (#409) — replay-relevant story slots (on the LIST item: replay reads
+  // list rows); null on runs without them.
+  seed_overrides: SeedOverrides | null
+  user_scope: UserScope | null
+  // E4 (#410) — replay-input run config (model set + backtest); null on
+  // default-config / pre-E4 rows. Replay rebuilds the start frame from it.
+  run_config: Record<string, unknown> | null
 }
 
 // Full row from GET /demo/workspaces/{workspace_id}.
@@ -822,12 +880,143 @@ export interface WorkspaceDetail extends WorkspaceListItem {
   date_start: string | null
   date_end: string | null
   created_objects: Record<string, unknown>
+  // E1 (#407) — operator annotation + schema version.
+  notes: string | null
+  config_schema_version: number
+  // E5 (#411) -- story slots: agent/HITL approval + RAG knowledge events.
+  // null until E5 writes them; legacy rows stay null.
+  approval_events: ApprovalEventDetail[] | null
+  rag_events: RagEventDetail[] | null
 }
 
 // Page shape of GET /demo/workspaces.
 export interface WorkspaceListResponse {
   workspaces: WorkspaceListItem[]
   total: number
+}
+
+// === Showcase story capture (E5, #411) ===
+
+// One approval_events entry on WorkspaceDetail (built from JSONB; tolerant).
+export interface ApprovalEventDetail {
+  action_id: string | null
+  tool_name: string | null
+  decision: 'approved' | 'rejected' | 'timed_out' | string | null
+  decided_at: string | null
+  session_id: string | null
+  auto_approved?: boolean | null
+  reason?: string | null
+  execution_status?: string | null
+  tool_call_summary?: { description?: string; arguments_keys?: string[] } | null
+  transcript_summary?: string | null
+  tokens_used?: number | null
+  tool_calls_count?: number | null
+}
+
+// One rag_events entry on WorkspaceDetail (built from JSONB; tolerant).
+export interface RagEventDetail {
+  event: 'probe' | 'index' | 'retrieve' | 'skip' | string
+  status: 'pass' | 'warn' | 'skip' | string
+  detail: string
+  count: number
+  occurred_at: string
+  provider?: string | null
+  reachable?: boolean | null
+}
+
+// One flattened row from GET /demo/approval-events (workspace-tagged).
+export interface ApprovalEventItem {
+  workspace_id: string
+  workspace_name: string | null
+  action_id: string | null
+  tool_name: string | null
+  decision: string | null
+  decided_at: string | null
+  session_id: string | null
+  auto_approved: boolean | null
+  reason: string | null
+  execution_status: string | null
+  transcript_summary: string | null
+}
+
+// Page shape of GET /demo/approval-events.
+export interface ApprovalEventsResponse {
+  events: ApprovalEventItem[]
+  total: number
+}
+
+// E2 (#408) — partial-update body for PATCH /demo/workspaces/{workspace_id}
+// (E1 endpoint). Absent field = unchanged; explicit null clears name/notes.
+export interface WorkspaceUpdate {
+  name?: string | null
+  notes?: string | null
+  tags?: string[]
+  archived?: boolean
+  pinned?: boolean
+}
+
+// E2 (#408) — query params for GET /demo/workspaces. Archived rows are
+// hidden unless include_archived; unknown sort_by falls back server-side.
+export interface WorkspaceListParams {
+  limit?: number
+  offset?: number
+  q?: string
+  tags?: string
+  include_archived?: boolean
+  sort_by?: 'created_at' | 'name' | 'seed' | 'status'
+  sort_order?: 'asc' | 'desc'
+}
+
+// E2 (#408) — link-health classification of one probed soft reference.
+export type RefHealthStatus = 'alive' | 'dead' | 'unknown'
+
+export interface WorkspaceRefHealth {
+  key: string
+  ref_type: 'model_run' | 'scenario_plan' | 'alias' | 'batch' | 'agent_session' | 'job'
+  ref_id: string
+  status: RefHealthStatus
+  probe_path: string
+}
+
+// E2 (#408) — GET /demo/workspaces/{workspace_id}/health response.
+export interface WorkspaceHealth {
+  workspace_id: string
+  workspace_status: 'running' | 'completed' | 'failed'
+  partial_run: boolean
+  references: WorkspaceRefHealth[]
+  alive: number
+  dead: number
+  unknown: number
+  checked_at: string
+}
+
+// === Showcase Workspace Export (E6, #412) ===
+
+// One file inside an exported workspace bundle.
+export interface ExportFileEntry {
+  path: string
+  sha256: string
+  size_bytes: number
+}
+
+// A soft reference that could not be resolved during export.
+export interface UnresolvedReference {
+  key: string
+  ref_id: string
+  reason: string
+}
+
+// Result of POST /demo/workspaces/{workspace_id}/export.
+export interface WorkspaceExportResult {
+  workspace_id: string
+  bundle_path: string
+  bundle_format_version: number
+  exported_at: string
+  files: ExportFileEntry[]
+  scenario_plans_exported: number
+  model_runs_referenced: number
+  unresolved_references: UnresolvedReference[]
+  validated: boolean
 }
 
 // === AI Model Configuration (/config) ===
@@ -1287,6 +1476,9 @@ export interface CandidateModelInfo {
   /** false for feature-aware models (the predict path rejects them). */
   supports_auto_predict: boolean
   description: string
+  // E4 (#410) — runtime forecast_enable_* overlay (service-set). False exactly
+  // when the matching opt-in flag is off; the showcase picker hides those.
+  enabled: boolean
 }
 
 export interface ModelCatalogResponse {

@@ -3,27 +3,43 @@ import { Play, Loader2, Trophy, AlertTriangle, ArrowRight, Square } from 'lucide
 import { useState } from 'react'
 import { useDemoPipeline } from '@/hooks/use-demo-pipeline'
 import type { DemoStep } from '@/hooks/use-demo-pipeline'
-import { useWorkspace } from '@/hooks/use-workspaces'
+import { useWorkspace, useWorkspaceHealth } from '@/hooks/use-workspaces'
 import { DemoPhasePanel } from '@/components/demo/DemoPhasePanel'
 import { ScenarioPicker } from '@/components/demo/ScenarioPicker'
 import { ShowcaseKpiStrip } from '@/components/demo/ShowcaseKpiStrip'
 import { InspectArtifactsPanel } from '@/components/demo/InspectArtifactsPanel'
 import { RunHistoryStrip } from '@/components/demo/RunHistoryStrip'
+import { ReplayConfirmDialog } from '@/components/demo/ReplayConfirmDialog'
+import { WorkspaceLineageStrip } from '@/components/demo/WorkspaceLineageStrip'
 import { WorkspacePanel } from '@/components/demo/WorkspacePanel'
 import { WorkspaceArtifactsPanel } from '@/components/demo/WorkspaceArtifactsPanel'
+import { WorkspaceStoryPanel } from '@/components/demo/WorkspaceStoryPanel'
+import { SeedConfigPanel } from '@/components/demo/SeedConfigPanel'
+import { ScopeSelector } from '@/components/demo/ScopeSelector'
+import { RunConfigPanel } from '@/components/demo/RunConfigPanel'
+import {
+  DEFAULT_BACKTEST,
+  DEFAULT_TRAIN_MODELS,
+  isDefaultBacktest,
+  isDefaultSelection,
+  parseRunConfig,
+} from '@/components/demo/run-config-utils'
+import { buildReplayRequest } from '@/components/demo/replay-request'
+import { WORKSPACE_NAME_PATTERN } from '@/components/demo/workspace-name'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { ROUTES } from '@/lib/constants'
 import { cn } from '@/lib/utils'
-import type { WorkspaceListItem } from '@/types/api'
+import type {
+  DemoBacktestConfig,
+  SeedOverrides,
+  UserScope,
+  WorkspaceListItem,
+} from '@/types/api'
 
 const TERMINAL_STATUSES = new Set(['pass', 'fail', 'skip', 'warn'])
-
-// E4 (#393) — mirrors the backend DemoRunRequest.workspace_name pattern
-// (schemas.py): lowercase letters/digits, then -/_ allowed; ≤100 chars.
-const WORKSPACE_NAME_PATTERN = /^[a-z0-9][a-z0-9\-_]*$/
 
 /**
  * PRP-38 / PRP-39 / PRP-40 — resolve the per-step Inspect deep link.
@@ -122,10 +138,25 @@ export default function ShowcasePage() {
   const [keepWorkspace, setKeepWorkspace] = useState(false)
   const [workspaceName, setWorkspaceName] = useState('')
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
+  // E2 (#408) — the workspace awaiting replay confirmation (null = no dialog).
+  const [pendingReplay, setPendingReplay] = useState<WorkspaceListItem | null>(null)
+  // E3 (#409) — advanced seed config (sparse; null = preset-driven) and the
+  // operator-selected focus pair (null = auto-discover first pair).
+  const [seedOverrides, setSeedOverrides] = useState<SeedOverrides | null>(null)
+  const [userScope, setUserScope] = useState<UserScope | null>(null)
+  // E4 (#410) — run-config phase controls. Default = the legacy trio + split;
+  // the dirty-only rule (below) omits both keys from the frame when untouched.
+  const [trainModels, setTrainModels] = useState<string[]>([...DEFAULT_TRAIN_MODELS])
+  const [backtestCfg, setBacktestCfg] = useState<DemoBacktestConfig>({ ...DEFAULT_BACKTEST })
 
   // The page (not the panel) resolves the loaded workspace's detail — the
   // artifacts panel needs detail-only created_objects.
   const { data: loadedWorkspace } = useWorkspace(
+    selectedWorkspaceId ?? '',
+    !!selectedWorkspaceId
+  )
+  // E2 (#408) — probe the LOADED workspace's soft references (never per row).
+  const { data: workspaceHealth } = useWorkspaceHealth(
     selectedWorkspaceId ?? '',
     !!selectedWorkspaceId
   )
@@ -152,6 +183,15 @@ export default function ShowcasePage() {
             ...(trimmedName ? { workspace_name: trimmedName } : {}),
           }
         : {}),
+      // E3 (#409) — overrides only ride a re-seed run (the backend rejects
+      // them on skip_seed=true); omit both keys for legacy byte-compat.
+      ...(reseed && seedOverrides ? { seed_overrides: seedOverrides } : {}),
+      ...(userScope ? { user_scope: userScope } : {}),
+      // E4 (#410) — dirty-only inclusion: omit train_model_types / backtest
+      // when they equal the defaults, so untouched controls send a
+      // byte-identical legacy frame (umbrella criterion).
+      ...(isDefaultSelection(trainModels) ? {} : { train_model_types: trainModels }),
+      ...(isDefaultBacktest(backtestCfg) ? {} : { backtest: backtestCfg }),
     })
   }
 
@@ -164,25 +204,35 @@ export default function ShowcasePage() {
     setResetDb(ws.reset)
     setKeepWorkspace(true)
     setWorkspaceName(ws.name ?? '')
+    // E3 (#409) — repopulate the seed-config panel + scope selector.
+    setSeedOverrides(ws.seed_overrides ?? null)
+    setUserScope(ws.user_scope ?? null)
+    // E4 (#410) — repopulate the run-config panel; reset to defaults when the
+    // row carried no custom config (null run_config).
+    const runConfig = parseRunConfig(ws.run_config)
+    setTrainModels(runConfig ? runConfig.trainModels : [...DEFAULT_TRAIN_MODELS])
+    setBacktestCfg(runConfig ? runConfig.backtest : { ...DEFAULT_BACKTEST })
     setSelectedWorkspaceId(ws.workspace_id)
   }
 
-  // E4 (#393) — Replay: Load, then re-submit the recorded config VERBATIM
-  // through the existing WS run path with preservation='keep' (a replay is
-  // itself a workspace run). setScenario runs first (picker-desync gotcha:
-  // start() does not sync the picker state).
+  // E2 (#408) — Replay request: every replay first opens the confirmation
+  // dialog (recorded-vs-sent preview; destructive variant on reset=true).
+  // NO code path starts a replay without it.
   const handleReplayWorkspace = (ws: WorkspaceListItem) => {
+    setPendingReplay(ws)
+  }
+
+  // E4 (#393) / E2 (#408) — the CONFIRMED replay: Load, then re-submit the
+  // recorded config VERBATIM through the existing WS run path with
+  // preservation='keep' (a replay is itself a workspace run). setScenario
+  // runs first via handleLoadWorkspace (picker-desync gotcha: start() does
+  // not sync the picker state).
+  const executeReplay = (ws: WorkspaceListItem) => {
     handleLoadWorkspace(ws)
     // The re-run's live cards take over; the original row stays untouched.
     setSelectedWorkspaceId(null)
-    start({
-      seed: ws.seed,
-      scenario: ws.scenario,
-      reset: ws.reset,
-      skip_seed: ws.skip_seed,
-      preservation: 'keep',
-      ...(ws.name ? { workspace_name: ws.name } : {}),
-    })
+    start(buildReplayRequest(ws))
+    setPendingReplay(null)
   }
 
   // For the Inspect link to surface store_id/product_id on the train/backtest
@@ -241,10 +291,16 @@ export default function ShowcasePage() {
         scenario={scenario}
       />
 
-      {/* E4 (#393) — server-backed saved workspaces (Load + Replay). */}
+      {/* E4 (#393) / E2 (#408) — server-backed saved workspaces (lifecycle
+          panel; Replay routes through the confirm dialog below). */}
       <WorkspacePanel
         onLoad={handleLoadWorkspace}
-        onReplay={handleReplayWorkspace}
+        onRequestReplay={handleReplayWorkspace}
+        onDeleted={(workspaceId) => {
+          // Deleting the currently loaded workspace detaches its artifacts
+          // panel — the metadata row backing it is gone (created objects stay).
+          if (selectedWorkspaceId === workspaceId) setSelectedWorkspaceId(null)
+        }}
         isRunning={isRunning}
         lastWorkspaceId={summary?.workspaceId ?? null}
       />
@@ -264,7 +320,11 @@ export default function ShowcasePage() {
         <CardContent className="space-y-4">
           <div className="flex flex-wrap items-end gap-6">
             <ScenarioPicker value={scenario} onChange={setScenario} disabled={isRunning} />
-            <Button onClick={handleRun} disabled={isRunning || nameInvalid} size="lg">
+            <Button
+              onClick={handleRun}
+              disabled={isRunning || nameInvalid || trainModels.length === 0}
+              size="lg"
+            >
               {isRunning ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
@@ -284,7 +344,13 @@ export default function ShowcasePage() {
             <label className="flex items-center gap-2 text-sm">
               <Checkbox
                 checked={reseed}
-                onCheckedChange={(v) => setReseed(v === true)}
+                onCheckedChange={(v) => {
+                  const next = v === true
+                  setReseed(next)
+                  // E3 (#409) — overrides are meaningless without a re-seed
+                  // (validator parity: the backend rejects the combination).
+                  if (!next) setSeedOverrides(null)
+                }}
                 disabled={isRunning}
               />
               <span>
@@ -296,7 +362,13 @@ export default function ShowcasePage() {
             <label className="flex items-center gap-2 text-sm">
               <Checkbox
                 checked={resetDb}
-                onCheckedChange={(v) => setResetDb(v === true)}
+                onCheckedChange={(v) => {
+                  const next = v === true
+                  setResetDb(next)
+                  // E3 (#409) — a wipe re-issues entity ids (sequences never
+                  // reset), so a pre-picked focus pair would dangle.
+                  if (next) setUserScope(null)
+                }}
                 disabled={isRunning}
               />
               <span>
@@ -356,6 +428,38 @@ export default function ShowcasePage() {
               </div>
             )}
           </div>
+
+          {/* E3 (#409) — advanced seed config, only meaningful on a re-seed run. */}
+          {reseed && (
+            <SeedConfigPanel
+              value={seedOverrides}
+              onChange={setSeedOverrides}
+              disabled={isRunning}
+              windowLocked={scenario === 'holiday_rush'}
+            />
+          )}
+
+          {/* E3 (#409) — focus-pair selection works on the EXISTING dataset
+              (no re-seed needed); a Reset run clears it (ids re-issued). */}
+          <div className="flex flex-col gap-1">
+            <ScopeSelector value={userScope} onChange={setUserScope} disabled={isRunning} />
+            {resetDb && (
+              <p className="text-xs text-destructive">
+                Reset database re-issues entity ids — re-pick the focus pair after the run.
+              </p>
+            )}
+          </div>
+
+          {/* E4 (#410) — run-config phase controls (model set + backtest +
+              preview). Collapsed by default; untouched sends a legacy frame. */}
+          <RunConfigPanel
+            scenario={scenario}
+            disabled={isRunning}
+            selection={trainModels}
+            onSelectionChange={setTrainModels}
+            backtest={backtestCfg}
+            onBacktestChange={setBacktestCfg}
+          />
 
           {phase === 'running' && (
             <p className="text-sm text-muted-foreground">
@@ -439,10 +543,30 @@ export default function ShowcasePage() {
       )}
 
       {/* E4 (#393) — re-attached artifacts of a LOADED workspace. Any started
-          run detaches it (selectedWorkspaceId cleared) so live cards take over. */}
+          run detaches it (selectedWorkspaceId cleared) so live cards take over.
+          E2 (#408) — lineage strip + link-health markers ride along. */}
       {phase !== 'running' && loadedWorkspace && (
-        <WorkspaceArtifactsPanel workspace={loadedWorkspace} />
+        <div className="space-y-2">
+          <WorkspaceLineageStrip
+            workspaceId={loadedWorkspace.workspace_id}
+            onLoadAncestor={(ancestor) => handleLoadWorkspace(ancestor)}
+          />
+          <WorkspaceArtifactsPanel
+            workspace={loadedWorkspace}
+            health={workspaceHealth ?? null}
+          />
+          {/* E5 (#411) — captured agent/HITL + RAG story; self-hides on legacy rows. */}
+          <WorkspaceStoryPanel workspace={loadedWorkspace} />
+        </div>
       )}
+
+      {/* E2 (#408) — replay confirmation with the recorded-vs-sent preview. */}
+      <ReplayConfirmDialog
+        workspace={pendingReplay}
+        requestPreview={pendingReplay ? buildReplayRequest(pendingReplay) : null}
+        onConfirm={() => pendingReplay && executeReplay(pendingReplay)}
+        onCancel={() => setPendingReplay(null)}
+      />
     </div>
   )
 }

@@ -129,6 +129,10 @@ class Settings(BaseSettings):
     registry_artifact_root: str = "./artifacts/registry"
     registry_duplicate_policy: Literal["allow", "deny", "detect"] = "detect"
 
+    # Demo / Showcase
+    # E6 (#412) — root for workspace export bundles (manifest + checksums).
+    showcase_export_root: str = "./artifacts/showcase"
+
     # Analytics
     analytics_max_rows: int = 10000
     analytics_max_date_range_days: int = 730

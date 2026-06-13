@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.shared.seeder.config import default_seed_end_date, default_seed_start_date
+from app.shared.seeder.overrides import SeederOverrides
 
 VALID_CHANNELS: frozenset[str] = frozenset({"in_store", "online", "click_collect", "wholesale"})
 """Allow-list for ``sales_daily.channel`` — mirrors the SQL CHECK."""
@@ -254,6 +255,17 @@ class GenerateParams(BaseModel):
         description=(
             "Mean Normal-distributed lead time (days). Only applied when "
             "enable_lead_time=true. (Phase 2)"
+        ),
+    )
+
+    # E3 (#409) — curated nested overrides. Absent field = byte-identical
+    # legacy behavior (the same promise as the Phase 1/2 blocks above).
+    overrides: SeederOverrides | None = Field(
+        default=None,
+        description=(
+            "Curated nested overrides (E3 #409); applied LAST — wins over the "
+            "scalar stores/products/sparsity. Unknown knobs are rejected "
+            "(extra=forbid). Absent = byte-identical legacy behavior."
         ),
     )
 

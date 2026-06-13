@@ -14,7 +14,14 @@ demo pipeline. :func:`create_workspace` returns ``None`` on any error;
 
 :func:`get_workspace` / :func:`list_workspaces` / :func:`count_workspaces` are
 routed since E4 (epic #393) by ``GET /demo/workspaces`` and
-``GET /demo/workspaces/{workspace_id}`` in ``app/features/demo/routes.py``.
+``GET /demo/workspaces/{workspace_id}`` in ``app/features/demo/routes.py``;
+:func:`delete_workspace` backs ``DELETE /demo/workspaces/{workspace_id}``;
+:func:`update_workspace` backs ``PATCH /demo/workspaces/{workspace_id}``
+(E1, #407). E2 (#408) adds server-side list filters (``q`` name search,
+``tags`` containment, ``include_archived``) and an allow-listed sort with
+unconditional pinned-first ordering. The request-scoped helpers take a
+caller-owned session and raise normally -- the warn-and-continue contract is
+pipeline-only.
 """
 
 from __future__ import annotations
@@ -22,8 +29,9 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
 
 from app.core.database import get_session_maker
 from app.core.logging import get_logger
@@ -32,7 +40,7 @@ from app.features.demo.models import (
     WORKSPACE_STATUS_FAILED,
     ShowcaseWorkspace,
 )
-from app.features.demo.schemas import DemoRunRequest
+from app.features.demo.schemas import DemoRunRequest, WorkspaceUpdateRequest
 
 if TYPE_CHECKING:
     # NOTE: pipeline imports this module at runtime; importing DemoContext
@@ -40,6 +48,59 @@ if TYPE_CHECKING:
     from app.features.demo.pipeline import DemoContext
 
 logger = get_logger(__name__)
+
+# E2 (#408) -- allow-listed sort columns for GET /demo/workspaces. sort_by is
+# user input; unknown values fall back to the default order (created_at desc)
+# rather than erroring (dimensions precedent, app/features/dimensions/service.py).
+_SORT_COLUMNS: dict[str, InstrumentedAttribute[Any]] = {
+    "created_at": ShowcaseWorkspace.created_at,
+    "name": ShowcaseWorkspace.name,
+    "seed": ShowcaseWorkspace.seed,
+    "status": ShowcaseWorkspace.status,
+}
+
+
+def _apply_filters[SelectT: Select[Any]](
+    stmt: SelectT,
+    *,
+    q: str | None = None,
+    tags: list[str] | None = None,
+    include_archived: bool = False,
+) -> SelectT:
+    """Apply the E2 list filters to a select statement.
+
+    Shared by :func:`list_workspaces` and :func:`count_workspaces` so the
+    page's ``total`` always respects the active filters (scenarios precedent:
+    ``app/features/scenarios/service.py`` applies the same ``.where`` chain to
+    both the count and rows statements).
+    """
+    if not include_archived:
+        stmt = stmt.where(ShowcaseWorkspace.archived.is_(False))
+    if q:
+        # Case-insensitive name search (dimensions ILIKE precedent). NAME only
+        # -- workspace_id prefixes are copy-paste handles, not search terms.
+        stmt = stmt.where(ShowcaseWorkspace.name.ilike(f"%{q}%"))
+    if tags:
+        # JSONB @> containment -- a workspace matches when it carries every
+        # listed tag (scenario_plan.tags precedent; GIN-indexed since E1 #407).
+        stmt = stmt.where(ShowcaseWorkspace.tags.contains(tags))
+    return stmt
+
+
+def _run_config_payload(req: DemoRunRequest) -> dict[str, Any] | None:
+    """Build the ``run_config`` JSONB payload for a kept run (E4, #410).
+
+    Returns ``None`` when the run used default config (BOTH fields absent) so
+    the column stays NULL and Load/Replay can NULL-detect "defaults". Otherwise
+    a sparse dict carrying only the operator-set portions, JSON-serialised via
+    ``model_dump(mode="json")`` so a verbatim Replay re-submits it unchanged.
+    """
+    if req.train_model_types is None and req.backtest is None:
+        return None
+    return {
+        "train_model_types": req.train_model_types,
+        "backtest": req.backtest.model_dump(mode="json") if req.backtest is not None else None,
+    }
 
 
 async def create_workspace(req: DemoRunRequest) -> str | None:
@@ -64,6 +125,27 @@ async def create_workspace(req: DemoRunRequest) -> str | None:
                     scenario=req.scenario.value,
                     reset=req.reset,
                     skip_seed=req.skip_seed,
+                    # E1 (#407): replay provenance, recorded verbatim (soft
+                    # reference -- no existence check; dangles are designed).
+                    replayed_from_workspace_id=req.replayed_from_workspace_id,
+                    # E3 (#409): the two replay-relevant story slots, recorded
+                    # at create time (the REQUESTED config -- the effective
+                    # grain lands separately on store_id/product_id at
+                    # finalize, so a fallen-back scope stays visible). Sparse
+                    # JSON: only operator-set knobs appear; never {}.
+                    seed_overrides=(
+                        req.seed_overrides.model_dump(mode="json", exclude_none=True)
+                        if req.seed_overrides is not None
+                        else None
+                    ),
+                    user_scope=(
+                        req.user_scope.model_dump(mode="json")
+                        if req.user_scope is not None
+                        else None
+                    ),
+                    # E4 (#409 sibling, #410): replay-input run config -- model
+                    # set + backtest knobs, recorded verbatim (NULL on defaults).
+                    run_config=_run_config_payload(req),
                 )
             )
             await db.commit()
@@ -137,11 +219,29 @@ async def finalize_workspace(
             row.date_start = ctx.date_start
             row.date_end = ctx.date_end
             row.created_objects = _collect_created_objects(ctx)
-            row.result_summary = {
+            # E5 (#411) -- story slots. Empty list -> None (E1: NULL = "slot
+            # never written"). Whole-value assignment so SQLAlchemy change
+            # detection fires (never mutate a loaded row's JSONB in place).
+            row.approval_events = ctx.approval_events or None
+            row.rag_events = ctx.rag_events or None
+            summary: dict[str, Any] = {
                 "winner_model_type": ctx.winner_model_type,
                 "winner_wape": ctx.winner_wape,
                 "wall_clock_s": wall_clock_s,
             }
+            # E5 (#411) D7 -- on a replay keep-run, compare the SOURCE row's
+            # story slots against this run's capture and record the verdict.
+            # One extra get-by-id select in this same session (inside the
+            # warn-and-continue try). A dangling source -> "unknown".
+            if row.replayed_from_workspace_id:
+                src_result = await db.execute(
+                    select(ShowcaseWorkspace).where(
+                        ShowcaseWorkspace.workspace_id == row.replayed_from_workspace_id
+                    )
+                )
+                src = src_result.scalar_one_or_none()
+                summary["story_reproduction"] = _story_reproduction(src, ctx)
+            row.result_summary = summary
             await db.commit()
     except Exception as exc:  # workspace must never break the demo
         logger.warning(
@@ -152,6 +252,68 @@ async def finalize_workspace(
         )
         return
     logger.info("demo.workspace_finalized", workspace_id=workspace_id, failed=failed)
+
+
+def _story_reproduction(src: ShowcaseWorkspace | None, ctx: DemoContext) -> dict[str, Any]:
+    """Compare the source row's story slots against this run's capture (E5 D7).
+
+    ``agent``: the source row had >=1 approval event -> compare with this run
+    (``reproduced`` / ``not_reproduced``); the source had none -> ``not_applicable``;
+    the source row is missing (soft reference dangles) -> ``unknown``.
+    ``knowledge``: same logic over ``rag_events`` entries whose ``event`` is
+    ``index`` / ``retrieve`` with ``status != "skip"`` (a real knowledge hit,
+    not a graceful skip).
+    """
+    if src is None:
+        return {"agent": "unknown", "knowledge": "unknown", "source_workspace_id": None}
+
+    def _verdict(source_had: bool, new_has: bool) -> str:
+        if not source_had:
+            return "not_applicable"
+        return "reproduced" if new_has else "not_reproduced"
+
+    def _has_knowledge(events: list[dict[str, Any]] | None) -> bool:
+        return any(
+            e.get("event") in ("index", "retrieve") and e.get("status") != "skip"
+            for e in (events or [])
+        )
+
+    return {
+        "agent": _verdict(bool(src.approval_events), bool(ctx.approval_events)),
+        "knowledge": _verdict(_has_knowledge(src.rag_events), _has_knowledge(ctx.rag_events)),
+        "source_workspace_id": src.workspace_id,
+    }
+
+
+async def list_approval_events(db: AsyncSession, *, limit: int = 50) -> list[dict[str, Any]]:
+    """Flatten ``approval_events`` across the newest rows that carry the slot.
+
+    Scans the newest workspace rows with a non-NULL ``approval_events`` slot
+    (an audit-glance surface, not a browse API) and flattens their entries
+    newest-row-first, each tagged with its ``workspace_id`` / ``workspace_name``,
+    capped at ``limit``. Python-side flatten over a low-cardinality table -- no
+    ``jsonb_array_elements`` SQL (D6).
+
+    Args:
+        db: An open async session (caller-owned).
+        limit: Maximum flattened entries to return (route caps 1-200).
+
+    Returns:
+        The flattened approval events, newest workspace first.
+    """
+    result = await db.execute(
+        select(ShowcaseWorkspace)
+        .where(ShowcaseWorkspace.approval_events.isnot(None))
+        .order_by(ShowcaseWorkspace.created_at.desc(), ShowcaseWorkspace.id.desc())
+        .limit(50)
+    )
+    events: list[dict[str, Any]] = []
+    for row in result.scalars():
+        for entry in row.approval_events or []:
+            events.append({"workspace_id": row.workspace_id, "workspace_name": row.name, **entry})
+            if len(events) >= limit:
+                return events
+    return events
 
 
 async def get_workspace(db: AsyncSession, workspace_id: str) -> ShowcaseWorkspace | None:
@@ -170,39 +332,140 @@ async def get_workspace(db: AsyncSession, workspace_id: str) -> ShowcaseWorkspac
     return result.scalar_one_or_none()
 
 
+async def update_workspace(
+    db: AsyncSession,
+    workspace_id: str,
+    update: WorkspaceUpdateRequest,
+) -> ShowcaseWorkspace | None:
+    """Apply a partial lifecycle update; return the row or ``None`` when missing.
+
+    ``exclude_unset`` distinguishes absent fields from explicit ``null`` --
+    only fields present in the request body are applied (explicit ``null``
+    clears ``name`` / ``notes``; the schema rejects ``null`` on the NOT NULL
+    columns). JSONB values are assigned WHOLE (never mutated in place) so
+    SQLAlchemy change detection fires. An empty request is a no-op that still
+    returns the row.
+
+    Args:
+        db: An open async session (caller-owned; this backs an HTTP route,
+            NOT the pipeline -- it raises normally, no warn-and-continue).
+        workspace_id: The external id of the row to update.
+        update: The validated partial-update request.
+
+    Returns:
+        The updated row, or ``None`` when no row matched (route maps to 404).
+    """
+    row = await get_workspace(db, workspace_id)
+    if row is None:
+        return None
+    changes = update.model_dump(exclude_unset=True)  # absent != explicit null
+    for field, value in changes.items():
+        setattr(row, field, value)  # whole-value assignment (JSONB gotcha)
+    await db.commit()
+    await db.refresh(row)
+    logger.info("demo.workspace_updated", workspace_id=workspace_id, fields=sorted(changes))
+    return row
+
+
 async def list_workspaces(
     db: AsyncSession,
     *,
     limit: int = 50,
     offset: int = 0,
+    q: str | None = None,
+    tags: list[str] | None = None,
+    include_archived: bool = False,
+    sort_by: str | None = None,
+    sort_order: str = "desc",
 ) -> list[ShowcaseWorkspace]:
-    """List workspace rows, newest first (tie-broken by id, descending).
+    """List workspace rows with E2 (#408) filters; pinned rows always first.
+
+    Default order is newest first (tie-broken by id, descending). ``sort_by``
+    is allow-listed (created_at / name / seed / status); unknown values fall
+    back to the default order. ``name`` sorts NULLS LAST so unnamed rows sink.
+    Pinned rows order first regardless of the active sort.
 
     Args:
         db: An open async session (caller-owned).
         limit: Maximum rows to return.
-        offset: Rows to skip from the newest end.
+        offset: Rows to skip from the sorted front.
+        q: Case-insensitive name search (ILIKE substring).
+        tags: Tag containment filter -- a row must carry every listed tag.
+        include_archived: Include archived rows (hidden by default).
+        sort_by: Allow-listed sort column; unknown values use the default order.
+        sort_order: Sort direction ("asc" or "desc").
 
     Returns:
-        The matching rows, newest first.
+        The matching rows in the requested order.
     """
+    sort_column = _SORT_COLUMNS.get(sort_by) if sort_by else None
+    if sort_column is not None:
+        order_expr = sort_column.desc() if sort_order == "desc" else sort_column.asc()
+        if sort_by == "name":
+            order_expr = order_expr.nulls_last()
+    else:
+        order_expr = ShowcaseWorkspace.created_at.desc()
+    stmt = _apply_filters(
+        select(ShowcaseWorkspace), q=q, tags=tags, include_archived=include_archived
+    )
     result = await db.execute(
-        select(ShowcaseWorkspace)
-        .order_by(ShowcaseWorkspace.created_at.desc(), ShowcaseWorkspace.id.desc())
+        stmt.order_by(ShowcaseWorkspace.pinned.desc(), order_expr, ShowcaseWorkspace.id.desc())
         .limit(limit)
         .offset(offset)
     )
     return list(result.scalars().all())
 
 
-async def count_workspaces(db: AsyncSession) -> int:
-    """Count all workspace rows (E4, issue #393).
+async def delete_workspace(db: AsyncSession, workspace_id: str) -> bool:
+    """Delete a workspace METADATA row; return ``True`` when a row was removed.
+
+    Deletes ONLY the ``showcase_workspace`` row. Everything the run created --
+    model runs, scenario plans, aliases, jobs, agent sessions, artifacts -- is
+    carried as OPAQUE SOFT REFERENCES in ``created_objects`` (no ForeignKeys
+    by design, see ``app/features/demo/models.py``) and is deliberately left
+    untouched: the workspace is an audit record, never an ownership root.
 
     Args:
         db: An open async session (caller-owned).
+        workspace_id: The external id of the row to delete.
 
     Returns:
-        The total number of saved workspaces.
+        ``True`` when a row was deleted, ``False`` when none matched.
     """
-    count_stmt = select(func.count()).select_from(ShowcaseWorkspace)
+    row = await get_workspace(db, workspace_id)
+    if row is None:
+        return False
+    await db.delete(row)
+    await db.commit()
+    logger.info("demo.workspace_deleted", workspace_id=workspace_id)
+    return True
+
+
+async def count_workspaces(
+    db: AsyncSession,
+    *,
+    q: str | None = None,
+    tags: list[str] | None = None,
+    include_archived: bool = False,
+) -> int:
+    """Count workspace rows matching the active filters (E4 #393, E2 #408).
+
+    Applies the SAME filter chain as :func:`list_workspaces` (via
+    :func:`_apply_filters`) so a filtered page's ``total`` stays honest.
+
+    Args:
+        db: An open async session (caller-owned).
+        q: Case-insensitive name search (ILIKE substring).
+        tags: Tag containment filter -- a row must carry every listed tag.
+        include_archived: Include archived rows (hidden by default).
+
+    Returns:
+        The number of saved workspaces matching the filters.
+    """
+    count_stmt = _apply_filters(
+        select(func.count()).select_from(ShowcaseWorkspace),
+        q=q,
+        tags=tags,
+        include_archived=include_archived,
+    )
     return int(await db.scalar(count_stmt) or 0)

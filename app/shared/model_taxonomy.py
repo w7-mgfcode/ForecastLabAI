@@ -56,6 +56,15 @@ _MODEL_FAMILY_MAP: dict[str, ModelFamily] = {
 }
 
 
+# E4 (#410) — public cross-slice request-validation allow-list. The demo
+# slice (and any other slice that must validate a model_type without importing
+# a sibling feature slice) checks membership against this frozenset instead of
+# reaching into forecasting/model_selection. Derived from the canonical map
+# above so it can never drift (drift-locked by
+# ``app/shared/tests/test_model_taxonomy.py``).
+KNOWN_MODEL_TYPES: frozenset[str] = frozenset(_MODEL_FAMILY_MAP)
+
+
 def model_family_for(model_type: str) -> ModelFamily:
     """Return the :class:`ModelFamily` for a given ``model_type`` string.
 

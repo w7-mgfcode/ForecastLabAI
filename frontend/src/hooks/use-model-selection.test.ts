@@ -48,6 +48,7 @@ const CATALOG: ModelCatalogResponse = {
       default_params: {},
       supports_auto_predict: true,
       description: 'Repeats the last observed value.',
+      enabled: true,
     },
   ],
   default_candidate_model_types: ['naive', 'seasonal_naive', 'moving_average'],

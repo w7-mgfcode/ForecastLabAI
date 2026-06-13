@@ -16,7 +16,12 @@ import sys
 
 import pytest
 
-from app.shared.model_taxonomy import ModelFamily, model_family_for
+from app.shared.model_taxonomy import (
+    _MODEL_FAMILY_MAP,
+    KNOWN_MODEL_TYPES,
+    ModelFamily,
+    model_family_for,
+)
 
 # ---------------------------------------------------------------------------
 # model_family_for — canonical mapping (mirrors the legacy suite in
@@ -48,6 +53,21 @@ def test_model_family_for_maps_additive_types_to_additive() -> None:
 def test_model_family_for_unknown_returns_baseline() -> None:
     """An unknown model_type logs a warning and degrades to BASELINE."""
     assert model_family_for("future_arima_v9") == ModelFamily.BASELINE
+
+
+# ---------------------------------------------------------------------------
+# KNOWN_MODEL_TYPES — cross-slice request-validation allow-list (E4 #410).
+# ---------------------------------------------------------------------------
+
+
+def test_known_model_types_matches_family_map() -> None:
+    """Drift-lock: the public allow-list IS the canonical map's key set."""
+    assert KNOWN_MODEL_TYPES == frozenset(_MODEL_FAMILY_MAP)
+
+
+def test_known_model_types_contains_demo_trio() -> None:
+    """The legacy demo trio must always validate (byte-compat criterion)."""
+    assert {"naive", "seasonal_naive", "moving_average"} <= KNOWN_MODEL_TYPES
 
 
 # ---------------------------------------------------------------------------

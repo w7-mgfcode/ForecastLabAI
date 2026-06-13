@@ -7,6 +7,7 @@ import pytest
 
 from app.features.seeder import schemas, service
 from app.shared.seeder.config import DEMO_MINIMAL_SPAN_DAYS, default_seed_end_date
+from app.shared.seeder.overrides import SeederOverrides
 
 
 class TestListScenarios:
@@ -196,6 +197,121 @@ class TestBuildConfigFromParams:
         assert "Thanksgiving" in holiday_names
         assert "Black Friday" in holiday_names
         assert config.time_series.monthly_seasonality == {10: 1.0, 11: 1.3, 12: 1.8}
+
+
+class TestApplySeedOverrides:
+    """Tests for the E3 (#409) curated nested overrides layer."""
+
+    def test_each_knob_maps_to_its_config_field(self):
+        """Every knob lands on the documented SeederConfig target."""
+        params = schemas.GenerateParams(
+            scenario="demo_minimal",
+            overrides=SeederOverrides(
+                stores=8,
+                products=20,
+                sparsity=0.3,
+                promotion_intensity=0.3,
+                stockout_intensity=0.1,
+                noise_sigma=0.25,
+            ),
+        )
+        config = service._build_config_from_params(params)
+
+        assert config.dimensions.stores == 8
+        assert config.dimensions.products == 20
+        assert config.sparsity.missing_combinations_pct == 0.3
+        assert config.retail.promotion_probability == 0.3
+        assert config.retail.stockout_probability == 0.1
+        assert config.time_series.noise_sigma == 0.25
+
+    def test_overrides_win_over_scalar_params(self):
+        """Nested overrides apply LAST and beat the legacy scalar params."""
+        params = schemas.GenerateParams(
+            scenario="demo_minimal",
+            stores=3,
+            products=10,
+            sparsity=0.5,
+            overrides=SeederOverrides(stores=8, products=20, sparsity=0.2),
+        )
+        config = service._build_config_from_params(params)
+
+        assert config.dimensions.stores == 8
+        assert config.dimensions.products == 20
+        assert config.sparsity.missing_combinations_pct == 0.2
+
+    def test_window_days_recomputes_start_from_end(self):
+        """window_days derives start_date from the request's end_date."""
+        params = schemas.GenerateParams(
+            scenario="demo_minimal",
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 6, 30),
+            overrides=SeederOverrides(window_days=120),
+        )
+        config = service._build_config_from_params(params)
+
+        assert config.end_date == date(2025, 6, 30)
+        assert config.start_date == date(2025, 6, 30) - timedelta(days=120)
+
+    def test_sparse_preset_gap_character_survives_sparsity_override(self):
+        """dataclasses.replace preserves the preset's random_gaps_* siblings."""
+        baseline = service._build_config_from_params(schemas.GenerateParams(scenario="sparse"))
+        assert baseline.sparsity.random_gaps_per_series > 0  # preset character
+
+        params = schemas.GenerateParams(
+            scenario="sparse",
+            overrides=SeederOverrides(sparsity=0.2),
+        )
+        config = service._build_config_from_params(params)
+
+        assert config.sparsity.missing_combinations_pct == 0.2
+        assert config.sparsity.random_gaps_per_series == baseline.sparsity.random_gaps_per_series
+        assert config.sparsity.gap_min_days == baseline.sparsity.gap_min_days
+        assert config.sparsity.gap_max_days == baseline.sparsity.gap_max_days
+
+    def test_partial_overrides_leave_other_fields_untouched(self):
+        """Setting one retail knob preserves the preset's other retail fields."""
+        baseline = service._build_config_from_params(
+            schemas.GenerateParams(scenario="stockout_heavy")
+        )
+        params = schemas.GenerateParams(
+            scenario="stockout_heavy",
+            overrides=SeederOverrides(promotion_intensity=0.4),
+        )
+        config = service._build_config_from_params(params)
+
+        assert config.retail.promotion_probability == 0.4
+        assert config.retail.stockout_probability == baseline.retail.stockout_probability
+        assert config.retail.promotion_lift == baseline.retail.promotion_lift
+
+    def test_no_overrides_is_byte_identical_regression(self):
+        """A body without overrides produces the exact config it does today."""
+
+        def _params(**extra: object) -> schemas.GenerateParams:
+            body: dict[str, object] = {
+                "scenario": "demo_minimal",
+                "seed": 42,
+                "stores": 3,
+                "products": 10,
+                "start_date": "2025-01-01",
+                "end_date": "2025-03-31",
+                "sparsity": 0.0,
+            }
+            body.update(extra)
+            return schemas.GenerateParams.model_validate(body)
+
+        legacy = service._build_config_from_params(_params())
+        with_none = service._build_config_from_params(_params(overrides=None))
+
+        assert legacy == with_none
+
+    def test_empty_overrides_object_is_noop(self):
+        """An all-None overrides object changes nothing."""
+        base = service._build_config_from_params(schemas.GenerateParams(scenario="demo_minimal"))
+        with_empty = service._build_config_from_params(
+            schemas.GenerateParams(scenario="demo_minimal", overrides=SeederOverrides())
+        )
+
+        assert base == with_empty
 
 
 class TestGetStatus:

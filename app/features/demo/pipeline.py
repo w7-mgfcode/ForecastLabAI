@@ -40,9 +40,11 @@ from fastapi import FastAPI
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.problem_details import EMBEDDING_AUTH_CODE, ERROR_TYPES
-from app.features.demo import workspace
-from app.features.demo.schemas import DemoRunRequest, StepEvent, StepStatus
+from app.features.demo import hitl, workspace
+from app.features.demo.schemas import DemoRunRequest, StepEvent, StepStatus, UserScope
+from app.shared.model_taxonomy import KNOWN_MODEL_TYPES
 from app.shared.seeder.config import ScenarioPreset
+from app.shared.seeder.overrides import SeederOverrides
 
 logger = get_logger(__name__)
 
@@ -209,6 +211,55 @@ class _Client:
 # =============================================================================
 
 
+@dataclass(frozen=True)
+class ResolvedRunConfig:
+    """The request's run-config with legacy defaults filled in (E4, #410).
+
+    ``customized`` is True when the request carried EITHER ``train_model_types``
+    OR ``backtest`` -- it gates the byte-identical legacy path in step_backtest
+    (D4) and the ``run_config`` echo in pipeline_complete. When False every
+    field equals the legacy constant, so resolving an untouched frame is a
+    no-op.
+    """
+
+    model_types: tuple[str, ...] = DEMO_MODEL_TYPES
+    horizon: int = DEMO_HORIZON
+    strategy: str = "expanding"
+    n_splits: int = DEMO_BACKTEST_SPLITS
+    min_train_size: int = DEMO_MIN_TRAIN_SIZE
+    gap: int = 0
+    metric: str = "wape"
+    customized: bool = False
+
+
+def _resolve_run_config(req: DemoRunRequest) -> ResolvedRunConfig:
+    """Fold ``req.train_model_types`` / ``req.backtest`` over the legacy defaults.
+
+    None on both -> the all-default ResolvedRunConfig (customized=False),
+    byte-identical to today. A partial config (only a selection, or only a
+    backtest block) fills the unspecified half from the legacy constants.
+    """
+    customized = req.train_model_types is not None or req.backtest is not None
+    if not customized:
+        return ResolvedRunConfig()
+    model_types = (
+        tuple(req.train_model_types) if req.train_model_types is not None else DEMO_MODEL_TYPES
+    )
+    backtest = req.backtest
+    if backtest is None:
+        return ResolvedRunConfig(model_types=model_types, customized=True)
+    return ResolvedRunConfig(
+        model_types=model_types,
+        horizon=backtest.horizon,
+        strategy=backtest.strategy,
+        n_splits=backtest.n_splits,
+        min_train_size=backtest.min_train_size,
+        gap=backtest.gap,
+        metric=backtest.metric,
+        customized=True,
+    )
+
+
 @dataclass
 class DemoContext:
     """Accumulator threaded through every step.
@@ -254,13 +305,30 @@ class DemoContext:
     # PRP-41 — additive HITL approval state, populated only by
     # step_agent_hitl_flow on SHOWCASE_RICH. Remain None on every other path.
     approval_action_id: str | None = None
-    agent_approval_decision: str | None = None  # "executed"|"rejected"|"expired"|"timed_out"
+    agent_approval_decision: str | None = None  # executed|rejected|external_4xx|timed_out
     # E1 (#390) -- workspace persistence. Set only on preservation="keep" runs
     # (and only when the row insert succeeded); None on ephemeral runs.
     workspace_id: str | None = None
     # E3 (#392) -- workspace label for plan tagging. Set alongside
     # workspace_id in run_pipeline's keep-branch; None on ephemeral runs.
     workspace_name: str | None = None
+    # E3 (#409) -- additive Optional start-frame config. seed_overrides is
+    # forwarded verbatim to /seeder/generate by step_seed (None on legacy
+    # frames); user_scope is the operator-selected focus pair step_status
+    # validates and adopts (warn + fallback to discovery when dangling).
+    seed_overrides: SeederOverrides | None = None
+    user_scope: UserScope | None = None
+    # E4 (#410) -- resolved run config (selection + backtest split + ranking
+    # metric). Defaults to the all-legacy ResolvedRunConfig so a frame without
+    # the new fields behaves byte-identically.
+    run_config: ResolvedRunConfig = field(default_factory=ResolvedRunConfig)
+    # E5 (#411) -- story-capture accumulators. Appended by step_agent_hitl_flow
+    # and the three knowledge steps on SHOWCASE_RICH; finalize_workspace
+    # persists them to the workspace slots (empty list -> slot stays NULL).
+    # Always append in-memory (cheap, cannot fail); only the DB write is
+    # fallible (warn-and-continue).
+    approval_events: list[dict[str, Any]] = field(default_factory=list)
+    rag_events: list[dict[str, Any]] = field(default_factory=list)
 
 
 # =============================================================================
@@ -283,6 +351,13 @@ def _model_config_payload(model_type: str) -> dict[str, Any]:
         return {"model_type": "moving_average", "window_size": 7}
     if model_type == "prophet_like":
         return {"model_type": "prophet_like"}
+    # E4 (#410) -- any other KNOWN model type validates from a minimal
+    # {"model_type": X} body (runtime-verified across all 11 union members,
+    # PRP Gotcha 1). The explicit branches above stay because their non-default
+    # params (season_length / window_size) are load-bearing for config_hash
+    # stability of existing registry rows.
+    if model_type in KNOWN_MODEL_TYPES:
+        return {"model_type": model_type}
     raise ValueError(f"Unsupported demo model_type: {model_type}")
 
 
@@ -311,15 +386,65 @@ def _llm_key_present() -> bool:
     return False
 
 
-# PRP-41 — HITL approval flow constants. Display delay gives the visitor a
-# window to click Approve on the FE before the backend auto-fires; the hard
+# PRP-41 / E5 (#411) — HITL approval flow constants. The decision window is the
+# span the FE renders Approve + Reject and the step waits on the in-memory relay
+# (D3: 10 s -- 3 s was unclickable by a human; 10 s stays well under the 90 s
+# hard timeout and the 180 s soft budget). It is emitted to the FE as
+# ``data.decision_window_s`` so the countdown never hardcodes it. The hard
 # timeout is the load-bearing fallback so a hung agent never stops the demo.
-_APPROVAL_DISPLAY_DELAY_S = 3.0
+_APPROVAL_DECISION_WINDOW_S = 10.0
 _APPROVAL_HARD_TIMEOUT_S = 90.0
 _HITL_PROMPT = (
     "Save a 10% price-cut scenario plan for the demo-production model "
     "as 'showcase-agent-savedplan'."
 )
+
+
+def _record_approval_event(
+    ctx: DemoContext,
+    *,
+    action_id: str,
+    tool_name: str,
+    decision: str,
+    session_id: str,
+    auto_approved: bool,
+    reason: str | None,
+    execution_status: str | None,
+    pending_action: dict[str, Any],
+    transcript_summary: str,
+    tokens_used: int,
+    tool_calls_count: int,
+) -> None:
+    """Append one approval-event entry to ``ctx.approval_events`` (E5, #411).
+
+    ``tool_call_summary`` carries the action description + argument KEYS only --
+    never values (security-patterns.md: never echo full payloads; values may
+    embed user-supplied text). Schema v2 -- see DOMAIN_MODEL § showcase_workspace.
+    """
+    raw_args = pending_action.get("arguments")
+    arguments_keys = sorted(raw_args) if isinstance(raw_args, dict) else []
+    description_raw = pending_action.get("description")
+    description = description_raw if isinstance(description_raw, str) else ""
+    ctx.approval_events.append(
+        {
+            "action_id": action_id,
+            "tool_name": tool_name,
+            "decision": decision,
+            "decided_at": datetime.now(UTC).isoformat(),
+            "session_id": session_id,
+            # -- E5 (#411) additive (config_schema_version >= 2) --
+            "auto_approved": auto_approved,
+            "reason": reason,
+            "execution_status": execution_status,
+            "tool_call_summary": {
+                "description": description,
+                "arguments_keys": arguments_keys,
+            },
+            "transcript_summary": transcript_summary,
+            "tokens_used": tokens_used,
+            "tool_calls_count": tool_calls_count,
+        }
+    )
 
 
 # PRP-40 — artifact-key parser for /scenarios/* run_id resolution. Two ID
@@ -445,18 +570,21 @@ def _is_embedding_auth_error(exc: _StepError) -> bool:
 
 def _select_winner(
     backtest_results: dict[str, dict[str, float]],
+    metric: str = "wape",
 ) -> tuple[str, float] | None:
-    """Pick the ``(model_type, WAPE)`` with the lowest aggregated WAPE.
+    """Pick the ``(model_type, metric_value)`` with the lowest configured metric.
 
-    Skips models whose WAPE is missing or NaN (port of run_demo.py:338-356).
+    ``metric`` is one of wape / mae / rmse (E4 #410, D5 -- all lower-is-better);
+    defaults to "wape" so every existing call site is unchanged. Skips models
+    whose metric value is missing or NaN (port of run_demo.py:338-356).
     """
     best: tuple[str, float] | None = None
     for model_type, metrics in backtest_results.items():
-        wape = metrics.get("wape")
-        if wape is None or math.isnan(wape):
+        value = metrics.get(metric)
+        if value is None or math.isnan(value):
             continue
-        if best is None or wape < best[1]:
-            best = (model_type, wape)
+        if best is None or value < best[1]:
+            best = (model_type, value)
     return best
 
 
@@ -546,12 +674,33 @@ async def step_seed(ctx: DemoContext, client: _Client) -> StepResult:
         ctx.scenario,
         _SeedProfile(DEMO_SEED_STORES, DEMO_SEED_PRODUCTS, DEMO_SEED_SPAN_DAYS),
     )
-    stores, products = profile.stores, profile.products
-    if profile.window is not None:
+    # E3 (#409) -- effective dims = override-or-profile, used for BOTH the POST
+    # scalars and the detail line so the step card tells the truth. The nested
+    # object is ALSO forwarded verbatim; the seeder applies it last (wins).
+    overrides = ctx.seed_overrides
+    stores = (
+        overrides.stores
+        if overrides is not None and overrides.stores is not None
+        else profile.stores
+    )
+    products = (
+        overrides.products
+        if overrides is not None and overrides.products is not None
+        else profile.products
+    )
+    if overrides is not None and overrides.window_days is not None:
+        # The DemoRunRequest validator guarantees window_days is never set on
+        # the calendar-pinned holiday_rush preset, so today-anchored is safe.
+        seed_end = datetime.now(UTC).date()
+        seed_start = seed_end - timedelta(days=overrides.window_days)
+    elif profile.window is not None:
         seed_start, seed_end = profile.window
     else:
         seed_end = datetime.now(UTC).date()
         seed_start = seed_end - timedelta(days=profile.span_days)
+    # Scalar sparsity stays 0.0 (preserves preset character per the
+    # `if params.sparsity > 0` guard); overrides.sparsity is the only way the
+    # demo overrides sparsity.
     body = await client.request(
         "seed",
         "POST",
@@ -565,6 +714,11 @@ async def step_seed(ctx: DemoContext, client: _Client) -> StepResult:
             "end_date": seed_end.isoformat(),
             "sparsity": 0.0,
             "dry_run": False,
+            **(
+                {"overrides": overrides.model_dump(exclude_none=True)}
+                if overrides is not None
+                else {}
+            ),
         },
     )
     raw_records: dict[str, Any] = body.get("records_created", {})
@@ -572,10 +726,21 @@ async def step_seed(ctx: DemoContext, client: _Client) -> StepResult:
     ctx.seed_records = records
     # GenerateResult.records_created uses "sales" (singular), not "sales_daily".
     sales = records.get("sales", records.get("sales_daily", 0))
+    overrides_applied = (
+        sorted(overrides.model_dump(exclude_none=True)) if overrides is not None else []
+    )
+    detail = f"{ctx.scenario.value}: {stores} stores x {products} products, {sales} sales rows"
+    if overrides_applied:
+        detail += f" (overrides: {', '.join(overrides_applied)})"
     return (
         "pass",
-        f"{ctx.scenario.value}: {stores} stores x {products} products, {sales} sales rows",
-        {"records_created": records, "scenario": ctx.scenario.value},
+        detail,
+        {
+            "records_created": records,
+            "scenario": ctx.scenario.value,
+            # E3 (#409) -- additive echo of the applied override knobs.
+            "overrides_applied": overrides_applied,
+        },
     )
 
 
@@ -593,6 +758,46 @@ async def step_status(ctx: DemoContext, client: _Client) -> StepResult:
         return ("fail", "no date_range in /seeder/status -- seed the database first", {})
     ctx.date_start = date.fromisoformat(raw_start)
     ctx.date_end = date.fromisoformat(raw_end)
+    sales = body.get("sales", 0)
+
+    # E3 (#409) -- operator-selected focus pair: validate both ids against the
+    # dimensions endpoints and adopt them. A dangling pair (e.g. after a
+    # reset+reseed re-issued ids -- sequences never reset) WARNS and falls back
+    # to discovery so a replayed reset=true workspace can never hard-fail here.
+    scope_warning = ""
+    if ctx.user_scope is not None:
+        try:
+            await client.request(
+                "status[scope-store]",
+                "GET",
+                f"/dimensions/stores/{ctx.user_scope.store_id}",
+            )
+            await client.request(
+                "status[scope-product]",
+                "GET",
+                f"/dimensions/products/{ctx.user_scope.product_id}",
+            )
+        except _StepError:
+            scope_warning = (
+                f"user_scope (store={ctx.user_scope.store_id}, "
+                f"product={ctx.user_scope.product_id}) not found -- "
+                "fell back to discovered pair; "
+            )
+        else:
+            ctx.store_id = ctx.user_scope.store_id
+            ctx.product_id = ctx.user_scope.product_id
+            return (
+                "pass",
+                f"date_range={raw_start}..{raw_end} sales={sales} "
+                f"store_id={ctx.store_id} product_id={ctx.product_id} (user-selected)",
+                {
+                    "store_id": ctx.store_id,
+                    "product_id": ctx.product_id,
+                    "date_range_start": raw_start,
+                    "date_range_end": raw_end,
+                    "user_scope_applied": True,
+                },
+            )
 
     stores_body = await client.request(
         "status[stores]", "GET", "/dimensions/stores?page=1&page_size=1"
@@ -617,16 +822,19 @@ async def step_status(ctx: DemoContext, client: _Client) -> StepResult:
     ctx.store_id = store_id_raw
     ctx.product_id = product_id_raw
 
-    sales = body.get("sales", 0)
     return (
-        "pass",
-        f"date_range={raw_start}..{raw_end} sales={sales} "
+        # E3 (#409) -- "warn" (never "fail") when a requested scope dangled:
+        # only "fail" stops the run, so the pipeline proceeds on the
+        # discovered pair with the divergence visible on the step card.
+        "warn" if scope_warning else "pass",
+        f"{scope_warning}date_range={raw_start}..{raw_end} sales={sales} "
         f"store_id={ctx.store_id} product_id={ctx.product_id}",
         {
             "store_id": ctx.store_id,
             "product_id": ctx.product_id,
             "date_range_start": raw_start,
             "date_range_end": raw_end,
+            "user_scope_applied": False,
         },
     )
 
@@ -667,13 +875,38 @@ async def step_features(ctx: DemoContext, client: _Client) -> StepResult:
 
 
 async def step_train(ctx: DemoContext, client: _Client) -> StepResult:
-    """Train naive / seasonal_naive / moving_average in parallel."""
+    """Train the configured model set in parallel (legacy trio by default).
+
+    E4 (#410) -- the selection comes from ``ctx.run_config.model_types`` and the
+    horizon-tail reservation from ``ctx.run_config.horizon`` (both legacy
+    constants on an untouched frame). A disabled opt-in model (lightgbm /
+    xgboost / random_forest behind a False ``forecast_enable_*`` flag) fails the
+    step FAST with a detail naming the flag (D6) -- the settings read lives here,
+    never in the Pydantic schema (the documented ".env-bleed" class).
+    """
     if ctx.date_start is None or ctx.date_end is None:
         return ("fail", "no date range on ctx", {})
 
+    # D6 -- fail fast on a disabled opt-in model so the operator gets a clear,
+    # actionable message instead of a deeper 400 (route gate) or factory error.
+    settings = get_settings()
+    flag_by_model = {
+        "lightgbm": settings.forecast_enable_lightgbm,
+        "xgboost": settings.forecast_enable_xgboost,
+        "random_forest": settings.forecast_enable_random_forest,
+    }
+    disabled = [m for m in ctx.run_config.model_types if flag_by_model.get(m) is False]
+    if disabled:
+        return (
+            "fail",
+            f"model(s) {disabled} requested but the matching forecast_enable_* flag "
+            "is off — enable the flag (and install the extra) or deselect the model",
+            {"requested_models": list(ctx.run_config.model_types), "disabled_models": disabled},
+        )
+
     # Leave a horizon-sized tail unused by training so the backtest has room.
     train_start = ctx.date_start
-    train_end = ctx.date_end - timedelta(days=DEMO_HORIZON)
+    train_end = ctx.date_end - timedelta(days=ctx.run_config.horizon)
 
     async def _train(model_type: str) -> tuple[str, dict[str, Any]]:
         train_body = await client.request(
@@ -691,7 +924,7 @@ async def step_train(ctx: DemoContext, client: _Client) -> StepResult:
         return model_type, train_body
 
     results: list[tuple[str, dict[str, Any]]] = list(
-        await asyncio.gather(*(_train(m) for m in DEMO_MODEL_TYPES))
+        await asyncio.gather(*(_train(m) for m in ctx.run_config.model_types))
     )
     for model_type, train_body in results:
         ctx.train_results[model_type] = train_body
@@ -699,7 +932,10 @@ async def step_train(ctx: DemoContext, client: _Client) -> StepResult:
     return (
         "pass",
         f"trained {len(ctx.train_results)} models in parallel: {trained}",
-        {"trained": list(ctx.train_results.keys())},
+        {
+            "trained": list(ctx.train_results.keys()),
+            "requested_models": list(ctx.run_config.model_types),
+        },
     )
 
 
@@ -728,110 +964,154 @@ def _coerce_bucketed_metrics(
     return out or None
 
 
+def _backtest_body(
+    ctx: DemoContext,
+    model_type: str,
+    start_date: date,
+    end_date: date,
+    *,
+    include_baselines: bool,
+) -> dict[str, Any]:
+    """Build a ``POST /backtesting/run`` body from ``ctx.run_config`` (E4 #410).
+
+    The split knobs come from the resolved run config -- all legacy constants on
+    an untouched frame, so the body is byte-identical to today on the
+    not-customized path.
+    """
+    run_config = ctx.run_config
+    return {
+        "store_id": ctx.store_id,
+        "product_id": ctx.product_id,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "config": {
+            "split_config": {
+                "strategy": run_config.strategy,
+                "n_splits": run_config.n_splits,
+                "min_train_size": run_config.min_train_size,
+                "gap": run_config.gap,
+                "horizon": run_config.horizon,
+            },
+            "model_config_main": _model_config_payload(model_type),
+            "include_baselines": include_baselines,
+            "store_fold_details": False,
+        },
+    }
+
+
 async def step_backtest(ctx: DemoContext, client: _Client) -> StepResult:
-    """Run scenario-aware backtest; pick the lowest-WAPE winner.
+    """Run scenario-aware backtest; pick the winner by the configured metric.
 
     PRP-38 — on SHOWCASE_RICH the main model is feature-aware
     (``prophet_like``); baselines come back in ``baseline_results`` (one call,
     ``include_baselines=true``) and the response carries per-horizon-bucket
     metrics in ``main_model_results.bucketed_aggregated_metrics``. On
     DEMO_MINIMAL the original 3-baseline-loop behaviour is preserved.
+
+    E4 (#410, D4) — when the operator supplied a custom run config
+    (``ctx.run_config.customized``), BOTH legacy branches give way to ONE
+    unified per-model loop over the selection (each ``include_baselines=False``);
+    on SHOWCASE_RICH ``prophet_like`` is appended if absent so the V2 story
+    (``step_v2_train`` registers it unconditionally) keeps a backtest entry, and
+    its call supplies the bucketed metrics. The winner is the best
+    ``ctx.run_config.metric`` (wape / mae / rmse).
     """
     if ctx.date_start is None or ctx.date_end is None:
         return ("fail", "no date range on ctx", {})
+    start_date = ctx.date_start
+    end_date = ctx.date_end
+    run_config = ctx.run_config
 
-    if ctx.scenario is ScenarioPreset.SHOWCASE_RICH:
-        body = await client.request(
-            f"backtest[{SHOWCASE_V2_MODEL_TYPE}]",
-            "POST",
-            "/backtesting/run",
-            json_body={
-                "store_id": ctx.store_id,
-                "product_id": ctx.product_id,
-                "start_date": ctx.date_start.isoformat(),
-                "end_date": ctx.date_end.isoformat(),
-                "config": {
-                    "split_config": {
-                        "strategy": "expanding",
-                        "n_splits": DEMO_BACKTEST_SPLITS,
-                        "min_train_size": DEMO_MIN_TRAIN_SIZE,
-                        "gap": 0,
-                        "horizon": DEMO_HORIZON,
-                    },
-                    "model_config_main": _model_config_payload(SHOWCASE_V2_MODEL_TYPE),
-                    "include_baselines": True,
-                    "store_fold_details": False,
-                },
-            },
-        )
-        main_results = body.get("main_model_results", {})
-        baseline_results = body.get("baseline_results") or []
-        main_metrics = _coerce_metric_dict(
-            main_results.get("aggregated_metrics") if isinstance(main_results, dict) else None
-        )
-        ctx.backtest_results[SHOWCASE_V2_MODEL_TYPE] = main_metrics
-        # baseline_results is list[ModelBacktestResult].
-        if isinstance(baseline_results, list):
-            for entry in baseline_results:
-                if not isinstance(entry, dict):
-                    continue
-                entry_type = entry.get("model_type")
-                if not isinstance(entry_type, str):
-                    continue
-                ctx.backtest_results[entry_type] = _coerce_metric_dict(
-                    entry.get("aggregated_metrics")
+    if not run_config.customized:
+        if ctx.scenario is ScenarioPreset.SHOWCASE_RICH:
+            body = await client.request(
+                f"backtest[{SHOWCASE_V2_MODEL_TYPE}]",
+                "POST",
+                "/backtesting/run",
+                json_body=_backtest_body(
+                    ctx, SHOWCASE_V2_MODEL_TYPE, start_date, end_date, include_baselines=True
+                ),
+            )
+            main_results = body.get("main_model_results", {})
+            baseline_results = body.get("baseline_results") or []
+            main_metrics = _coerce_metric_dict(
+                main_results.get("aggregated_metrics") if isinstance(main_results, dict) else None
+            )
+            ctx.backtest_results[SHOWCASE_V2_MODEL_TYPE] = main_metrics
+            # baseline_results is list[ModelBacktestResult].
+            if isinstance(baseline_results, list):
+                for entry in baseline_results:
+                    if not isinstance(entry, dict):
+                        continue
+                    entry_type = entry.get("model_type")
+                    if not isinstance(entry_type, str):
+                        continue
+                    ctx.backtest_results[entry_type] = _coerce_metric_dict(
+                        entry.get("aggregated_metrics")
+                    )
+            ctx.bucketed_aggregated_metrics = _coerce_bucketed_metrics(
+                main_results.get("bucketed_aggregated_metrics")
+                if isinstance(main_results, dict)
+                else None
+            )
+        else:
+            # DEMO_MINIMAL / SPARSE / others: loop over baselines (legacy path).
+            for model_type in DEMO_MODEL_TYPES:
+                body = await client.request(
+                    f"backtest[{model_type}]",
+                    "POST",
+                    "/backtesting/run",
+                    json_body=_backtest_body(
+                        ctx, model_type, start_date, end_date, include_baselines=False
+                    ),
                 )
-        ctx.bucketed_aggregated_metrics = _coerce_bucketed_metrics(
-            main_results.get("bucketed_aggregated_metrics")
-            if isinstance(main_results, dict)
-            else None
-        )
+                main_results = body.get("main_model_results", {})
+                ctx.backtest_results[model_type] = _coerce_metric_dict(
+                    main_results.get("aggregated_metrics")
+                    if isinstance(main_results, dict)
+                    else None
+                )
     else:
-        # DEMO_MINIMAL / SPARSE / others: loop over baselines (legacy path).
-        for model_type in DEMO_MODEL_TYPES:
+        # E4 (#410, D4) — unified per-model loop over the operator's selection.
+        models = list(run_config.model_types)
+        if ctx.scenario is ScenarioPreset.SHOWCASE_RICH and SHOWCASE_V2_MODEL_TYPE not in models:
+            models.append(SHOWCASE_V2_MODEL_TYPE)
+        for model_type in models:
             body = await client.request(
                 f"backtest[{model_type}]",
                 "POST",
                 "/backtesting/run",
-                json_body={
-                    "store_id": ctx.store_id,
-                    "product_id": ctx.product_id,
-                    "start_date": ctx.date_start.isoformat(),
-                    "end_date": ctx.date_end.isoformat(),
-                    "config": {
-                        "split_config": {
-                            "strategy": "expanding",
-                            "n_splits": DEMO_BACKTEST_SPLITS,
-                            "min_train_size": DEMO_MIN_TRAIN_SIZE,
-                            "gap": 0,
-                            "horizon": DEMO_HORIZON,
-                        },
-                        "model_config_main": _model_config_payload(model_type),
-                        "include_baselines": False,
-                        "store_fold_details": False,
-                    },
-                },
+                json_body=_backtest_body(
+                    ctx, model_type, start_date, end_date, include_baselines=False
+                ),
             )
             main_results = body.get("main_model_results", {})
             ctx.backtest_results[model_type] = _coerce_metric_dict(
                 main_results.get("aggregated_metrics") if isinstance(main_results, dict) else None
             )
+            if model_type == SHOWCASE_V2_MODEL_TYPE:
+                ctx.bucketed_aggregated_metrics = _coerce_bucketed_metrics(
+                    main_results.get("bucketed_aggregated_metrics")
+                    if isinstance(main_results, dict)
+                    else None
+                )
 
-    winner = _select_winner(ctx.backtest_results)
+    winner = _select_winner(ctx.backtest_results, run_config.metric)
     if winner is None:
-        return ("fail", "no model produced a usable WAPE (all NaN?)", {})
+        return ("fail", f"no model produced a usable {run_config.metric} (all NaN?)", {})
     ctx.winner_model_type, ctx.winner_wape = winner
     payload: dict[str, Any] = {
         "per_model": dict(ctx.backtest_results),
         "winner": ctx.winner_model_type,
         "winner_wape": ctx.winner_wape,
+        "metric": run_config.metric,
     }
     if ctx.bucketed_aggregated_metrics is not None:
         payload["bucketed_aggregated_metrics"] = ctx.bucketed_aggregated_metrics
     return (
         "pass",
         f"{len(ctx.backtest_results)} models, winner={ctx.winner_model_type} "
-        f"wape={ctx.winner_wape:.4f}",
+        f"{run_config.metric}={ctx.winner_wape:.4f}",
         payload,
     )
 
@@ -1018,7 +1298,8 @@ async def step_v2_train(ctx: DemoContext, client: _Client) -> StepResult:
     if ctx.date_start is None or ctx.date_end is None:
         return ("fail", "no date range on ctx", {})
     train_start = ctx.date_start
-    train_end = ctx.date_end - timedelta(days=DEMO_HORIZON)
+    # E4 (#410, D8) -- the configured horizon drives the modeling steps' tail.
+    train_end = ctx.date_end - timedelta(days=ctx.run_config.horizon)
 
     train_body = await client.request(
         "v2_train[train]",
@@ -1446,6 +1727,35 @@ async def step_multi_plan_compare(ctx: DemoContext, client: _Client) -> StepResu
     )
 
 
+def _record_rag_event(
+    ctx: DemoContext,
+    *,
+    event: str,
+    status: str,
+    detail: str,
+    count: int = 0,
+    provider: str | None = None,
+    reachable: bool | None = None,
+) -> None:
+    """Append one RAG-event entry to ``ctx.rag_events`` (E5, #411).
+
+    Called once on EVERY return path of the three knowledge steps so the
+    workspace story records the knowledge outcome (probe / index / retrieve /
+    skip) with the provider state. Schema v2 -- see DOMAIN_MODEL.
+    """
+    ctx.rag_events.append(
+        {
+            "event": event,
+            "status": status,
+            "detail": detail,
+            "count": count,
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "provider": provider,
+            "reachable": reachable,
+        }
+    )
+
+
 async def step_embedding_provider_probe(ctx: DemoContext, client: _Client) -> StepResult:
     """PRP-40 — probe the configured embedding provider. Always PASS.
 
@@ -1465,6 +1775,9 @@ async def step_embedding_provider_probe(ctx: DemoContext, client: _Client) -> St
         if reachable
         else f"provider={provider} unreachable — knowledge phase will skip"
     )
+    _record_rag_event(
+        ctx, event="probe", status="pass", detail=detail, provider=provider, reachable=reachable
+    )
     return ("pass", detail, {"provider": provider, "reachable": reachable})
 
 
@@ -1475,7 +1788,15 @@ async def step_rag_index_subset(ctx: DemoContext, client: _Client) -> StepResult
     Uses the additive ``path_prefix`` field on IndexProjectDocsRequest so the
     blast radius stays scoped to the user-guide subset.
     """
+    provider = get_settings().rag_embedding_provider
     if ctx.embedding_unreachable:
+        _record_rag_event(
+            ctx,
+            event="skip",
+            status="skip",
+            detail="embedding provider unreachable",
+            provider=provider,
+        )
         return ("skip", "embedding provider unreachable", {})
 
     try:
@@ -1497,6 +1818,13 @@ async def step_rag_index_subset(ctx: DemoContext, client: _Client) -> StepResult
         # context so the retrieve probe skips too, without a second 401 round-trip.
         if _is_embedding_auth_error(exc):
             ctx.embedding_unreachable = True
+            _record_rag_event(
+                ctx,
+                event="skip",
+                status="skip",
+                detail="embedding provider rejected credentials",
+                provider=provider,
+            )
             return ("skip", "embedding provider rejected credentials", {})
         raise
     results = body.get("results") or []
@@ -1510,9 +1838,18 @@ async def step_rag_index_subset(ctx: DemoContext, client: _Client) -> StepResult
         for r in results
         if isinstance(r, dict) and r.get("source_path") in _USER_GUIDE_CURATED_FILES
     )
+    detail = f"files_indexed={curated_hits}/5 chunks={total_chunks} failed={failed}"
+    _record_rag_event(
+        ctx,
+        event="index",
+        status="pass",
+        detail=detail,
+        count=total_chunks,
+        provider=provider,
+    )
     return (
         "pass",
-        f"files_indexed={curated_hits}/5 chunks={total_chunks} failed={failed}",
+        detail,
         {
             "total_files": int(body.get("total_files", 0)),
             "indexed": indexed,
@@ -1531,7 +1868,15 @@ async def step_rag_retrieve_probe(ctx: DemoContext, client: _Client) -> StepResu
     SKIPs when ``ctx.embedding_unreachable``. WARN (not FAIL) on zero hits so
     a green-but-empty corpus still lets the pipeline go green.
     """
+    provider = get_settings().rag_embedding_provider
     if ctx.embedding_unreachable:
+        _record_rag_event(
+            ctx,
+            event="skip",
+            status="skip",
+            detail="embedding provider unreachable",
+            provider=provider,
+        )
         return ("skip", "embedding provider unreachable", {})
 
     try:
@@ -1546,13 +1891,24 @@ async def step_rag_retrieve_probe(ctx: DemoContext, client: _Client) -> StepResu
         # in case retrieve is reached with a freshly-rejecting key.
         if _is_embedding_auth_error(exc):
             ctx.embedding_unreachable = True
+            _record_rag_event(
+                ctx,
+                event="skip",
+                status="skip",
+                detail="embedding provider rejected credentials",
+                provider=provider,
+            )
             return ("skip", "embedding provider rejected credentials", {})
         raise
     results = body.get("results") or []
     if not results:
+        detail = "no hits — corpus indexed but query did not match"
+        _record_rag_event(
+            ctx, event="retrieve", status="warn", detail=detail, count=0, provider=provider
+        )
         return (
             "warn",
-            "no hits — corpus indexed but query did not match",
+            detail,
             {
                 "results_count": 0,
                 "total_chunks_searched": body.get("total_chunks_searched", 0),
@@ -1565,9 +1921,18 @@ async def step_rag_retrieve_probe(ctx: DemoContext, client: _Client) -> StepResu
         score = float(score_raw)
     except (TypeError, ValueError):
         score = 0.0
+    detail = f"top hit: {title} (score={score:.3f})"
+    _record_rag_event(
+        ctx,
+        event="retrieve",
+        status="pass",
+        detail=detail,
+        count=len(results),
+        provider=provider,
+    )
     return (
         "pass",
-        f"top hit: {title} (score={score:.3f})",
+        detail,
         {
             "results_count": len(results),
             "top_source_path": title,
@@ -2190,7 +2555,7 @@ async def step_cleanup(ctx: DemoContext, client: _Client) -> StepResult:
 
 
 async def step_agent_hitl_flow(ctx: DemoContext, client: _Client) -> StepResult:
-    """PRP-41 — HITL approval round-trip on the experiment agent.
+    """PRP-41 / E5 (#411) — HITL approval round-trip on the experiment agent.
 
     Flow:
       1. ``_llm_key_present()`` -> skip when no key.
@@ -2200,22 +2565,25 @@ async def step_agent_hitl_flow(ctx: DemoContext, client: _Client) -> StepResult:
          on the ``save_scenario`` entry in ``agent_require_approval``. The
          chat response carries ``pending_approval=true`` +
          ``pending_action: PendingAction``.
-      4. ``client.yield_event(...)`` an intermediate step_complete with
-         ``status='running'`` + ``awaiting_approval=true`` so the FE can
-         render the Approve button.
-      5. Sleep ``_APPROVAL_DISPLAY_DELAY_S`` -- a one-click FE Approve may
-         pre-empt the auto-approve in this window.
-      6. ``POST /agents/sessions/{id}/approve`` with ``{action_id,
-         approved: true}``. Absorb 4xx (the FE pre-empted; the action was
-         already consumed).
-      7. Terminal: ``pass`` with the approval decision in step.data.
+      4. ``hitl.register(action_id)`` then ``client.yield_event(...)`` an
+         intermediate step_complete with ``status='running'`` +
+         ``awaiting_approval=true`` + ``decision_url`` + ``decision_window_s``
+         so the FE renders Approve + Reject (E5).
+      5. ``hitl.wait_for_decision(...)`` up to ``_APPROVAL_DECISION_WINDOW_S``
+         -- the operator's Approve/Reject relayed via POST /demo/hitl-decision;
+         ``None`` on window lapse -> auto-approve.
+      6. ``POST /agents/sessions/{id}/approve`` with the REAL decision
+         (``approved: true|false`` + optional reason). Absorb 4xx (an operator
+         pre-empted the agents endpoint directly; the action was consumed).
+      7. Append one ``approval_events`` entry, then terminal ``pass`` -- a
+         reject is GREEN by design (D5): the gated tool never executed.
 
     Skip-gracefully on every error path (session-create / chat / approve
     failure, or the agent never triggers ``save_scenario``). Never raises.
 
     Hard timeout: if the elapsed time exceeds ``_APPROVAL_HARD_TIMEOUT_S``
     before step (6) completes, returns ``skip`` with
-    ``approval_decision='timed_out'``.
+    ``approval_decision='timed_out'`` (and records a ``timed_out`` entry).
     """
     key_present = _llm_key_present()
     logger.info("demo.agent_hitl_flow.key_present", present=key_present)
@@ -2265,6 +2633,12 @@ async def step_agent_hitl_flow(ctx: DemoContext, client: _Client) -> StepResult:
     tokens_used = int(chat_body.get("tokens_used", 0))
     raw_tool_calls = chat_body.get("tool_calls", [])
     tool_count = len(raw_tool_calls) if isinstance(raw_tool_calls, list) else 0
+    # E5 (#411) -- transcript summary for the approval-events entry. Capped at
+    # 200 chars (precedent: the #335 failure-detail 300-char cap); never the
+    # full transcript (security-patterns.md).
+    transcript_summary = str(chat_body.get("message", ""))[:200]
+    raw_action_type = pending_action.get("action_type")
+    tool_name = raw_action_type if isinstance(raw_action_type, str) else "save_scenario"
 
     if not pending_approval or not pending_action:
         # The agent didn't trigger save_scenario (e.g. answered directly or
@@ -2292,102 +2666,173 @@ async def step_agent_hitl_flow(ctx: DemoContext, client: _Client) -> StepResult:
     action_id: str = action_id_raw
     ctx.approval_action_id = action_id
 
-    # (4) -- intermediate event so the FE renders Approve. step_index /
-    # total_steps / phase_index / phase_total are stamped by the orchestrator
-    # when it drains the sink (see run_pipeline).
-    elapsed_ms = (time.monotonic() - started_at) * 1000.0
-    client.yield_event(
-        StepEvent(
-            event_type="step_complete",
-            step_name="agent_hitl_flow",
-            step_index=0,
-            total_steps=0,
-            status="running",
-            detail="awaiting approval (auto-approve in 3 s)",
-            duration_ms=elapsed_ms,
-            data={
-                "awaiting_approval": True,
-                "approval_url": f"/agents/sessions/{session_id}/approve",
-                "action_id": action_id,
-                "session_id": session_id,
-                "tokens_used": tokens_used,
-                "tool_calls_count": tool_count,
-            },
-            phase_name=PHASE_AGENTS,
-        )
-    )
-
-    # (5) -- display delay.
-    elapsed_after_intermediate = time.monotonic() - started_at
-    delay = max(0.0, _APPROVAL_DISPLAY_DELAY_S - elapsed_after_intermediate)
-    if delay > 0:
-        await asyncio.sleep(delay)
-
-    # (5b) -- hard-timeout check BEFORE the approve POST.
-    elapsed_before_approve = time.monotonic() - started_at
-    if elapsed_before_approve > _APPROVAL_HARD_TIMEOUT_S:
-        ctx.agent_approval_decision = "timed_out"
-        return (
-            "skip",
-            "approval timed out -- pipeline continued",
-            {
-                "session_id": session_id,
-                "action_id": action_id,
-                "approval_decision": "timed_out",
-                "tokens_used": tokens_used,
-                "tool_calls_count": tool_count,
-                "timed_out": True,
-            },
-        )
-
-    # (6) -- POST /approve. Absorb 4xx (FE pre-empted) per Task 1 §5 #2:
-    # AgentService.approve_action returns 400 ("No pending action") when the
-    # action was already consumed by the FE's optimistic Approve click.
-    approval_decision = "executed"
+    # E5 (#411) -- open the decision window on the in-memory relay BEFORE the
+    # FE can see the action, then clear it on every exit (finally). The relay
+    # is the single intent channel: the FE Approve/Reject buttons POST
+    # /demo/hitl-decision (demo slice), this step waits on the relay, then
+    # forwards the REAL decision to the agents HITL gate.
+    hitl.register(action_id)
     try:
-        approve_body = await client.request(
-            "agent_hitl_flow[approve]",
-            "POST",
-            f"/agents/sessions/{session_id}/approve",
-            json_body={"action_id": action_id, "approved": True},
-        )
-        raw_status = approve_body.get("status", "executed")
-        if isinstance(raw_status, str):
-            approval_decision = raw_status
-    except _StepError as exc:
-        if 400 <= exc.status_code < 500:
-            # FE pre-empted -- the approval already landed. Optimistic default.
-            logger.info(
-                "demo.agent_hitl_flow.approve_pre_empted",
-                session_id=session_id,
-                action_id=action_id,
-                status_code=exc.status_code,
-            )
-            approval_decision = "executed"
-        else:
-            return (
-                "skip",
-                f"approve failed: {exc}",
-                {
-                    "session_id": session_id,
+        # (4) -- intermediate event so the FE renders Approve + Reject.
+        # step_index / total_steps / phase_index / phase_total are stamped by
+        # the orchestrator when it drains the sink (see run_pipeline). D2 makes
+        # this event reach the browser DURING the window, not after it closes.
+        window_s = _APPROVAL_DECISION_WINDOW_S
+        elapsed_ms = (time.monotonic() - started_at) * 1000.0
+        client.yield_event(
+            StepEvent(
+                event_type="step_complete",
+                step_name="agent_hitl_flow",
+                step_index=0,
+                total_steps=0,
+                status="running",
+                detail=f"awaiting approval (auto-approve in {int(window_s)} s)",
+                duration_ms=elapsed_ms,
+                data={
+                    "awaiting_approval": True,
+                    # E5 -- the relay is the new intent channel; approval_url is
+                    # kept for back-compat (an operator curl-ing it directly is
+                    # still absorbed below as execution_status="external_4xx").
+                    "decision_url": "/demo/hitl-decision",
+                    "decision_window_s": window_s,
+                    "approval_url": f"/agents/sessions/{session_id}/approve",
                     "action_id": action_id,
+                    "session_id": session_id,
                     "tokens_used": tokens_used,
                     "tool_calls_count": tool_count,
                 },
+                phase_name=PHASE_AGENTS,
+            )
+        )
+
+        # (5) -- wait up to the remaining window for an operator decision.
+        remaining = max(0.0, window_s - (time.monotonic() - started_at))
+        operator = await hitl.wait_for_decision(action_id, timeout=remaining)
+
+        # (5b) -- hard-timeout check BEFORE the approve POST (a hung agent /
+        # blocked window never stops the demo). timed_out -> skip + entry.
+        elapsed_before_approve = time.monotonic() - started_at
+        if elapsed_before_approve > _APPROVAL_HARD_TIMEOUT_S:
+            ctx.agent_approval_decision = "timed_out"
+            _record_approval_event(
+                ctx,
+                action_id=action_id,
+                tool_name=tool_name,
+                decision="timed_out",
+                session_id=session_id,
+                auto_approved=False,
+                reason=None,
+                execution_status=None,
+                pending_action=pending_action,
+                transcript_summary=transcript_summary,
+                tokens_used=tokens_used,
+                tool_calls_count=tool_count,
+            )
+            return (
+                "skip",
+                "approval timed out -- pipeline continued",
+                {
+                    "session_id": session_id,
+                    "action_id": action_id,
+                    "approval_decision": "timed_out",
+                    "tokens_used": tokens_used,
+                    "tool_calls_count": tool_count,
+                    "timed_out": True,
+                },
             )
 
-    ctx.agent_approval_decision = approval_decision
+        # Resolve the operator's intent (None == window lapsed -> auto-approve).
+        auto_approved = operator is None
+        approved = operator is None or operator[0] == "approved"
+        reason = operator[1] if operator is not None else None
 
+        # (6) -- forward the REAL decision to the agents HITL gate. Absorb 4xx
+        # (an operator pre-empted by curl-ing /agents/.../approve directly):
+        # AgentService.approve_action returns 400 once the action is consumed.
+        approve_json: dict[str, Any] = {"action_id": action_id, "approved": approved}
+        if reason:
+            approve_json["reason"] = reason
+        execution_status = "executed" if approved else "rejected"
+        try:
+            approve_body = await client.request(
+                "agent_hitl_flow[approve]",
+                "POST",
+                f"/agents/sessions/{session_id}/approve",
+                json_body=approve_json,
+            )
+            raw_status = approve_body.get("status", execution_status)
+            if isinstance(raw_status, str):
+                execution_status = raw_status
+        except _StepError as exc:
+            if 400 <= exc.status_code < 500:
+                # Pre-empted -- the decision already landed via the agents API.
+                logger.info(
+                    "demo.agent_hitl_flow.approve_pre_empted",
+                    session_id=session_id,
+                    action_id=action_id,
+                    status_code=exc.status_code,
+                )
+                execution_status = "external_4xx"
+            else:
+                return (
+                    "skip",
+                    f"approve failed: {exc}",
+                    {
+                        "session_id": session_id,
+                        "action_id": action_id,
+                        "tokens_used": tokens_used,
+                        "tool_calls_count": tool_count,
+                    },
+                )
+
+        decision = "approved" if approved else "rejected"
+        # ctx mirror keeps the agents-API execution status (executed/rejected/
+        # external_4xx); the slot entry below records the operator decision.
+        ctx.agent_approval_decision = execution_status
+        _record_approval_event(
+            ctx,
+            action_id=action_id,
+            tool_name=tool_name,
+            decision=decision,
+            session_id=session_id,
+            auto_approved=auto_approved,
+            reason=reason,
+            execution_status=execution_status,
+            pending_action=pending_action,
+            transcript_summary=transcript_summary,
+            tokens_used=tokens_used,
+            tool_calls_count=tool_count,
+        )
+    finally:
+        hitl.clear()
+
+    # (7) -- terminal. D5: a human rejection is a SUCCESSFUL demonstration of
+    # the HITL gate, not an error -- the run stays GREEN and the gated
+    # save_scenario never executed (no scenario_plan row written by the agent).
+    if not approved:
+        return (
+            "pass",
+            "rejected by operator",
+            {
+                "session_id": session_id,
+                "action_id": action_id,
+                "approval_decision": "rejected",
+                "auto_approved": False,
+                "tokens_used": tokens_used,
+                "tool_calls_count": tool_count,
+            },
+        )
     return (
         "pass",
         (
             f"session={session_id[:8]}... tokens={tokens_used} "
-            f"tool_calls={tool_count} approved={approval_decision}"
+            f"tool_calls={tool_count} approved={execution_status}"
         ),
         {
             "session_id": session_id,
             "action_id": action_id,
-            "approval_decision": approval_decision,
+            "approval_decision": execution_status,
+            "auto_approved": auto_approved,
             "tokens_used": tokens_used,
             "tool_calls_count": tool_count,
         },
@@ -2648,6 +3093,12 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
         skip_seed=req.skip_seed,
         reset=req.reset,
         scenario=req.scenario,
+        # E3 (#409) -- thread the validated start-frame config verbatim.
+        seed_overrides=req.seed_overrides,
+        user_scope=req.user_scope,
+        # E4 (#410) -- resolve the run config (selection + backtest) once;
+        # legacy defaults fill in the unspecified half.
+        run_config=_resolve_run_config(req),
     )
     # E1 (#390) -- create the workspace row BEFORE the first step executes so
     # even an early failure records the run config. create_workspace is
@@ -2678,8 +3129,33 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
             status: StepStatus
             detail: str
             data: dict[str, Any]
+            # E5 (#411) — D2: run the step as a task and drain the intermediate
+            # event sink CONCURRENTLY with the in-flight step. PRP-41 drained
+            # the sink only AFTER the step returned, so the HITL step's
+            # ``awaiting_approval`` event reached the browser only once the
+            # decision window had already closed (the auto-approve had fired).
+            # Steps still execute strictly one at a time under the single lock;
+            # only event flushing overlaps the running step.
+            task = asyncio.ensure_future(fn(ctx, client))
             try:
-                status, detail, data = await fn(ctx, client)
+                while True:
+                    done, _pending = await asyncio.wait({task}, timeout=0.25)
+                    # Drain + stamp the row's index/phase fields so the FE state
+                    # machine processes buffered events as if the orchestrator
+                    # emitted them. Order matters: an intermediate must land
+                    # before the terminal so "awaiting_approval" precedes
+                    # "approved" in the WS stream.
+                    for ev in intermediate_events:
+                        ev.step_index = index
+                        ev.total_steps = total
+                        ev.phase_index = phase_index
+                        ev.phase_total = phase_total
+                        ev.phase_name = phase_name
+                        yield ev
+                    intermediate_events.clear()
+                    if done:
+                        break
+                status, detail, data = task.result()
             except _StepError as exc:
                 status, detail, data = "fail", str(exc), {}
             except (httpx.HTTPError, OSError) as exc:
@@ -2697,19 +3173,25 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
                     f"unexpected error: {type(exc).__name__}: {exc}",
                     {},
                 )
+            finally:
+                # LOAD-BEARING (PRP Gotcha / quality Finding 3): the Stop button
+                # closes the WebSocket -> the async generator is closed, throwing
+                # GeneratorExit (a BaseException no except clause above catches)
+                # into the mid-step ``yield ev`` suspension point. This finally
+                # is the only hook that runs on EVERY exit path; without it the
+                # in-flight step task is orphaned ("Task was destroyed but it is
+                # pending") while the _Client closes underneath it.
+                if not task.done():
+                    task.cancel()
             duration_ms = (time.monotonic() - t0) * 1000
-            # PRP-41 — drain any intermediate events the step buffered BEFORE
-            # the terminal step_complete. Stamp the row's index/phase fields
-            # so the FE state machine processes them as if they were emitted
-            # by the orchestrator. Order matters: intermediate events must
-            # land before the terminal so "awaiting_approval" precedes
-            # "approved" in the WS stream.
+            # Final flush: drain anything the step buffered after the last
+            # 0.25s tick (mid-step loop drained the rest). Keeps the
+            # intermediate-before-terminal ordering identical to pre-D2.
             for ev in intermediate_events:
                 ev.step_index = index
                 ev.total_steps = total
                 ev.phase_index = phase_index
                 ev.phase_total = phase_total
-                # phase_name is set by the step fn already, but mirror in case.
                 ev.phase_name = phase_name
                 yield ev
             intermediate_events.clear()
@@ -2767,5 +3249,22 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
             # E1 (#390) -- additive; a string on preservation='keep' runs,
             # None otherwise (legacy clients ignore unknown keys).
             "workspace_id": ctx.workspace_id,
+            # E4 (#410) -- echo the resolved run config on customized runs so the
+            # FE can confirm what ran; None on legacy (default-config) runs.
+            "run_config": (
+                {
+                    "train_model_types": list(ctx.run_config.model_types),
+                    "backtest": {
+                        "horizon": ctx.run_config.horizon,
+                        "strategy": ctx.run_config.strategy,
+                        "n_splits": ctx.run_config.n_splits,
+                        "min_train_size": ctx.run_config.min_train_size,
+                        "gap": ctx.run_config.gap,
+                        "metric": ctx.run_config.metric,
+                    },
+                }
+                if ctx.run_config.customized
+                else None
+            ),
         },
     )
