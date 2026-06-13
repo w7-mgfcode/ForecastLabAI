@@ -793,6 +793,23 @@ export interface UserScope {
   product_id: number
 }
 
+// E4 (#410) — winner-ranking metric for the showcase backtest. A subset of
+// RankingMetric (the champion selector's wape/smape/mae/bias) — issue #410
+// names exactly WAPE/MAE/RMSE, all lower-is-better.
+export type DemoRankingMetric = 'wape' | 'mae' | 'rmse'
+
+// E4 (#410) — showcase backtest config. Mirrors the backend
+// app/features/demo/schemas.py:DemoBacktestConfig (which itself mirrors
+// SplitConfig bounds; the demo n_splits default is 3, not SplitConfig's 5).
+export interface DemoBacktestConfig {
+  horizon: number // 1..90, def 14; must be > gap
+  strategy: SplitStrategy // def 'expanding'
+  n_splits: number // 2..20, def 3
+  min_train_size: number // >= 7, def 30
+  gap: number // 0..30, def 0
+  metric: DemoRankingMetric // def 'wape'
+}
+
 // Start frame for WS /demo/stream and request body for POST /demo/run.
 export interface DemoRunRequest {
   seed?: number
@@ -809,6 +826,11 @@ export interface DemoRunRequest {
   // E3 (#409) — advanced seed config + focus pair; omit both for legacy runs.
   seed_overrides?: SeedOverrides
   user_scope?: UserScope
+  // E4 (#410) — run-config phase controls. Omit both (dirty-only rule) to keep
+  // the legacy frame byte-identical; None server-side → the legacy baseline
+  // trio + default split.
+  train_model_types?: string[]
+  backtest?: DemoBacktestConfig
 }
 
 // Aggregate result returned by the synchronous POST /demo/run.
@@ -846,6 +868,9 @@ export interface WorkspaceListItem {
   // list rows); null on runs without them.
   seed_overrides: SeedOverrides | null
   user_scope: UserScope | null
+  // E4 (#410) — replay-input run config (model set + backtest); null on
+  // default-config / pre-E4 rows. Replay rebuilds the start frame from it.
+  run_config: Record<string, unknown> | null
 }
 
 // Full row from GET /demo/workspaces/{workspace_id}.
@@ -1368,6 +1393,9 @@ export interface CandidateModelInfo {
   /** false for feature-aware models (the predict path rejects them). */
   supports_auto_predict: boolean
   description: string
+  // E4 (#410) — runtime forecast_enable_* overlay (service-set). False exactly
+  // when the matching opt-in flag is off; the showcase picker hides those.
+  enabled: boolean
 }
 
 export interface ModelCatalogResponse {

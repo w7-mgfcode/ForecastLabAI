@@ -44,6 +44,7 @@ const baseItem: WorkspaceListItem = {
   replayed_from_workspace_id: null,
   seed_overrides: null,
   user_scope: null,
+  run_config: null,
 }
 
 const secondItem: WorkspaceListItem = {
@@ -148,6 +149,37 @@ describe('WorkspacePanel', () => {
     }
     const { container } = renderPanel()
     expect(container.textContent).toContain('DESTRUCTIVE')
+  })
+
+  it('renders the custom-config badge only when run_config is set (E4 #410)', () => {
+    // Default-config row: no badge.
+    mockResponse = { data: { workspaces: [baseItem], total: 1 }, isLoading: false }
+    const plain = renderPanel()
+    expect(plain.container.querySelector('[data-testid="run-config-summary-badge"]')).toBeNull()
+    cleanup()
+
+    // Custom-config row: badge with the compact summary.
+    mockResponse = {
+      data: {
+        workspaces: [
+          {
+            ...baseItem,
+            run_config: {
+              train_model_types: ['naive', 'regression', 'prophet_like', 'seasonal_average'],
+              backtest: { horizon: 21, n_splits: 4, metric: 'rmse' },
+            },
+          },
+        ],
+        total: 1,
+      },
+      isLoading: false,
+    }
+    const custom = renderPanel()
+    const badge = custom.container.querySelector('[data-testid="run-config-summary-badge"]')
+    expect(badge).not.toBeNull()
+    expect(badge!.textContent).toContain('4 models')
+    expect(badge!.textContent).toContain('rmse')
+    expect(badge!.textContent).toContain('4×h21')
   })
 
   it('invokes onLoad / onRequestReplay with the list item — replay never starts here', () => {

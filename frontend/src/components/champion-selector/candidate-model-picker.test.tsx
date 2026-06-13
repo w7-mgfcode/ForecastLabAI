@@ -18,6 +18,7 @@ function model(
     default_params: {},
     supports_auto_predict: true,
     description: `desc ${model_type}`,
+    enabled: true,
     ...overrides,
   }
 }
