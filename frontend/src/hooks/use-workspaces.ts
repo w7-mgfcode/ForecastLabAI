@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '@/lib/api'
 import type {
   WorkspaceDetail,
+  WorkspaceExportResult,
   WorkspaceHealth,
   WorkspaceListParams,
   WorkspaceListResponse,
@@ -91,6 +92,18 @@ export function useWorkspaceHealth(workspaceId: string, enabled = true) {
     queryFn: () => api<WorkspaceHealth>(`/demo/workspaces/${workspaceId}/health`),
     enabled: enabled && !!workspaceId,
     staleTime: 30_000,
+  })
+}
+
+/**
+ * E6 (#412) — export a saved workspace to a checksum-validated bundle on disk
+ * (artifacts/showcase/<id>/). Export is stateless and re-runnable: it writes no
+ * server-side row, so it does NOT invalidate the workspaces list.
+ */
+export function useExportWorkspace() {
+  return useMutation({
+    mutationFn: (workspaceId: string) =>
+      api<WorkspaceExportResult>(`/demo/workspaces/${workspaceId}/export`, { method: 'POST' }),
   })
 }
 

@@ -71,6 +71,11 @@ let mockPatchResult: { mutate: ReturnType<typeof vi.fn>; isPending: boolean } = 
   isPending: false,
 }
 
+let mockExportResult: { mutate: ReturnType<typeof vi.fn>; isPending: boolean } = {
+  mutate: vi.fn(),
+  isPending: false,
+}
+
 const mockNavigate = vi.fn()
 
 vi.mock('@/hooks/use-workspaces', () => ({
@@ -82,6 +87,7 @@ vi.mock('@/hooks/use-workspaces', () => ({
   useWorkspace: () => ({ data: undefined, isSuccess: false, isError: false }),
   useDeleteWorkspace: () => mockDeleteResult,
   usePatchWorkspace: () => mockPatchResult,
+  useExportWorkspace: () => mockExportResult,
 }))
 
 vi.mock('react-router-dom', async (importOriginal) => {
@@ -97,6 +103,7 @@ beforeEach(() => {
   lastListParams = undefined
   mockDeleteResult = { mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }
   mockPatchResult = { mutate: vi.fn(), isPending: false }
+  mockExportResult = { mutate: vi.fn(), isPending: false }
 })
 
 function renderPanel(props: Partial<Parameters<typeof WorkspacePanel>[0]> = {}) {
@@ -197,13 +204,91 @@ describe('WorkspacePanel', () => {
   it('disables row actions while a run is in flight', () => {
     mockResponse = { data: { workspaces: [baseItem], total: 1 }, isLoading: false }
     renderPanel({ isRunning: true })
-    const labels = ['Load', 'Replay']
+    const labels = ['Load', 'Replay', 'Export']
     for (const label of labels) {
       const button = screen
         .getAllByRole('button')
         .find((b) => (b.textContent ?? '').includes(label))! as HTMLButtonElement
       expect(button.disabled).toBe(true)
     }
+  })
+})
+
+describe('WorkspacePanel — E6 export', () => {
+  function findExportButton(container: HTMLElement) {
+    return Array.from(container.querySelectorAll('button')).find((b) =>
+      (b.textContent ?? '').includes('Export')
+    )!
+  }
+
+  it('renders an Export button per row', () => {
+    mockResponse = { data: { workspaces: [baseItem], total: 1 }, isLoading: false }
+    const { container } = renderPanel()
+    expect(findExportButton(container)).toBeTruthy()
+  })
+
+  it('fires the export mutation with the row id and toasts the bundle path', () => {
+    mockResponse = { data: { workspaces: [baseItem], total: 1 }, isLoading: false }
+    const { container } = renderPanel()
+    fireEvent.click(findExportButton(container))
+
+    expect(mockExportResult.mutate).toHaveBeenCalledTimes(1)
+    const [workspaceId, options] = mockExportResult.mutate.mock.calls[0] as [
+      string,
+      { onSuccess: (r: unknown) => void; onError: (error: unknown) => void },
+    ]
+    expect(workspaceId).toBe(baseItem.workspace_id)
+
+    options.onSuccess({
+      workspace_id: baseItem.workspace_id,
+      bundle_path: `artifacts/showcase/${baseItem.workspace_id}`,
+      bundle_format_version: 1,
+      exported_at: '2026-06-12T14:00:00Z',
+      files: [
+        { path: 'manifest.json', sha256: 'a', size_bytes: 1 },
+        { path: 'checksums.sha256', sha256: 'b', size_bytes: 1 },
+      ],
+      scenario_plans_exported: 0,
+      model_runs_referenced: 0,
+      unresolved_references: [],
+      validated: true,
+    })
+    expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('Bundle written to'))
+    expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('checksums verified'))
+  })
+
+  it('notes dangling references in the success toast', () => {
+    mockResponse = { data: { workspaces: [baseItem], total: 1 }, isLoading: false }
+    const { container } = renderPanel()
+    fireEvent.click(findExportButton(container))
+    const [, options] = mockExportResult.mutate.mock.calls[0] as [
+      string,
+      { onSuccess: (r: unknown) => void; onError: (error: unknown) => void },
+    ]
+    options.onSuccess({
+      workspace_id: baseItem.workspace_id,
+      bundle_path: `artifacts/showcase/${baseItem.workspace_id}`,
+      bundle_format_version: 1,
+      exported_at: '2026-06-12T14:00:00Z',
+      files: [{ path: 'manifest.json', sha256: 'a', size_bytes: 1 }],
+      scenario_plans_exported: 0,
+      model_runs_referenced: 0,
+      unresolved_references: [{ key: 'scenario_plan_ids', ref_id: 'gone', reason: 'HTTP 404' }],
+      validated: true,
+    })
+    expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('1 unresolved reference'))
+  })
+
+  it('surfaces an export failure via the error toast', () => {
+    mockResponse = { data: { workspaces: [baseItem], total: 1 }, isLoading: false }
+    const { container } = renderPanel()
+    fireEvent.click(findExportButton(container))
+    const [, options] = mockExportResult.mutate.mock.calls[0] as [
+      string,
+      { onSuccess: (r: unknown) => void; onError: (error: unknown) => void },
+    ]
+    options.onError(new ApiError('Export bundle write failed: disk full', 500))
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Export failed'))
   })
 })
 
