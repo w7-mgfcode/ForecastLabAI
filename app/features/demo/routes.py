@@ -14,6 +14,11 @@ Exposes:
   update (rename / notes / tags / archive / pin); ``status`` is not patchable.
 - ``DELETE /demo/workspaces/{workspace_id}``  -- delete the workspace METADATA
   row only; the run's created objects are soft references and stay untouched.
+- ``POST   /demo/workspaces/{workspace_id}/export`` -- E6 (#412): write a
+  checksum-validated bundle (manifest + scenario-plan snapshots + checksums)
+  under ``artifacts/showcase/<workspace_id>/``; soft references resolve
+  in-process, model artifacts are referenced (never copied), dangling refs are
+  reported, not fatal.
 
 The run/stream handlers obtain the live FastAPI app from ``request.app`` /
 ``websocket.app`` and pass it into the pipeline -- the slice never imports
@@ -40,7 +45,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.exceptions import ConflictError, NotFoundError
 from app.core.logging import get_logger
-from app.features.demo import hitl, link_health, service, workspace
+from app.features.demo import export, hitl, link_health, service, workspace
+from app.features.demo.models import WORKSPACE_STATUS_RUNNING
 from app.features.demo.schemas import (
     ApprovalEventItem,
     ApprovalEventsResponse,
@@ -49,6 +55,7 @@ from app.features.demo.schemas import (
     HitlDecisionRequest,
     StepEvent,
     WorkspaceDetailResponse,
+    WorkspaceExportResult,
     WorkspaceHealthResponse,
     WorkspaceListItem,
     WorkspaceListResponse,
@@ -346,6 +353,52 @@ async def delete_showcase_workspace(
     deleted = await workspace.delete_workspace(db, workspace_id)
     if not deleted:
         raise NotFoundError(message=f"Workspace not found: {workspace_id}")
+
+
+@router.post(
+    "/workspaces/{workspace_id}/export",
+    response_model=WorkspaceExportResult,
+    summary="Export a saved showcase workspace as a checksum-validated bundle",
+    description=(
+        "Write artifacts/showcase/<workspace_id>/ -- a versioned manifest.json, "
+        "one JSON per resolvable scenario plan, and a sha256sum-compatible "
+        "checksums.sha256 -- then re-verify every checksum before returning. "
+        "Model artifacts are referenced (uri + registry hash + live verify), "
+        "never copied. Dangling soft references are reported in "
+        "`unresolved_references` (the export still returns 200). 404 when the "
+        "workspace is missing; 409 while its run is still in progress; "
+        "re-export overwrites the bundle."
+    ),
+)
+async def export_showcase_workspace(
+    workspace_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> WorkspaceExportResult:
+    """Export a saved showcase workspace to a checksum-validated bundle (E6, #412).
+
+    Args:
+        workspace_id: External identifier of the workspace.
+        request: The incoming request (used to obtain the live FastAPI app for
+            the in-process soft-reference resolution GETs).
+        db: Async database session from dependency.
+
+    Returns:
+        The export result -- bundle path, file inventory with hashes, counts,
+        unresolved references, and the checksum-validation flag.
+
+    Raises:
+        NotFoundError: When no workspace matches ``workspace_id`` (404).
+        ConflictError: When the workspace run is still in progress (409).
+    """
+    row = await workspace.get_workspace(db, workspace_id)
+    if row is None:
+        raise NotFoundError(message=f"Workspace not found: {workspace_id}")
+    if row.status == WORKSPACE_STATUS_RUNNING:
+        raise ConflictError(
+            "Cannot export while the run is still in progress; retry after the run settles."
+        )
+    return await export.export_workspace(db, request.app, workspace_id)
 
 
 @router.websocket("/stream")

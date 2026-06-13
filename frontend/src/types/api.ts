@@ -990,6 +990,35 @@ export interface WorkspaceHealth {
   checked_at: string
 }
 
+// === Showcase Workspace Export (E6, #412) ===
+
+// One file inside an exported workspace bundle.
+export interface ExportFileEntry {
+  path: string
+  sha256: string
+  size_bytes: number
+}
+
+// A soft reference that could not be resolved during export.
+export interface UnresolvedReference {
+  key: string
+  ref_id: string
+  reason: string
+}
+
+// Result of POST /demo/workspaces/{workspace_id}/export.
+export interface WorkspaceExportResult {
+  workspace_id: string
+  bundle_path: string
+  bundle_format_version: number
+  exported_at: string
+  files: ExportFileEntry[]
+  scenario_plans_exported: number
+  model_runs_referenced: number
+  unresolved_references: UnresolvedReference[]
+  validated: boolean
+}
+
 // === AI Model Configuration (/config) ===
 
 // Presence + masked preview of one provider API key (never the raw value).

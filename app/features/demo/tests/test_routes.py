@@ -14,8 +14,14 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.features.demo import service, workspace
-from app.features.demo.schemas import DemoRunRequest, DemoRunResult, StepEvent
+from app.features.demo import export, service, workspace
+from app.features.demo.schemas import (
+    DemoRunRequest,
+    DemoRunResult,
+    ExportFileEntry,
+    StepEvent,
+    WorkspaceExportResult,
+)
 from app.main import app
 
 
@@ -479,6 +485,74 @@ async def test_delete_workspace_404(client, monkeypatch):
     assert resp.status_code == 404
     assert resp.headers["content-type"].startswith("application/problem+json")
     assert "Workspace not found" in resp.json()["detail"]
+
+
+# =============================================================================
+# E6 (#412) -- POST /demo/workspaces/{workspace_id}/export (unit)
+# =============================================================================
+
+
+async def test_export_workspace_404(client, monkeypatch):
+    """An unknown workspace_id is a 404 problem+json (export never runs)."""
+
+    async def fake_get(_db, _workspace_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(workspace, "get_workspace", fake_get)
+
+    resp = await client.post("/demo/workspaces/" + "0" * 32 + "/export")
+    assert resp.status_code == 404
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    assert "Workspace not found" in resp.json()["detail"]
+
+
+async def test_export_workspace_409_when_running(client, monkeypatch):
+    """A still-running workspace is a 409 problem+json (refs not settled)."""
+
+    async def fake_get(_db, workspace_id: str) -> SimpleNamespace:
+        return _orm_like_row(workspace_id=workspace_id, status="running")
+
+    monkeypatch.setattr(workspace, "get_workspace", fake_get)
+
+    resp = await client.post("/demo/workspaces/" + "a" * 32 + "/export")
+    assert resp.status_code == 409
+    assert resp.headers["content-type"].startswith("application/problem+json")
+
+
+async def test_export_workspace_200_happy_path(client, monkeypatch):
+    """A completed workspace returns the export result the writer produced."""
+
+    async def fake_get(_db, workspace_id: str) -> SimpleNamespace:
+        return _orm_like_row(workspace_id=workspace_id, status="completed")
+
+    canned = WorkspaceExportResult(
+        workspace_id="a" * 32,
+        bundle_path="artifacts/showcase/" + "a" * 32,
+        bundle_format_version=1,
+        exported_at=_dt.datetime(2026, 6, 12, 14, 0, tzinfo=_dt.UTC),
+        files=[
+            ExportFileEntry(path="manifest.json", sha256="0" * 64, size_bytes=128),
+            ExportFileEntry(path="checksums.sha256", sha256="1" * 64, size_bytes=80),
+        ],
+        scenario_plans_exported=0,
+        model_runs_referenced=1,
+        unresolved_references=[],
+        validated=True,
+    )
+
+    async def fake_export(_db, _app, workspace_id: str) -> WorkspaceExportResult:
+        return canned
+
+    monkeypatch.setattr(workspace, "get_workspace", fake_get)
+    monkeypatch.setattr(export, "export_workspace", fake_export)
+
+    resp = await client.post("/demo/workspaces/" + "a" * 32 + "/export")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["validated"] is True
+    assert body["bundle_format_version"] == 1
+    assert body["model_runs_referenced"] == 1
+    assert len(body["files"]) == 2
 
 
 # =============================================================================

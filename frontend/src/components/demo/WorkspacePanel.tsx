@@ -24,6 +24,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import {
   Archive,
   ArchiveRestore,
+  FileDown,
   FolderOpen,
   MoreHorizontal,
   Pencil,
@@ -63,7 +64,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { useDeleteWorkspace, usePatchWorkspace, useWorkspaces } from '@/hooks/use-workspaces'
+import {
+  useDeleteWorkspace,
+  useExportWorkspace,
+  usePatchWorkspace,
+  useWorkspaces,
+} from '@/hooks/use-workspaces'
 import { ApiError, getErrorMessage } from '@/lib/api'
 import { ROUTES } from '@/lib/constants'
 import { cn } from '@/lib/utils'
@@ -159,6 +165,7 @@ export function WorkspacePanel({
   const queryClient = useQueryClient()
   const deleteWorkspace = useDeleteWorkspace()
   const patchWorkspace = usePatchWorkspace()
+  const exportWorkspace = useExportWorkspace()
 
   // ── dialogs + selection state ────────────────────────────────────────────
   const [pendingDelete, setPendingDelete] = useState<WorkspaceListItem | null>(null)
@@ -229,6 +236,24 @@ export function WorkspacePanel({
         onError: (error) => toast.error(`Update failed: ${getErrorMessage(error)}`),
       }
     )
+  }
+
+  // E6 (#412) — non-destructive export; no confirmation dialog. Success toast
+  // surfaces the bundle path + file count + checksum state + any dangling refs.
+  const handleExport = (ws: WorkspaceListItem) => {
+    exportWorkspace.mutate(ws.workspace_id, {
+      onSuccess: (result) => {
+        const fileCount = `${result.files.length} file${result.files.length === 1 ? '' : 's'}`
+        const checksums = result.validated ? 'verified' : 'FAILED'
+        const unresolved = result.unresolved_references.length
+          ? ` ${result.unresolved_references.length} unresolved reference(s).`
+          : ''
+        toast.success(
+          `Bundle written to ${result.bundle_path} — ${fileCount}, checksums ${checksums}.${unresolved}`
+        )
+      },
+      onError: (error) => toast.error(`Export failed: ${getErrorMessage(error)}`),
+    })
   }
 
   const toggleSelected = (workspaceId: string) => {
@@ -409,6 +434,17 @@ export function WorkspacePanel({
                     >
                       <Play className="mr-1 h-3 w-3" />
                       Replay
+                    </Button>
+                    {/* E6 (#412) — export a checksum-validated bundle. Self-
+                        contained block (survives an E2 row restyle / rebase). */}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={isRunning || exportWorkspace.isPending}
+                      onClick={() => handleExport(ws)}
+                    >
+                      <FileDown className="mr-1 h-3 w-3" />
+                      Export
                     </Button>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>

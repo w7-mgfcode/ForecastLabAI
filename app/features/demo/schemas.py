@@ -567,3 +567,60 @@ class ApprovalEventsResponse(BaseModel):
         ..., description="Flattened approval events, newest workspace first; empty when none."
     )
     total: int = Field(..., ge=0, description="Number of flattened entries returned (capped).")
+
+
+# =============================================================================
+# E6 (#412) -- workspace export bundle (POST /demo/workspaces/{id}/export)
+# =============================================================================
+
+# Bumped on any manifest-shape change so bundle consumers can branch on it.
+BUNDLE_FORMAT_VERSION = 1
+
+
+class ExportFileEntry(BaseModel):
+    """One file inside an exported workspace bundle (E6, issue #412).
+
+    Response model -- plain ``BaseModel``, NOT ``ConfigDict(strict=True)``:
+    strict mode is a request-body policy and this endpoint has no body.
+    """
+
+    path: str = Field(..., description="Bundle-relative POSIX path.")
+    sha256: str = Field(..., description="Hex SHA-256 of the file contents.")
+    size_bytes: int = Field(..., ge=0, description="File size in bytes.")
+
+
+class UnresolvedReference(BaseModel):
+    """A soft reference that could not be resolved during export (E6, #412)."""
+
+    key: str = Field(..., description="created_objects key (e.g. 'scenario_plan_ids').")
+    ref_id: str = Field(..., description="The id that failed to resolve.")
+    reason: str = Field(..., description="Short cause, e.g. 'HTTP 404'.")
+
+
+class WorkspaceExportResult(BaseModel):
+    """Result of ``POST /demo/workspaces/{workspace_id}/export`` (E6, #412)."""
+
+    workspace_id: str = Field(..., description="The exported workspace's id.")
+    bundle_path: str = Field(
+        ..., description="Repo-root-relative bundle dir, e.g. 'artifacts/showcase/<id>'."
+    )
+    bundle_format_version: int = Field(..., description="Manifest schema version.")
+    exported_at: datetime = Field(..., description="When the export ran (UTC).")
+    # The COMPLETE on-disk inventory, INCLUDING checksums.sha256 itself (with
+    # its own computed hash) -- it just never lists itself inside the checksum
+    # file; the response is where that hash lives.
+    files: list[ExportFileEntry] = Field(
+        ..., description="Every file in the bundle with its hash and size."
+    )
+    scenario_plans_exported: int = Field(
+        ..., ge=0, description="Scenario plans written to scenario_plans/."
+    )
+    model_runs_referenced: int = Field(
+        ..., ge=0, description="Model runs referenced in the manifest (not copied)."
+    )
+    unresolved_references: list[UnresolvedReference] = Field(
+        ..., description="Soft references that could not be resolved (export still succeeded)."
+    )
+    validated: bool = Field(
+        ..., description="True when checksums.sha256 re-read + recomputed clean."
+    )
