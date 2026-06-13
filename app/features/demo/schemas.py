@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.shared.model_taxonomy import KNOWN_MODEL_TYPES
 from app.shared.seeder.config import ScenarioPreset
 from app.shared.seeder.overrides import SeederOverrides
 
@@ -41,6 +42,40 @@ class UserScope(BaseModel):
 
     store_id: int = Field(..., ge=1, description="Real store id from /dimensions/stores.")
     product_id: int = Field(..., ge=1, description="Real product id from /dimensions/products.")
+
+
+class DemoBacktestConfig(BaseModel):
+    """Backtest knobs for the showcase pipeline (E4, issue #410).
+
+    Bounds MIRROR ``app/features/backtesting/schemas.py:SplitConfig`` exactly --
+    the pipeline forwards them verbatim into ``POST /backtesting/run``. The only
+    intentional divergence is ``n_splits``'s default (3, the demo default, vs
+    SplitConfig's 5) and the addition of ``metric``, the winner-ranking choice
+    (D5: WAPE / MAE / RMSE, all lower-is-better; smape/bias deliberately
+    excluded -- issue #410 names exactly these three). Every field is
+    JSON-native so the parent's ``strict=True`` needs no per-field override.
+    """
+
+    model_config = ConfigDict(strict=True)
+
+    horizon: int = Field(default=14, ge=1, le=90, description="Forecast horizon per fold.")
+    strategy: Literal["expanding", "sliding"] = Field(
+        default="expanding",
+        description="Expanding grows the training window; sliding keeps it fixed.",
+    )
+    n_splits: int = Field(default=3, ge=2, le=20, description="Number of CV folds.")
+    min_train_size: int = Field(default=30, ge=7, description="Minimum training samples.")
+    gap: int = Field(default=0, ge=0, le=30, description="Gap days between train end and test.")
+    metric: Literal["wape", "mae", "rmse"] = Field(
+        default="wape", description="Winner-ranking metric (lower is better)."
+    )
+
+    @model_validator(mode="after")
+    def _gap_lt_horizon(self) -> DemoBacktestConfig:
+        """Mirror SplitConfig's horizon > gap invariant (avoids a 422 deeper in)."""
+        if self.gap >= self.horizon:
+            raise ValueError(f"horizon ({self.horizon}) must be greater than gap ({self.gap})")
+        return self
 
 
 class DemoRunRequest(BaseModel):
@@ -124,6 +159,37 @@ class DemoRunRequest(BaseModel):
             "step (warn + fallback to discovery on a dangling pair)."
         ),
     )
+    # E4 (#410): additive run-config. None -> the legacy DEMO_MODEL_TYPES trio +
+    # legacy split constants, byte-identical behaviour. The model allow-list
+    # comes from app.shared.model_taxonomy (vertical-slice rule: the demo slice
+    # never imports model_selection / forecasting). Flag enforcement is NOT
+    # here -- a disabled opt-in model fails fast in step_train (D6) to avoid the
+    # documented ".env-bleed" class from reading settings inside a schema.
+    train_model_types: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=10,
+        description="Models the pipeline trains/backtests; None = the legacy baseline trio.",
+    )
+    backtest: DemoBacktestConfig | None = Field(
+        default=None,
+        description="Backtest split + ranking-metric config; None = the legacy demo split.",
+    )
+
+    @field_validator("train_model_types")
+    @classmethod
+    def _known_unique_models(cls, v: list[str] | None) -> list[str] | None:
+        """Allow-list + de-dup the model selection against KNOWN_MODEL_TYPES."""
+        if v is None:
+            return v
+        unknown = [m for m in v if m not in KNOWN_MODEL_TYPES]
+        if unknown:
+            raise ValueError(
+                f"Unknown model type(s): {unknown!r}. Valid: {sorted(KNOWN_MODEL_TYPES)}"
+            )
+        if len(set(v)) != len(v):
+            raise ValueError("train_model_types contains duplicates")
+        return v
 
     @model_validator(mode="after")
     def _workspace_name_requires_keep(self) -> DemoRunRequest:
@@ -341,6 +407,14 @@ class WorkspaceListItem(BaseModel):
     )
     user_scope: dict[str, Any] | None = Field(
         default=None, description="Story slot (E3 #409): operator-selected focus."
+    )
+    # E4 (#410) -- replay-input echo (NOT a story slot; a dedicated nullable
+    # JSONB column, see DOMAIN_MODEL.md D1). None on default-config / pre-E4
+    # rows. On the LIST item because the frontend Replay reads list rows and
+    # rebuilds the start frame's train_model_types + backtest from it.
+    run_config: dict[str, Any] | None = Field(
+        default=None,
+        description="Replay-input run config (model set + backtest); None on defaults.",
     )
 
 

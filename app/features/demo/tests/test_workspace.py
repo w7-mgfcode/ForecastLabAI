@@ -107,6 +107,41 @@ async def test_create_workspace_without_e3_fields_persists_nulls(
     assert row.user_scope is None
 
 
+async def test_create_workspace_records_run_config(db_session: AsyncSession) -> None:
+    """E4 (#410) -- a custom run-config keep-run persists run_config verbatim."""
+    workspace_id = await workspace.create_workspace(
+        _keep_request(
+            train_model_types=["naive", "seasonal_average"],
+            backtest={"horizon": 21, "n_splits": 4, "metric": "rmse"},
+        )
+    )
+    assert workspace_id is not None
+
+    row = await workspace.get_workspace(db_session, workspace_id)
+    assert row is not None
+    assert row.run_config == {
+        "train_model_types": ["naive", "seasonal_average"],
+        "backtest": {
+            "horizon": 21,
+            "strategy": "expanding",
+            "n_splits": 4,
+            "min_train_size": 30,
+            "gap": 0,
+            "metric": "rmse",
+        },
+    }
+
+
+async def test_create_workspace_run_config_null_on_defaults(db_session: AsyncSession) -> None:
+    """E4 (#410) -- a default-config keep-run leaves run_config NULL."""
+    workspace_id = await workspace.create_workspace(_keep_request())
+    assert workspace_id is not None
+
+    row = await workspace.get_workspace(db_session, workspace_id)
+    assert row is not None
+    assert row.run_config is None
+
+
 async def test_finalize_workspace_completed(db_session: AsyncSession) -> None:
     """finalize(failed=False) settles to completed with collected ids."""
     workspace_id = await workspace.create_workspace(_keep_request())

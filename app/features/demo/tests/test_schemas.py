@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.features.demo.schemas import (
+    DemoBacktestConfig,
     DemoRunRequest,
     DemoRunResult,
     StepEvent,
@@ -80,6 +81,9 @@ def test_demo_run_request_legacy_frame_still_validates():
     assert req.seed == 7
     assert req.preservation == "ephemeral"
     assert req.workspace_name is None
+    # E4 (#410) -- the run-config fields default None on a legacy frame.
+    assert req.train_model_types is None
+    assert req.backtest is None
 
 
 def test_demo_run_request_workspace_name_requires_keep():
@@ -231,6 +235,110 @@ def test_user_scope_rejects_extra_keys_and_bad_ids():
         UserScope.model_validate({"store_id": 1})  # product_id required
     with pytest.raises(ValidationError):
         UserScope.model_validate({"store_id": "1", "product_id": 1})
+
+
+# =============================================================================
+# E4 (#410) -- train_model_types + backtest (run-config phase controls)
+# =============================================================================
+
+
+def test_demo_run_request_run_config_defaults_none():
+    """E4 (#410) -- both run-config fields default None (legacy behaviour)."""
+    req = DemoRunRequest()
+    assert req.train_model_types is None
+    assert req.backtest is None
+
+
+def test_demo_run_request_accepts_model_selection_json_path():
+    """E4 (#410) -- the JSON wire form accepts a selection + nested backtest
+    dict (validate_python on a parsed dict, the path FastAPI uses)."""
+    req = DemoRunRequest.model_validate(
+        {
+            "train_model_types": ["naive", "seasonal_average"],
+            "backtest": {"horizon": 21, "n_splits": 4, "metric": "rmse"},
+        }
+    )
+    assert req.train_model_types == ["naive", "seasonal_average"]
+    assert req.backtest is not None
+    assert req.backtest.horizon == 21
+    assert req.backtest.n_splits == 4
+    assert req.backtest.metric == "rmse"
+    # Unset nested knobs fall back to their defaults.
+    assert req.backtest.strategy == "expanding"
+    assert req.backtest.min_train_size == 30
+    assert req.backtest.gap == 0
+
+
+def test_demo_run_request_rejects_unknown_model_type():
+    """E4 (#410) -- a model_type outside KNOWN_MODEL_TYPES is rejected."""
+    with pytest.raises(ValidationError):
+        DemoRunRequest.model_validate({"train_model_types": ["naive", "bogus_model"]})
+
+
+def test_demo_run_request_rejects_duplicate_model_types():
+    """E4 (#410) -- duplicate model types are rejected."""
+    with pytest.raises(ValidationError):
+        DemoRunRequest.model_validate({"train_model_types": ["naive", "naive"]})
+
+
+def test_demo_run_request_rejects_empty_and_oversized_selection():
+    """E4 (#410) -- selection size is bounded 1..10."""
+    with pytest.raises(ValidationError):
+        DemoRunRequest.model_validate({"train_model_types": []})
+    # 11 distinct known models -> over the cap of 10.
+    eleven = [
+        "naive",
+        "seasonal_naive",
+        "moving_average",
+        "weighted_moving_average",
+        "seasonal_average",
+        "trend_regression_baseline",
+        "regression",
+        "prophet_like",
+        "lightgbm",
+        "xgboost",
+        "random_forest",
+    ]
+    with pytest.raises(ValidationError):
+        DemoRunRequest.model_validate({"train_model_types": eleven})
+
+
+def test_demo_backtest_config_defaults_and_bounds():
+    """E4 (#410) -- DemoBacktestConfig defaults + bound/invariant enforcement."""
+    cfg = DemoBacktestConfig()
+    assert cfg.horizon == 14
+    assert cfg.strategy == "expanding"
+    assert cfg.n_splits == 3  # demo default, NOT SplitConfig's 5
+    assert cfg.min_train_size == 30
+    assert cfg.gap == 0
+    assert cfg.metric == "wape"
+    # n_splits floor is 2.
+    with pytest.raises(ValidationError):
+        DemoBacktestConfig.model_validate({"n_splits": 1})
+    # gap >= horizon is rejected (mirrors SplitConfig).
+    with pytest.raises(ValidationError):
+        DemoBacktestConfig.model_validate({"horizon": 5, "gap": 5})
+    # Unknown metric rejected (closed Literal).
+    with pytest.raises(ValidationError):
+        DemoBacktestConfig.model_validate({"metric": "smape"})
+
+
+def test_workspace_list_item_run_config_round_trip():
+    """E4 (#410) -- run_config rides on the list item, default None."""
+    bare = WorkspaceListItem.model_validate(_orm_like_workspace_row())
+    assert bare.run_config is None
+    slotted = WorkspaceListItem.model_validate(
+        _orm_like_workspace_row(
+            run_config={
+                "train_model_types": ["naive", "regression"],
+                "backtest": {"horizon": 21, "metric": "rmse"},
+            }
+        )
+    )
+    assert slotted.run_config == {
+        "train_model_types": ["naive", "regression"],
+        "backtest": {"horizon": 21, "metric": "rmse"},
+    }
 
 
 # =============================================================================
