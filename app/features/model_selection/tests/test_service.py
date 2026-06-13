@@ -58,6 +58,51 @@ def _patch_availability(monkeypatch: pytest.MonkeyPatch, status: str) -> None:
 
 
 # -----------------------------------------------------------------------------
+# E4 (#410) -- catalog enabled overlay
+# -----------------------------------------------------------------------------
+
+_OPT_IN_MODELS = {"lightgbm", "xgboost", "random_forest"}
+
+
+def _patch_catalog_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    lightgbm: bool = False,
+    xgboost: bool = False,
+    random_forest: bool = False,
+) -> None:
+    """Patch the service's get_settings with the three forecast_enable_* flags."""
+    settings = SimpleNamespace(
+        forecast_enable_lightgbm=lightgbm,
+        forecast_enable_xgboost=xgboost,
+        forecast_enable_random_forest=random_forest,
+    )
+    monkeypatch.setattr("app.features.model_selection.service.get_settings", lambda: settings)
+
+
+def test_catalog_enabled_false_when_flags_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """E4 (#410, D3) -- with all flags off the three opt-ins are disabled,
+    every always-on model stays enabled."""
+    _patch_catalog_settings(monkeypatch)  # all default False
+    catalog = ModelSelectionService().get_model_catalog()
+    by_type = {m.model_type: m.enabled for m in catalog.models}
+    for opt_in in _OPT_IN_MODELS:
+        assert by_type[opt_in] is False
+    for model_type, enabled in by_type.items():
+        if model_type not in _OPT_IN_MODELS:
+            assert enabled is True
+
+
+def test_catalog_enabled_true_when_flag_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """E4 (#410, D3) -- enabling a flag flips exactly that model to enabled."""
+    _patch_catalog_settings(monkeypatch, lightgbm=True)
+    by_type = {m.model_type: m.enabled for m in ModelSelectionService().get_model_catalog().models}
+    assert by_type["lightgbm"] is True
+    assert by_type["xgboost"] is False
+    assert by_type["random_forest"] is False
+
+
+# -----------------------------------------------------------------------------
 # Flattening
 # -----------------------------------------------------------------------------
 

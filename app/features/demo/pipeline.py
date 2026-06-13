@@ -42,6 +42,7 @@ from app.core.logging import get_logger
 from app.core.problem_details import EMBEDDING_AUTH_CODE, ERROR_TYPES
 from app.features.demo import workspace
 from app.features.demo.schemas import DemoRunRequest, StepEvent, StepStatus, UserScope
+from app.shared.model_taxonomy import KNOWN_MODEL_TYPES
 from app.shared.seeder.config import ScenarioPreset
 from app.shared.seeder.overrides import SeederOverrides
 
@@ -210,6 +211,55 @@ class _Client:
 # =============================================================================
 
 
+@dataclass(frozen=True)
+class ResolvedRunConfig:
+    """The request's run-config with legacy defaults filled in (E4, #410).
+
+    ``customized`` is True when the request carried EITHER ``train_model_types``
+    OR ``backtest`` -- it gates the byte-identical legacy path in step_backtest
+    (D4) and the ``run_config`` echo in pipeline_complete. When False every
+    field equals the legacy constant, so resolving an untouched frame is a
+    no-op.
+    """
+
+    model_types: tuple[str, ...] = DEMO_MODEL_TYPES
+    horizon: int = DEMO_HORIZON
+    strategy: str = "expanding"
+    n_splits: int = DEMO_BACKTEST_SPLITS
+    min_train_size: int = DEMO_MIN_TRAIN_SIZE
+    gap: int = 0
+    metric: str = "wape"
+    customized: bool = False
+
+
+def _resolve_run_config(req: DemoRunRequest) -> ResolvedRunConfig:
+    """Fold ``req.train_model_types`` / ``req.backtest`` over the legacy defaults.
+
+    None on both -> the all-default ResolvedRunConfig (customized=False),
+    byte-identical to today. A partial config (only a selection, or only a
+    backtest block) fills the unspecified half from the legacy constants.
+    """
+    customized = req.train_model_types is not None or req.backtest is not None
+    if not customized:
+        return ResolvedRunConfig()
+    model_types = (
+        tuple(req.train_model_types) if req.train_model_types is not None else DEMO_MODEL_TYPES
+    )
+    backtest = req.backtest
+    if backtest is None:
+        return ResolvedRunConfig(model_types=model_types, customized=True)
+    return ResolvedRunConfig(
+        model_types=model_types,
+        horizon=backtest.horizon,
+        strategy=backtest.strategy,
+        n_splits=backtest.n_splits,
+        min_train_size=backtest.min_train_size,
+        gap=backtest.gap,
+        metric=backtest.metric,
+        customized=True,
+    )
+
+
 @dataclass
 class DemoContext:
     """Accumulator threaded through every step.
@@ -268,6 +318,10 @@ class DemoContext:
     # validates and adopts (warn + fallback to discovery when dangling).
     seed_overrides: SeederOverrides | None = None
     user_scope: UserScope | None = None
+    # E4 (#410) -- resolved run config (selection + backtest split + ranking
+    # metric). Defaults to the all-legacy ResolvedRunConfig so a frame without
+    # the new fields behaves byte-identically.
+    run_config: ResolvedRunConfig = field(default_factory=ResolvedRunConfig)
 
 
 # =============================================================================
@@ -290,6 +344,13 @@ def _model_config_payload(model_type: str) -> dict[str, Any]:
         return {"model_type": "moving_average", "window_size": 7}
     if model_type == "prophet_like":
         return {"model_type": "prophet_like"}
+    # E4 (#410) -- any other KNOWN model type validates from a minimal
+    # {"model_type": X} body (runtime-verified across all 11 union members,
+    # PRP Gotcha 1). The explicit branches above stay because their non-default
+    # params (season_length / window_size) are load-bearing for config_hash
+    # stability of existing registry rows.
+    if model_type in KNOWN_MODEL_TYPES:
+        return {"model_type": model_type}
     raise ValueError(f"Unsupported demo model_type: {model_type}")
 
 
@@ -452,18 +513,21 @@ def _is_embedding_auth_error(exc: _StepError) -> bool:
 
 def _select_winner(
     backtest_results: dict[str, dict[str, float]],
+    metric: str = "wape",
 ) -> tuple[str, float] | None:
-    """Pick the ``(model_type, WAPE)`` with the lowest aggregated WAPE.
+    """Pick the ``(model_type, metric_value)`` with the lowest configured metric.
 
-    Skips models whose WAPE is missing or NaN (port of run_demo.py:338-356).
+    ``metric`` is one of wape / mae / rmse (E4 #410, D5 -- all lower-is-better);
+    defaults to "wape" so every existing call site is unchanged. Skips models
+    whose metric value is missing or NaN (port of run_demo.py:338-356).
     """
     best: tuple[str, float] | None = None
     for model_type, metrics in backtest_results.items():
-        wape = metrics.get("wape")
-        if wape is None or math.isnan(wape):
+        value = metrics.get(metric)
+        if value is None or math.isnan(value):
             continue
-        if best is None or wape < best[1]:
-            best = (model_type, wape)
+        if best is None or value < best[1]:
+            best = (model_type, value)
     return best
 
 
@@ -754,13 +818,38 @@ async def step_features(ctx: DemoContext, client: _Client) -> StepResult:
 
 
 async def step_train(ctx: DemoContext, client: _Client) -> StepResult:
-    """Train naive / seasonal_naive / moving_average in parallel."""
+    """Train the configured model set in parallel (legacy trio by default).
+
+    E4 (#410) -- the selection comes from ``ctx.run_config.model_types`` and the
+    horizon-tail reservation from ``ctx.run_config.horizon`` (both legacy
+    constants on an untouched frame). A disabled opt-in model (lightgbm /
+    xgboost / random_forest behind a False ``forecast_enable_*`` flag) fails the
+    step FAST with a detail naming the flag (D6) -- the settings read lives here,
+    never in the Pydantic schema (the documented ".env-bleed" class).
+    """
     if ctx.date_start is None or ctx.date_end is None:
         return ("fail", "no date range on ctx", {})
 
+    # D6 -- fail fast on a disabled opt-in model so the operator gets a clear,
+    # actionable message instead of a deeper 400 (route gate) or factory error.
+    settings = get_settings()
+    flag_by_model = {
+        "lightgbm": settings.forecast_enable_lightgbm,
+        "xgboost": settings.forecast_enable_xgboost,
+        "random_forest": settings.forecast_enable_random_forest,
+    }
+    disabled = [m for m in ctx.run_config.model_types if flag_by_model.get(m) is False]
+    if disabled:
+        return (
+            "fail",
+            f"model(s) {disabled} requested but the matching forecast_enable_* flag "
+            "is off — enable the flag (and install the extra) or deselect the model",
+            {"requested_models": list(ctx.run_config.model_types), "disabled_models": disabled},
+        )
+
     # Leave a horizon-sized tail unused by training so the backtest has room.
     train_start = ctx.date_start
-    train_end = ctx.date_end - timedelta(days=DEMO_HORIZON)
+    train_end = ctx.date_end - timedelta(days=ctx.run_config.horizon)
 
     async def _train(model_type: str) -> tuple[str, dict[str, Any]]:
         train_body = await client.request(
@@ -778,7 +867,7 @@ async def step_train(ctx: DemoContext, client: _Client) -> StepResult:
         return model_type, train_body
 
     results: list[tuple[str, dict[str, Any]]] = list(
-        await asyncio.gather(*(_train(m) for m in DEMO_MODEL_TYPES))
+        await asyncio.gather(*(_train(m) for m in ctx.run_config.model_types))
     )
     for model_type, train_body in results:
         ctx.train_results[model_type] = train_body
@@ -786,7 +875,10 @@ async def step_train(ctx: DemoContext, client: _Client) -> StepResult:
     return (
         "pass",
         f"trained {len(ctx.train_results)} models in parallel: {trained}",
-        {"trained": list(ctx.train_results.keys())},
+        {
+            "trained": list(ctx.train_results.keys()),
+            "requested_models": list(ctx.run_config.model_types),
+        },
     )
 
 
@@ -815,110 +907,154 @@ def _coerce_bucketed_metrics(
     return out or None
 
 
+def _backtest_body(
+    ctx: DemoContext,
+    model_type: str,
+    start_date: date,
+    end_date: date,
+    *,
+    include_baselines: bool,
+) -> dict[str, Any]:
+    """Build a ``POST /backtesting/run`` body from ``ctx.run_config`` (E4 #410).
+
+    The split knobs come from the resolved run config -- all legacy constants on
+    an untouched frame, so the body is byte-identical to today on the
+    not-customized path.
+    """
+    run_config = ctx.run_config
+    return {
+        "store_id": ctx.store_id,
+        "product_id": ctx.product_id,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "config": {
+            "split_config": {
+                "strategy": run_config.strategy,
+                "n_splits": run_config.n_splits,
+                "min_train_size": run_config.min_train_size,
+                "gap": run_config.gap,
+                "horizon": run_config.horizon,
+            },
+            "model_config_main": _model_config_payload(model_type),
+            "include_baselines": include_baselines,
+            "store_fold_details": False,
+        },
+    }
+
+
 async def step_backtest(ctx: DemoContext, client: _Client) -> StepResult:
-    """Run scenario-aware backtest; pick the lowest-WAPE winner.
+    """Run scenario-aware backtest; pick the winner by the configured metric.
 
     PRP-38 — on SHOWCASE_RICH the main model is feature-aware
     (``prophet_like``); baselines come back in ``baseline_results`` (one call,
     ``include_baselines=true``) and the response carries per-horizon-bucket
     metrics in ``main_model_results.bucketed_aggregated_metrics``. On
     DEMO_MINIMAL the original 3-baseline-loop behaviour is preserved.
+
+    E4 (#410, D4) — when the operator supplied a custom run config
+    (``ctx.run_config.customized``), BOTH legacy branches give way to ONE
+    unified per-model loop over the selection (each ``include_baselines=False``);
+    on SHOWCASE_RICH ``prophet_like`` is appended if absent so the V2 story
+    (``step_v2_train`` registers it unconditionally) keeps a backtest entry, and
+    its call supplies the bucketed metrics. The winner is the best
+    ``ctx.run_config.metric`` (wape / mae / rmse).
     """
     if ctx.date_start is None or ctx.date_end is None:
         return ("fail", "no date range on ctx", {})
+    start_date = ctx.date_start
+    end_date = ctx.date_end
+    run_config = ctx.run_config
 
-    if ctx.scenario is ScenarioPreset.SHOWCASE_RICH:
-        body = await client.request(
-            f"backtest[{SHOWCASE_V2_MODEL_TYPE}]",
-            "POST",
-            "/backtesting/run",
-            json_body={
-                "store_id": ctx.store_id,
-                "product_id": ctx.product_id,
-                "start_date": ctx.date_start.isoformat(),
-                "end_date": ctx.date_end.isoformat(),
-                "config": {
-                    "split_config": {
-                        "strategy": "expanding",
-                        "n_splits": DEMO_BACKTEST_SPLITS,
-                        "min_train_size": DEMO_MIN_TRAIN_SIZE,
-                        "gap": 0,
-                        "horizon": DEMO_HORIZON,
-                    },
-                    "model_config_main": _model_config_payload(SHOWCASE_V2_MODEL_TYPE),
-                    "include_baselines": True,
-                    "store_fold_details": False,
-                },
-            },
-        )
-        main_results = body.get("main_model_results", {})
-        baseline_results = body.get("baseline_results") or []
-        main_metrics = _coerce_metric_dict(
-            main_results.get("aggregated_metrics") if isinstance(main_results, dict) else None
-        )
-        ctx.backtest_results[SHOWCASE_V2_MODEL_TYPE] = main_metrics
-        # baseline_results is list[ModelBacktestResult].
-        if isinstance(baseline_results, list):
-            for entry in baseline_results:
-                if not isinstance(entry, dict):
-                    continue
-                entry_type = entry.get("model_type")
-                if not isinstance(entry_type, str):
-                    continue
-                ctx.backtest_results[entry_type] = _coerce_metric_dict(
-                    entry.get("aggregated_metrics")
+    if not run_config.customized:
+        if ctx.scenario is ScenarioPreset.SHOWCASE_RICH:
+            body = await client.request(
+                f"backtest[{SHOWCASE_V2_MODEL_TYPE}]",
+                "POST",
+                "/backtesting/run",
+                json_body=_backtest_body(
+                    ctx, SHOWCASE_V2_MODEL_TYPE, start_date, end_date, include_baselines=True
+                ),
+            )
+            main_results = body.get("main_model_results", {})
+            baseline_results = body.get("baseline_results") or []
+            main_metrics = _coerce_metric_dict(
+                main_results.get("aggregated_metrics") if isinstance(main_results, dict) else None
+            )
+            ctx.backtest_results[SHOWCASE_V2_MODEL_TYPE] = main_metrics
+            # baseline_results is list[ModelBacktestResult].
+            if isinstance(baseline_results, list):
+                for entry in baseline_results:
+                    if not isinstance(entry, dict):
+                        continue
+                    entry_type = entry.get("model_type")
+                    if not isinstance(entry_type, str):
+                        continue
+                    ctx.backtest_results[entry_type] = _coerce_metric_dict(
+                        entry.get("aggregated_metrics")
+                    )
+            ctx.bucketed_aggregated_metrics = _coerce_bucketed_metrics(
+                main_results.get("bucketed_aggregated_metrics")
+                if isinstance(main_results, dict)
+                else None
+            )
+        else:
+            # DEMO_MINIMAL / SPARSE / others: loop over baselines (legacy path).
+            for model_type in DEMO_MODEL_TYPES:
+                body = await client.request(
+                    f"backtest[{model_type}]",
+                    "POST",
+                    "/backtesting/run",
+                    json_body=_backtest_body(
+                        ctx, model_type, start_date, end_date, include_baselines=False
+                    ),
                 )
-        ctx.bucketed_aggregated_metrics = _coerce_bucketed_metrics(
-            main_results.get("bucketed_aggregated_metrics")
-            if isinstance(main_results, dict)
-            else None
-        )
+                main_results = body.get("main_model_results", {})
+                ctx.backtest_results[model_type] = _coerce_metric_dict(
+                    main_results.get("aggregated_metrics")
+                    if isinstance(main_results, dict)
+                    else None
+                )
     else:
-        # DEMO_MINIMAL / SPARSE / others: loop over baselines (legacy path).
-        for model_type in DEMO_MODEL_TYPES:
+        # E4 (#410, D4) — unified per-model loop over the operator's selection.
+        models = list(run_config.model_types)
+        if ctx.scenario is ScenarioPreset.SHOWCASE_RICH and SHOWCASE_V2_MODEL_TYPE not in models:
+            models.append(SHOWCASE_V2_MODEL_TYPE)
+        for model_type in models:
             body = await client.request(
                 f"backtest[{model_type}]",
                 "POST",
                 "/backtesting/run",
-                json_body={
-                    "store_id": ctx.store_id,
-                    "product_id": ctx.product_id,
-                    "start_date": ctx.date_start.isoformat(),
-                    "end_date": ctx.date_end.isoformat(),
-                    "config": {
-                        "split_config": {
-                            "strategy": "expanding",
-                            "n_splits": DEMO_BACKTEST_SPLITS,
-                            "min_train_size": DEMO_MIN_TRAIN_SIZE,
-                            "gap": 0,
-                            "horizon": DEMO_HORIZON,
-                        },
-                        "model_config_main": _model_config_payload(model_type),
-                        "include_baselines": False,
-                        "store_fold_details": False,
-                    },
-                },
+                json_body=_backtest_body(
+                    ctx, model_type, start_date, end_date, include_baselines=False
+                ),
             )
             main_results = body.get("main_model_results", {})
             ctx.backtest_results[model_type] = _coerce_metric_dict(
                 main_results.get("aggregated_metrics") if isinstance(main_results, dict) else None
             )
+            if model_type == SHOWCASE_V2_MODEL_TYPE:
+                ctx.bucketed_aggregated_metrics = _coerce_bucketed_metrics(
+                    main_results.get("bucketed_aggregated_metrics")
+                    if isinstance(main_results, dict)
+                    else None
+                )
 
-    winner = _select_winner(ctx.backtest_results)
+    winner = _select_winner(ctx.backtest_results, run_config.metric)
     if winner is None:
-        return ("fail", "no model produced a usable WAPE (all NaN?)", {})
+        return ("fail", f"no model produced a usable {run_config.metric} (all NaN?)", {})
     ctx.winner_model_type, ctx.winner_wape = winner
     payload: dict[str, Any] = {
         "per_model": dict(ctx.backtest_results),
         "winner": ctx.winner_model_type,
         "winner_wape": ctx.winner_wape,
+        "metric": run_config.metric,
     }
     if ctx.bucketed_aggregated_metrics is not None:
         payload["bucketed_aggregated_metrics"] = ctx.bucketed_aggregated_metrics
     return (
         "pass",
         f"{len(ctx.backtest_results)} models, winner={ctx.winner_model_type} "
-        f"wape={ctx.winner_wape:.4f}",
+        f"{run_config.metric}={ctx.winner_wape:.4f}",
         payload,
     )
 
@@ -1105,7 +1241,8 @@ async def step_v2_train(ctx: DemoContext, client: _Client) -> StepResult:
     if ctx.date_start is None or ctx.date_end is None:
         return ("fail", "no date range on ctx", {})
     train_start = ctx.date_start
-    train_end = ctx.date_end - timedelta(days=DEMO_HORIZON)
+    # E4 (#410, D8) -- the configured horizon drives the modeling steps' tail.
+    train_end = ctx.date_end - timedelta(days=ctx.run_config.horizon)
 
     train_body = await client.request(
         "v2_train[train]",
@@ -2738,6 +2875,9 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
         # E3 (#409) -- thread the validated start-frame config verbatim.
         seed_overrides=req.seed_overrides,
         user_scope=req.user_scope,
+        # E4 (#410) -- resolve the run config (selection + backtest) once;
+        # legacy defaults fill in the unspecified half.
+        run_config=_resolve_run_config(req),
     )
     # E1 (#390) -- create the workspace row BEFORE the first step executes so
     # even an early failure records the run config. create_workspace is
@@ -2857,5 +2997,22 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
             # E1 (#390) -- additive; a string on preservation='keep' runs,
             # None otherwise (legacy clients ignore unknown keys).
             "workspace_id": ctx.workspace_id,
+            # E4 (#410) -- echo the resolved run config on customized runs so the
+            # FE can confirm what ran; None on legacy (default-config) runs.
+            "run_config": (
+                {
+                    "train_model_types": list(ctx.run_config.model_types),
+                    "backtest": {
+                        "horizon": ctx.run_config.horizon,
+                        "strategy": ctx.run_config.strategy,
+                        "n_splits": ctx.run_config.n_splits,
+                        "min_train_size": ctx.run_config.min_train_size,
+                        "gap": ctx.run_config.gap,
+                        "metric": ctx.run_config.metric,
+                    },
+                }
+                if ctx.run_config.customized
+                else None
+            ),
         },
     )

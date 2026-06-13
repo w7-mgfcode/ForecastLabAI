@@ -426,6 +426,11 @@ class CandidateModelInfo(BaseModel):
     default_params: dict[str, Any]
     supports_auto_predict: bool  # False for feature-aware models (predict() rejects them)
     description: str
+    # E4 (#410) — runtime forecast_enable_* overlay; SERVICE-set (the pure
+    # capabilities.build_model_catalog leaves the default True). False exactly
+    # when the matching forecast_enable_{lightgbm,xgboost,random_forest} flag is
+    # off; the showcase model picker hides disabled opt-ins.
+    enabled: bool = True
 
 
 class ModelCatalogResponse(BaseModel):
