@@ -13,6 +13,8 @@ import { ReplayConfirmDialog } from '@/components/demo/ReplayConfirmDialog'
 import { WorkspaceLineageStrip } from '@/components/demo/WorkspaceLineageStrip'
 import { WorkspacePanel } from '@/components/demo/WorkspacePanel'
 import { WorkspaceArtifactsPanel } from '@/components/demo/WorkspaceArtifactsPanel'
+import { SeedConfigPanel } from '@/components/demo/SeedConfigPanel'
+import { ScopeSelector } from '@/components/demo/ScopeSelector'
 import { buildReplayRequest } from '@/components/demo/replay-request'
 import { WORKSPACE_NAME_PATTERN } from '@/components/demo/workspace-name'
 import { Button } from '@/components/ui/button'
@@ -21,7 +23,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { ROUTES } from '@/lib/constants'
 import { cn } from '@/lib/utils'
-import type { WorkspaceListItem } from '@/types/api'
+import type { SeedOverrides, UserScope, WorkspaceListItem } from '@/types/api'
 
 const TERMINAL_STATUSES = new Set(['pass', 'fail', 'skip', 'warn'])
 
@@ -124,6 +126,10 @@ export default function ShowcasePage() {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
   // E2 (#408) — the workspace awaiting replay confirmation (null = no dialog).
   const [pendingReplay, setPendingReplay] = useState<WorkspaceListItem | null>(null)
+  // E3 (#409) — advanced seed config (sparse; null = preset-driven) and the
+  // operator-selected focus pair (null = auto-discover first pair).
+  const [seedOverrides, setSeedOverrides] = useState<SeedOverrides | null>(null)
+  const [userScope, setUserScope] = useState<UserScope | null>(null)
 
   // The page (not the panel) resolves the loaded workspace's detail — the
   // artifacts panel needs detail-only created_objects.
@@ -159,6 +165,10 @@ export default function ShowcasePage() {
             ...(trimmedName ? { workspace_name: trimmedName } : {}),
           }
         : {}),
+      // E3 (#409) — overrides only ride a re-seed run (the backend rejects
+      // them on skip_seed=true); omit both keys for legacy byte-compat.
+      ...(reseed && seedOverrides ? { seed_overrides: seedOverrides } : {}),
+      ...(userScope ? { user_scope: userScope } : {}),
     })
   }
 
@@ -171,6 +181,9 @@ export default function ShowcasePage() {
     setResetDb(ws.reset)
     setKeepWorkspace(true)
     setWorkspaceName(ws.name ?? '')
+    // E3 (#409) — repopulate the seed-config panel + scope selector.
+    setSeedOverrides(ws.seed_overrides ?? null)
+    setUserScope(ws.user_scope ?? null)
     setSelectedWorkspaceId(ws.workspace_id)
   }
 
@@ -299,7 +312,13 @@ export default function ShowcasePage() {
             <label className="flex items-center gap-2 text-sm">
               <Checkbox
                 checked={reseed}
-                onCheckedChange={(v) => setReseed(v === true)}
+                onCheckedChange={(v) => {
+                  const next = v === true
+                  setReseed(next)
+                  // E3 (#409) — overrides are meaningless without a re-seed
+                  // (validator parity: the backend rejects the combination).
+                  if (!next) setSeedOverrides(null)
+                }}
                 disabled={isRunning}
               />
               <span>
@@ -311,7 +330,13 @@ export default function ShowcasePage() {
             <label className="flex items-center gap-2 text-sm">
               <Checkbox
                 checked={resetDb}
-                onCheckedChange={(v) => setResetDb(v === true)}
+                onCheckedChange={(v) => {
+                  const next = v === true
+                  setResetDb(next)
+                  // E3 (#409) — a wipe re-issues entity ids (sequences never
+                  // reset), so a pre-picked focus pair would dangle.
+                  if (next) setUserScope(null)
+                }}
                 disabled={isRunning}
               />
               <span>
@@ -369,6 +394,27 @@ export default function ShowcasePage() {
                   </p>
                 )}
               </div>
+            )}
+          </div>
+
+          {/* E3 (#409) — advanced seed config, only meaningful on a re-seed run. */}
+          {reseed && (
+            <SeedConfigPanel
+              value={seedOverrides}
+              onChange={setSeedOverrides}
+              disabled={isRunning}
+              windowLocked={scenario === 'holiday_rush'}
+            />
+          )}
+
+          {/* E3 (#409) — focus-pair selection works on the EXISTING dataset
+              (no re-seed needed); a Reset run clears it (ids re-issued). */}
+          <div className="flex flex-col gap-1">
+            <ScopeSelector value={userScope} onChange={setUserScope} disabled={isRunning} />
+            {resetDb && (
+              <p className="text-xs text-destructive">
+                Reset database re-issues entity ids — re-pick the focus pair after the run.
+              </p>
             )}
           </div>
 

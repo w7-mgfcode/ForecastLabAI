@@ -112,6 +112,21 @@ async def create_workspace(req: DemoRunRequest) -> str | None:
                     # E1 (#407): replay provenance, recorded verbatim (soft
                     # reference -- no existence check; dangles are designed).
                     replayed_from_workspace_id=req.replayed_from_workspace_id,
+                    # E3 (#409): the two replay-relevant story slots, recorded
+                    # at create time (the REQUESTED config -- the effective
+                    # grain lands separately on store_id/product_id at
+                    # finalize, so a fallen-back scope stays visible). Sparse
+                    # JSON: only operator-set knobs appear; never {}.
+                    seed_overrides=(
+                        req.seed_overrides.model_dump(mode="json", exclude_none=True)
+                        if req.seed_overrides is not None
+                        else None
+                    ),
+                    user_scope=(
+                        req.user_scope.model_dump(mode="json")
+                        if req.user_scope is not None
+                        else None
+                    ),
                 )
             )
             await db.commit()

@@ -14,6 +14,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.shared.seeder.config import ScenarioPreset
+from app.shared.seeder.overrides import SeederOverrides
 
 # One pipeline step's outcome.
 StepStatus = Literal["running", "pass", "fail", "skip", "warn"]
@@ -26,6 +27,22 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+class UserScope(BaseModel):
+    """Operator-selected (store, product) focus pair (E3, issue #409).
+
+    Ids are REAL discovered ids (Postgres sequences never reset -- ids are not
+    1-based); ``step_status`` validates them against ``/dimensions/*/{id}``
+    and warn-falls-back to discovery when the pair dangles (e.g. after a
+    reset+reseed re-issued ids). ``extra="forbid"`` keeps the slot schema
+    closed; additive keys need a documented schema change.
+    """
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    store_id: int = Field(..., ge=1, description="Real store id from /dimensions/stores.")
+    product_id: int = Field(..., ge=1, description="Real product id from /dimensions/products.")
+
+
 class DemoRunRequest(BaseModel):
     """Request body for ``POST /demo/run`` and the ``WS /demo/stream`` start frame.
 
@@ -34,7 +51,10 @@ class DemoRunRequest(BaseModel):
     override -- there is no ``date`` / ``datetime`` / ``UUID`` / ``Decimal``
     field (see ``.claude/rules/security-patterns.md`` and
     ``test_strict_mode_policy.py``). The sole exception is ``scenario``, whose
-    enum-on-the-wire form carries its own override (PRP-38).
+    enum-on-the-wire form carries its own override (PRP-38). The nested
+    ``seed_overrides`` / ``user_scope`` models are themselves all-JSON-native
+    and validate from the JSON-parsed dict under the parent's strict mode
+    (runtime-verified on pydantic 2.12.5 -- E3 #409).
     """
 
     model_config = ConfigDict(strict=True)
@@ -85,6 +105,25 @@ class DemoRunRequest(BaseModel):
         pattern=r"^[0-9a-f]{32}$",  # uuid4().hex shape of workspace_id
         description="workspace_id this run replays; requires preservation='keep'.",
     )
+    # E3 (#409): curated seed overrides + operator-selected focus pair. Both
+    # additive Optional with None defaults so legacy frames stay byte-identical.
+    # The nested models carry their own ConfigDict(strict=True, extra="forbid").
+    seed_overrides: SeederOverrides | None = Field(
+        default=None,
+        description=(
+            "Curated seeder overrides (allow-listed knobs); requires "
+            "skip_seed=false (Re-seed first). Forwarded verbatim to "
+            "POST /seeder/generate and recorded on a kept workspace row."
+        ),
+    )
+    user_scope: UserScope | None = Field(
+        default=None,
+        description=(
+            "Operator-selected (store, product) focus pair the pipeline models "
+            "instead of the auto-discovered first pair; validated by the status "
+            "step (warn + fallback to discovery on a dangling pair)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _workspace_name_requires_keep(self) -> DemoRunRequest:
@@ -98,6 +137,34 @@ class DemoRunRequest(BaseModel):
         """Reject a lineage pointer on a run that writes no workspace row."""
         if self.replayed_from_workspace_id is not None and self.preservation != "keep":
             raise ValueError("replayed_from_workspace_id requires preservation='keep'")
+        return self
+
+    @model_validator(mode="after")
+    def _seed_overrides_require_reseed(self) -> DemoRunRequest:
+        """Reject overrides on a run that skips the seed step (silent no-op trap).
+
+        An empty overrides object (``{}`` on the wire) normalizes to ``None``
+        so downstream code has a single "no overrides" representation.
+        """
+        if self.seed_overrides is not None and self.seed_overrides.is_empty():
+            self.seed_overrides = None
+        if self.seed_overrides is not None and self.skip_seed:
+            raise ValueError("seed_overrides requires skip_seed=false (Re-seed first)")
+        return self
+
+    @model_validator(mode="after")
+    def _window_days_forbidden_on_holiday_rush(self) -> DemoRunRequest:
+        """Reject window_days on the calendar-pinned holiday_rush preset.
+
+        The preset's HolidayConfig spikes are fixed 2024 dates -- a shifted
+        window would silently drop every holiday spike, so this fails loudly.
+        """
+        if (
+            self.seed_overrides is not None
+            and self.seed_overrides.window_days is not None
+            and self.scenario is ScenarioPreset.HOLIDAY_RUSH
+        ):
+            raise ValueError("window_days cannot override the calendar-pinned holiday_rush window")
         return self
 
 
@@ -266,6 +333,15 @@ class WorkspaceListItem(BaseModel):
         default=None,
         description="workspace_id this run replayed (soft reference; may dangle).",
     )
+    # E3 (#409) -- the two replay-relevant story slots live on the LIST item
+    # (not detail-only): the frontend Replay reads list rows, and the
+    # replay-verbatim contract includes both slots.
+    seed_overrides: dict[str, Any] | None = Field(
+        default=None, description="Story slot (E3 #409): seeder-override payload."
+    )
+    user_scope: dict[str, Any] | None = Field(
+        default=None, description="Story slot (E3 #409): operator-selected focus."
+    )
 
 
 class WorkspaceDetailResponse(WorkspaceListItem):
@@ -285,12 +361,8 @@ class WorkspaceDetailResponse(WorkspaceListItem):
     config_schema_version: int = Field(
         default=1, description="Version of the config + story-slot schema."
     )
-    seed_overrides: dict[str, Any] | None = Field(
-        default=None, description="Story slot (E3 #409 writes): seeder-override payload."
-    )
-    user_scope: dict[str, Any] | None = Field(
-        default=None, description="Story slot (E3 #409 writes): operator-selected focus."
-    )
+    # E3 (#409) -- seed_overrides / user_scope moved UP to WorkspaceListItem
+    # (replay reads list rows); the four remaining story slots stay detail-only.
     approval_events: list[dict[str, Any]] | None = Field(
         default=None, description="Story slot (E5 #411 writes): HITL approval audit."
     )

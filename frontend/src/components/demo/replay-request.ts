@@ -15,5 +15,9 @@ export function buildReplayRequest(ws: WorkspaceListItem): DemoRunRequest {
     // E1 (#407) — record replay lineage on the NEW row (soft reference).
     replayed_from_workspace_id: ws.workspace_id,
     ...(ws.name ? { workspace_name: ws.name } : {}),
+    // E3 (#409) — replay-verbatim covers the recorded slots; omitted on
+    // legacy rows (null) so their replay frame stays byte-identical.
+    ...(ws.seed_overrides ? { seed_overrides: ws.seed_overrides } : {}),
+    ...(ws.user_scope ? { user_scope: ws.user_scope } : {}),
   }
 }

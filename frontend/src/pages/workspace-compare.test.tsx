@@ -40,6 +40,8 @@ function makeDetail(overrides: Partial<WorkspaceDetail>): WorkspaceDetail {
     pinned: false,
     tags: [],
     replayed_from_workspace_id: null,
+    seed_overrides: null,
+    user_scope: null,
     store_id: 3,
     product_id: 7,
     date_start: '2026-01-01',

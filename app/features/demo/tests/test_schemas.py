@@ -10,6 +10,7 @@ from app.features.demo.schemas import (
     DemoRunRequest,
     DemoRunResult,
     StepEvent,
+    UserScope,
     WorkspaceDetailResponse,
     WorkspaceListItem,
     WorkspaceListResponse,
@@ -141,6 +142,95 @@ def test_demo_run_request_replayed_from_pattern_rejected():
             DemoRunRequest.model_validate(
                 {"preservation": "keep", "replayed_from_workspace_id": bad}
             )
+
+
+# =============================================================================
+# E3 (#409) -- seed_overrides + user_scope (advanced seed config + focus pair)
+# =============================================================================
+
+
+def test_demo_run_request_e3_field_defaults():
+    """E3 (#409) -- defaults None; a legacy 4-field frame stays byte-identical."""
+    req = DemoRunRequest.model_validate(
+        {"seed": 7, "reset": False, "skip_seed": True, "scenario": "demo_minimal"}
+    )
+    assert req.seed_overrides is None
+    assert req.user_scope is None
+
+
+def test_demo_run_request_seed_overrides_json_path():
+    """E3 (#409) -- the JSON wire form (validate_python on a parsed dict, the
+    path FastAPI uses) accepts a nested overrides object on a re-seed run."""
+    req = DemoRunRequest.model_validate(
+        {"skip_seed": False, "seed_overrides": {"stores": 8, "promotion_intensity": 0.3}}
+    )
+    assert req.seed_overrides is not None
+    assert req.seed_overrides.stores == 8
+    assert req.seed_overrides.promotion_intensity == 0.3
+
+
+def test_demo_run_request_seed_overrides_require_reseed():
+    """E3 (#409) -- overrides on a skip_seed run would be a silent no-op."""
+    with pytest.raises(ValidationError):
+        DemoRunRequest.model_validate({"skip_seed": True, "seed_overrides": {"stores": 8}})
+    # skip_seed defaults to True -- omitting it must also reject.
+    with pytest.raises(ValidationError):
+        DemoRunRequest.model_validate({"seed_overrides": {"stores": 8}})
+
+
+def test_demo_run_request_empty_seed_overrides_normalizes_to_none():
+    """E3 (#409) -- {} on the wire collapses to None (single no-overrides form),
+    and is therefore legal even on a skip_seed run."""
+    req = DemoRunRequest.model_validate({"skip_seed": True, "seed_overrides": {}})
+    assert req.seed_overrides is None
+
+
+def test_demo_run_request_window_days_rejected_on_holiday_rush():
+    """E3 (#409) -- holiday_rush is calendar-pinned; window_days fails loudly."""
+    with pytest.raises(ValidationError):
+        DemoRunRequest.model_validate(
+            {
+                "skip_seed": False,
+                "scenario": "holiday_rush",
+                "seed_overrides": {"window_days": 120},
+            }
+        )
+    # The same knob is fine on a today-anchored preset.
+    req = DemoRunRequest.model_validate(
+        {
+            "skip_seed": False,
+            "scenario": "retail_standard",
+            "seed_overrides": {"window_days": 120},
+        }
+    )
+    assert req.seed_overrides is not None
+    assert req.seed_overrides.window_days == 120
+
+
+def test_demo_run_request_seed_overrides_unknown_knob_rejected():
+    """E3 (#409) -- the nested extra='forbid' allow-list holds on the demo path."""
+    with pytest.raises(ValidationError):
+        DemoRunRequest.model_validate({"skip_seed": False, "seed_overrides": {"bogus_knob": 1}})
+
+
+def test_demo_run_request_user_scope_json_path():
+    """E3 (#409) -- user_scope accepts a real id pair; works with skip_seed."""
+    req = DemoRunRequest.model_validate({"user_scope": {"store_id": 12, "product_id": 47}})
+    assert req.user_scope is not None
+    assert req.user_scope.store_id == 12
+    assert req.user_scope.product_id == 47
+
+
+def test_user_scope_rejects_extra_keys_and_bad_ids():
+    """E3 (#409) -- closed schema; ids are ge=1; strict rejects string ints."""
+    with pytest.raises(ValidationError):
+        UserScope.model_validate({"store_id": 1, "product_id": 1, "extra": True})
+    with pytest.raises(ValidationError):
+        UserScope.model_validate({"store_id": 0, "product_id": 1})
+    with pytest.raises(ValidationError):
+        UserScope.model_validate({"store_id": 1})  # product_id required
+    with pytest.raises(ValidationError):
+        UserScope.model_validate({"store_id": "1", "product_id": 1})
 
 
 # =============================================================================
@@ -391,6 +481,28 @@ def test_workspace_detail_passes_e1_fields_through():
     assert detail.notes == "kept for the quarterly review"
     assert detail.seed_overrides == {"noise_sigma": 0.2}
     assert detail.job_ids == ["job-1", "job-2"]
+
+
+def test_workspace_list_item_exposes_e3_slots():
+    """E3 (#409) -- seed_overrides/user_scope live on the LIST item (replay
+    reads list rows), defaulting to None on rows without them."""
+    bare = WorkspaceListItem.model_validate(_orm_like_workspace_row())
+    assert bare.seed_overrides is None
+    assert bare.user_scope is None
+
+    slotted = WorkspaceListItem.model_validate(
+        _orm_like_workspace_row(
+            seed_overrides={"stores": 8, "noise_sigma": 0.25},
+            user_scope={"store_id": 12, "product_id": 47},
+        )
+    )
+    assert slotted.seed_overrides == {"stores": 8, "noise_sigma": 0.25}
+    assert slotted.user_scope == {"store_id": 12, "product_id": 47}
+    # Detail inherits the same exposure.
+    detail = WorkspaceDetailResponse.model_validate(
+        _orm_like_workspace_row(seed_overrides={"sparsity": 0.3})
+    )
+    assert detail.seed_overrides == {"sparsity": 0.3}
 
 
 def test_workspace_list_response_shape():

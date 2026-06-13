@@ -42,6 +42,8 @@ const baseItem: WorkspaceListItem = {
   pinned: false,
   tags: [],
   replayed_from_workspace_id: null,
+  seed_overrides: null,
+  user_scope: null,
 }
 
 const secondItem: WorkspaceListItem = {

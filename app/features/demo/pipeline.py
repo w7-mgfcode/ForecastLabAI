@@ -41,8 +41,9 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.problem_details import EMBEDDING_AUTH_CODE, ERROR_TYPES
 from app.features.demo import workspace
-from app.features.demo.schemas import DemoRunRequest, StepEvent, StepStatus
+from app.features.demo.schemas import DemoRunRequest, StepEvent, StepStatus, UserScope
 from app.shared.seeder.config import ScenarioPreset
+from app.shared.seeder.overrides import SeederOverrides
 
 logger = get_logger(__name__)
 
@@ -261,6 +262,12 @@ class DemoContext:
     # E3 (#392) -- workspace label for plan tagging. Set alongside
     # workspace_id in run_pipeline's keep-branch; None on ephemeral runs.
     workspace_name: str | None = None
+    # E3 (#409) -- additive Optional start-frame config. seed_overrides is
+    # forwarded verbatim to /seeder/generate by step_seed (None on legacy
+    # frames); user_scope is the operator-selected focus pair step_status
+    # validates and adopts (warn + fallback to discovery when dangling).
+    seed_overrides: SeederOverrides | None = None
+    user_scope: UserScope | None = None
 
 
 # =============================================================================
@@ -546,12 +553,33 @@ async def step_seed(ctx: DemoContext, client: _Client) -> StepResult:
         ctx.scenario,
         _SeedProfile(DEMO_SEED_STORES, DEMO_SEED_PRODUCTS, DEMO_SEED_SPAN_DAYS),
     )
-    stores, products = profile.stores, profile.products
-    if profile.window is not None:
+    # E3 (#409) -- effective dims = override-or-profile, used for BOTH the POST
+    # scalars and the detail line so the step card tells the truth. The nested
+    # object is ALSO forwarded verbatim; the seeder applies it last (wins).
+    overrides = ctx.seed_overrides
+    stores = (
+        overrides.stores
+        if overrides is not None and overrides.stores is not None
+        else profile.stores
+    )
+    products = (
+        overrides.products
+        if overrides is not None and overrides.products is not None
+        else profile.products
+    )
+    if overrides is not None and overrides.window_days is not None:
+        # The DemoRunRequest validator guarantees window_days is never set on
+        # the calendar-pinned holiday_rush preset, so today-anchored is safe.
+        seed_end = datetime.now(UTC).date()
+        seed_start = seed_end - timedelta(days=overrides.window_days)
+    elif profile.window is not None:
         seed_start, seed_end = profile.window
     else:
         seed_end = datetime.now(UTC).date()
         seed_start = seed_end - timedelta(days=profile.span_days)
+    # Scalar sparsity stays 0.0 (preserves preset character per the
+    # `if params.sparsity > 0` guard); overrides.sparsity is the only way the
+    # demo overrides sparsity.
     body = await client.request(
         "seed",
         "POST",
@@ -565,6 +593,11 @@ async def step_seed(ctx: DemoContext, client: _Client) -> StepResult:
             "end_date": seed_end.isoformat(),
             "sparsity": 0.0,
             "dry_run": False,
+            **(
+                {"overrides": overrides.model_dump(exclude_none=True)}
+                if overrides is not None
+                else {}
+            ),
         },
     )
     raw_records: dict[str, Any] = body.get("records_created", {})
@@ -572,10 +605,21 @@ async def step_seed(ctx: DemoContext, client: _Client) -> StepResult:
     ctx.seed_records = records
     # GenerateResult.records_created uses "sales" (singular), not "sales_daily".
     sales = records.get("sales", records.get("sales_daily", 0))
+    overrides_applied = (
+        sorted(overrides.model_dump(exclude_none=True)) if overrides is not None else []
+    )
+    detail = f"{ctx.scenario.value}: {stores} stores x {products} products, {sales} sales rows"
+    if overrides_applied:
+        detail += f" (overrides: {', '.join(overrides_applied)})"
     return (
         "pass",
-        f"{ctx.scenario.value}: {stores} stores x {products} products, {sales} sales rows",
-        {"records_created": records, "scenario": ctx.scenario.value},
+        detail,
+        {
+            "records_created": records,
+            "scenario": ctx.scenario.value,
+            # E3 (#409) -- additive echo of the applied override knobs.
+            "overrides_applied": overrides_applied,
+        },
     )
 
 
@@ -593,6 +637,46 @@ async def step_status(ctx: DemoContext, client: _Client) -> StepResult:
         return ("fail", "no date_range in /seeder/status -- seed the database first", {})
     ctx.date_start = date.fromisoformat(raw_start)
     ctx.date_end = date.fromisoformat(raw_end)
+    sales = body.get("sales", 0)
+
+    # E3 (#409) -- operator-selected focus pair: validate both ids against the
+    # dimensions endpoints and adopt them. A dangling pair (e.g. after a
+    # reset+reseed re-issued ids -- sequences never reset) WARNS and falls back
+    # to discovery so a replayed reset=true workspace can never hard-fail here.
+    scope_warning = ""
+    if ctx.user_scope is not None:
+        try:
+            await client.request(
+                "status[scope-store]",
+                "GET",
+                f"/dimensions/stores/{ctx.user_scope.store_id}",
+            )
+            await client.request(
+                "status[scope-product]",
+                "GET",
+                f"/dimensions/products/{ctx.user_scope.product_id}",
+            )
+        except _StepError:
+            scope_warning = (
+                f"user_scope (store={ctx.user_scope.store_id}, "
+                f"product={ctx.user_scope.product_id}) not found -- "
+                "fell back to discovered pair; "
+            )
+        else:
+            ctx.store_id = ctx.user_scope.store_id
+            ctx.product_id = ctx.user_scope.product_id
+            return (
+                "pass",
+                f"date_range={raw_start}..{raw_end} sales={sales} "
+                f"store_id={ctx.store_id} product_id={ctx.product_id} (user-selected)",
+                {
+                    "store_id": ctx.store_id,
+                    "product_id": ctx.product_id,
+                    "date_range_start": raw_start,
+                    "date_range_end": raw_end,
+                    "user_scope_applied": True,
+                },
+            )
 
     stores_body = await client.request(
         "status[stores]", "GET", "/dimensions/stores?page=1&page_size=1"
@@ -617,16 +701,19 @@ async def step_status(ctx: DemoContext, client: _Client) -> StepResult:
     ctx.store_id = store_id_raw
     ctx.product_id = product_id_raw
 
-    sales = body.get("sales", 0)
     return (
-        "pass",
-        f"date_range={raw_start}..{raw_end} sales={sales} "
+        # E3 (#409) -- "warn" (never "fail") when a requested scope dangled:
+        # only "fail" stops the run, so the pipeline proceeds on the
+        # discovered pair with the divergence visible on the step card.
+        "warn" if scope_warning else "pass",
+        f"{scope_warning}date_range={raw_start}..{raw_end} sales={sales} "
         f"store_id={ctx.store_id} product_id={ctx.product_id}",
         {
             "store_id": ctx.store_id,
             "product_id": ctx.product_id,
             "date_range_start": raw_start,
             "date_range_end": raw_end,
+            "user_scope_applied": False,
         },
     )
 
@@ -2648,6 +2735,9 @@ async def run_pipeline(app: FastAPI, req: DemoRunRequest) -> AsyncIterator[StepE
         skip_seed=req.skip_seed,
         reset=req.reset,
         scenario=req.scenario,
+        # E3 (#409) -- thread the validated start-frame config verbatim.
+        seed_overrides=req.seed_overrides,
+        user_scope=req.user_scope,
     )
     # E1 (#390) -- create the workspace row BEFORE the first step executes so
     # even an early failure records the run config. create_workspace is
