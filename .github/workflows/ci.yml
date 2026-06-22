@@ -31,7 +31,7 @@ jobs:
     name: Lint & Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.CHECKOUT_REF }}
 
@@ -57,7 +57,7 @@ jobs:
     name: Type Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.CHECKOUT_REF }}
 
@@ -99,7 +99,7 @@ jobs:
           - 5432:5432
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.CHECKOUT_REF }}
 
@@ -146,7 +146,7 @@ jobs:
           - 5432:5432
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.CHECKOUT_REF }}
 
