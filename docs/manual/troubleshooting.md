@@ -17,7 +17,7 @@ Postgres (:5433)  →  migrations  →  backend API (:8123)  →  dashboard (:51
 docker compose ps                        # is Postgres up and healthy?
 uv run python scripts/check_db.py        # can the app reach and authenticate to it?
 uv run alembic current                   # are migrations applied?
-curl http://localhost:8123/health        # is the API up?  → {"status":"ok"}
+curl http://localhost:8123/health        # is the API up?  → {"status":"ok","database":null}
 ```
 
 If `/health` answers `ok`, the backend and its database connection are both fine, and the problem is above that line — in the dashboard, or in the specific request you are making.
@@ -38,6 +38,19 @@ Migrations were never applied, or a new migration landed after your last pull. R
 
 **The backend starts but every write fails after a `git pull`.**
 Same cause. Migrations are forward-only; pull then migrate.
+
+**`Multiple head revisions are present for given argument 'head'`.**
+Two migrations claim to be the tip, so `alembic upgrade head` cannot pick one and exits non-zero. This also fails the backend container's startup command and `make demo`, both of which run `upgrade head`.
+
+Almost always an uncommitted or newly-added migration branching off the same parent as an existing one. Diagnose and choose:
+
+```bash
+uv run alembic heads                    # list the competing heads
+uv run alembic upgrade <revision>       # apply one specific head
+uv run alembic upgrade heads            # apply ALL heads (note the plural)
+```
+
+To resolve it properly rather than work around it, give one migration a `down_revision` pointing at the other so the history is linear again, or merge them with `alembic merge`. Do not edit a migration that is already merged to `dev` — add a new one.
 
 ## Empty dashboard, no error
 

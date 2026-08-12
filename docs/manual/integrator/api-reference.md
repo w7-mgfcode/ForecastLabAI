@@ -81,7 +81,7 @@ Twenty routers. `/health` sits at the root; the rest are prefixed.
 
 | Prefix | Purpose |
 |---|---|
-| `/health` | Liveness probe → `{"status":"ok"}`. |
+| `/health` | Liveness probe → `{"status":"ok","database":null}`. Assert on `status`; `database` is a detail slot, `null` on a plain check. |
 | `/ingest` | Batch sales load — idempotent. |
 | `/dimensions` | Stores and products: list with filters, search, sorting, pagination; fetch by id. |
 | `/analytics` | Read-only aggregates: `kpis`, `drilldowns`, `timeseries`, `inventory-status`. |

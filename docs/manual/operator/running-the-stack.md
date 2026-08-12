@@ -33,11 +33,13 @@ Nearly every "works from my terminal but not in the container" problem is this t
 ## Host mode
 
 ```bash
-docker compose up -d                                    # Postgres only
+docker compose up -d postgres                           # database only — name the service
 uv run alembic upgrade head
 uv run uvicorn app.main:app --reload --port 8123        # terminal 1
 cd frontend && pnpm dev                                 # terminal 2
 ```
+
+**Name the service.** Plain `docker compose up -d` starts `postgres`, `backend`, **and** `frontend` — only `ollama` is profile-gated. In host mode you are running the backend and frontend yourself, so starting their containers too is redundant, and the backend container will fail its healthcheck until migrations are applied.
 
 ## Container mode
 

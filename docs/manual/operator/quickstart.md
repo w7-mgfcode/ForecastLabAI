@@ -43,15 +43,26 @@ Each stage proves something specific:
 | Stage | What a pass proves |
 |---|---|
 | **precheck** | The API and database are reachable — the environment is real. |
-| **seed** | The Forge can generate a reproducible dataset from seed 42. |
+| **seed** | The Forge can generate a reproducible dataset from seed 42 (the `demo_minimal` scenario). |
 | **features** | Time-safe feature computation runs over the seeded history. |
-| **train ×3** | Three model types fit and produce artifacts, concurrently. |
+| **train ×3** | Three models fit and produce artifacts, concurrently. |
 | **backtest ×3** | Time-series cross-validation scores all three on identical folds. |
 | **register-winner** | The registry records the ranked winner with its metrics. |
 | **verify** | The winner's artifact passes SHA-256 verification. |
-| **agent** | The agent layer answers through the live stack. |
+| **agent** | The agent layer answers through the live stack — **skipped without an LLM API key**. |
 
 The comparison is meaningful precisely because the three models are backtested on the **same folds** — that is what makes "winner" a claim rather than an impression.
+
+The three models the demo trains are all **baselines**: `naive`, `seasonal_naive`, and `moving_average`. The demo is a lifecycle smoke test, not a model bake-off — it proves the pipeline runs end to end, not that any particular model is good. To compare feature-aware models, use the [Champion selector](../analyst/champion-selector.md) or a [batch sweep](../analyst/backtesting.md#batch-sweeps).
+
+### Skips are not failures
+
+Several steps legitimately report `⏭️` rather than `✅`:
+
+- **reset** — skipped unless `--reset` is passed.
+- **agent** and **cleanup** — skipped when no API key matches the configured `agent_default_model` provider.
+
+A run with skips still reports **GREEN** and exits `0`. That is the intended behavior: the agent layer is optional, and the demo says so rather than failing.
 
 ## Reading the outcome
 
@@ -61,7 +72,7 @@ A green run ends with a summary line naming the run count, the winning model, th
 runs=3 winner=seasonal_naive alias=demo-production wall_clock=87s
 ```
 
-**Which model wins is not fixed**, and a baseline winning is a legitimate result, not a bug. On synthetic data with a short history, `seasonal_naive` frequently beats feature-aware models — that is exactly why the baselines are in the comparison.
+**Which model wins is not fixed.** It depends on the seeded data, and all three candidates here are baselines — so the winner is simply whichever baseline fits the generated series best. Do not read it as a claim about model quality in general.
 
 Exit codes:
 

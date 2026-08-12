@@ -29,13 +29,15 @@ cp .env.example .env
 
 Every variable is documented in the [configuration reference](../configuration.md). Note that `.env.example` ships the commonly-changed subset, not the full surface.
 
-## 2 · Start PostgreSQL + pgvector
+## 2 · Start the database
 
 ```bash
-docker compose up -d
+docker compose up -d postgres
 ```
 
 **Pass condition:** `docker compose ps` shows the Postgres service healthy, publishing host port **5433**.
+
+Naming the service matters here. Plain `docker compose up -d` starts **all three** services — `postgres`, `backend`, and `frontend` — because only `ollama` is behind a profile. For a host-mode install you want just the database, since you are about to run the backend yourself in step 6. Starting the containerised backend as well is harmless but redundant, and it will fail its healthcheck if migrations are not yet applied.
 
 Port 5433 is deliberate — it avoids colliding with a Postgres you may already run on 5432. The container still listens on 5432 internally; 5433 is only the host-side publication.
 
@@ -80,8 +82,10 @@ uv run uvicorn app.main:app --reload --port 8123
 
 ```bash
 curl http://localhost:8123/health
-# {"status":"ok"}
+# {"status":"ok","database":null}
 ```
+
+The `database` field is a detail slot that is `null` on a plain liveness check — `status: "ok"` is the part to assert on. Every response also carries an `x-request-id` header.
 
 The interactive OpenAPI contract is now at **http://localhost:8123/docs**. That schema is generated from the code and is the authoritative API reference; this manual explains it rather than restating it.
 
