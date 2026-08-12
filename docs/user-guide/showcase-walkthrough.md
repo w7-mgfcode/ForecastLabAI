@@ -1,5 +1,10 @@
 # Showcase walkthrough
 
+> **Roadmap document, not user documentation** — kept here deliberately rather than folded
+> into the [user manual](../manual/README.md), because it describes unshipped behavior.
+> The manual documents only what ships today: see
+> [Quickstart](../manual/operator/quickstart.md#the-same-thing-in-the-browser).
+
 > **Status:** Walkthrough draft. Sections marked **Planned (PRP-{N})** describe behavior the four-PRP `/showcase` upgrade epic will deliver — they are NOT in `dev` yet. Sections under "Quick start (current behavior)" and "What `/showcase` exercises today" describe the page as it ships on `dev` today.
 
 ## Overview

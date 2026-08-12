@@ -1,120 +1,13 @@
 # Dashboard Guide
 
-The ForecastLab dashboard is a React web app at **http://localhost:5173**. This guide
-walks through every page. The top navigation bar groups pages as: Dashboard,
-Showcase, **Explorer** (menu), **Visualize** (menu), Knowledge, Chat, Agent Guide,
-and Admin. A light/dark theme toggle sits on the right.
+> **Moved.** This guide has been absorbed into the [user manual](../manual/README.md).
 
-## Dashboard (`/`)
+Its content now lives in **[Dashboard tour](../manual/analyst/dashboard-tour.md)**, which walks every page grouped as the navigation groups them, and adds a "which page answers which question" index.
 
-The landing page. It shows headline **KPI cards** — total revenue, units sold,
-transactions, average unit price, average basket — plus a revenue-over-time chart.
-Use it for a quick health check of the seeded dataset. If the database is empty,
-the cards read zero; seed data first (see Admin, or run `make demo`).
+The deeper analytical pages have their own chapters:
 
-## Showcase (`/showcase`)
-
-Runs the **end-to-end demo pipeline live in your browser**. Click to start, and the
-page streams one status card per step: seed → features → train three models →
-backtest → register the winner → alias → agent check. Each card flips to a
-pass / fail / skip state, and a summary banner reports the winning model and its
-accuracy. This is the best page for a guided demo of the whole system.
-
-Tip: tick **Re-seed first** if the database is empty or stale. Only one pipeline can
-run at a time.
-
-## Explorer
-
-The Explorer menu contains read-only pages for browsing the underlying data and
-model history. Tables support pagination, filtering, search, and sorting; clicking a
-row opens a detail page.
-
-- **Sales** (`/explorer/sales`) — browse daily sales records.
-- **Stores** (`/explorer/stores`) — list of retail stores. Click a store to open its
-  **detail page**: an entity profile, date-scoped KPIs, a revenue-over-time chart,
-  and a top-products drilldown.
-- **Products** (`/explorer/products`) — list of products (SKUs). Click a product for
-  its **detail page**: profile, KPIs, revenue and lifecycle-demand curves, and a
-  top-stores drilldown.
-- **Model Runs** (`/explorer/runs`) — every trained model tracked in the registry.
-  A **Family** badge column distinguishes baseline, tree, and additive models at
-  a glance. The run **detail page** shows configuration, metrics, runtime info,
-  cross-links to the store/product, an artifact-integrity check, a compare link,
-  and (for non-baseline runs) the canonical feature columns plus a feature
-  importance panel — see
-  [Advanced Model Metadata](./feature-reference.md#advanced-model-metadata) in the
-  Feature Reference for the data model and error semantics. The detail page also
-  hosts a **Feature frame** panel that renders V1/V2 + per-group columns +
-  per-column safety classes when the run carries that metadata (PRP-35/36).
-  Two runs can be compared side by side: a **Champion compatibility** badge
-  surfaces the comparable-run verdict (same grain + overlapping data windows +
-  same feature_frame_version), and the metrics-diff table now includes a
-  **Feature frame version** row.
-- **Jobs** (`/explorer/jobs`) — submitted train/predict/backtest jobs. A job
-  **detail page** shows parameters, result JSON, error details, the linked run, a
-  cancel action, and live status polling.
-
-## Visualize
-
-The Visualize menu holds the analytical, chart-heavy pages.
-
-- **Demand Planner** (`/visualize/demand`) — rolls completed `predict` jobs into a
-  multi-SKU table showing tomorrow / next-week / next-month demand and the
-  inventory required to cover it. Includes a lead-time selector and a single-SKU
-  drill-in. Answers "how much will this SKU sell, and do I have enough stock?"
-- **Forecast** (`/visualize/forecast`) — visualizes a model's horizon predictions.
-  The top of the page now also hosts a **Train a new model** card: a segmented
-  family picker (Baseline / Tree / Additive), a model-type Select filtered by the
-  picked family, a Feature frame V1/V2 Select, and (when V2 is picked) a feature-
-  pack toggle group. See [Advanced Forecasting Guide](./advanced-forecasting-guide.md).
-- **Backtest Results** (`/visualize/backtest`) — charts backtest folds and the
-  accuracy metrics (MAE, sMAPE, WAPE, bias, stability) for a model run. When the
-  backtest response carries per-horizon-bucket metrics, a separate **Per-horizon-
-  bucket** card surfaces those (`Days 1-7 / 8-14 / 15-28 / 29+`) and a metric
-  switcher (MAE / sMAPE / WAPE / Bias / RMSE). When the response carries
-  baseline competitors, a **Baseline vs feature-aware** comparison table renders.
-- **What-If Planner** (`/visualize/planner`) — the existing scenario simulation
-  view; impact card now carries a **method badge**
-  (`model-driven re-forecast` vs `heuristic adjustment`) so the planner
-  always sees how the scenario was produced.
-- **Batch Runner** (`/visualize/batch`) — the existing batch runner now hosts a
-  **Sweep preset** Select (5 presets — quick baseline sweep, feature-aware
-  comparison, champion/challenger refresh, stockout-sensitive products, high-WAPE
-  recovery) and a **Sweep matrix** picker (multi-model × V1/V2). Picking a preset
-  prefills the matrix; rows can still be hand-edited.
-
-## Knowledge (`/knowledge`)
-
-Surfaces the **RAG knowledge base**: the indexed document corpus, a live semantic
-search box, and current system state. Type a question to retrieve the most relevant
-documentation passages with similarity scores. If the corpus is empty, the page
-shows an empty state until documents are indexed (see the Admin page).
-
-## Chat (`/chat`)
-
-The **AI agent chat**. Ask questions in natural language; the assistant streams its
-answer token by token and shows any tools it calls. Some actions pause for your
-approval before they run. See the Agents and RAG Guide for details.
-
-## Agent Guide (`/guide`)
-
-An in-app reference for the chat agents: the tools they can use, the human-in-the-loop
-approval gate, live session limits, and example prompts to try.
-
-## Admin (`/admin`)
-
-Operational controls, organized into tabs:
-
-- **Data seeding** — generate synthetic retail data from named scenarios, append more,
-  verify integrity, or clear the dataset.
-- **RAG Sources** — list indexed knowledge documents, index a new document, and
-  delete sources.
-- **Aliases** — manage model registry aliases (e.g. promote a run to `production`).
-- **AI models** — view and change the agent LLM and RAG embedding configuration
-  live, with per-provider health indicators.
-
-## Notes
-
-- Pages fetch data from the backend API; if everything shows "Loading…", confirm the
-  backend is running and `VITE_API_BASE_URL` points at it.
-- Explorer detail pages are reached by clicking table rows — they are not in the nav.
+- [Forecasting](../manual/analyst/forecasting.md) — the Train-a-new-model card, model families, and the V1/V2 feature frame.
+- [Backtesting](../manual/analyst/backtesting.md) — fold charts, horizon buckets, and the baseline comparison table.
+- [Champion selector](../manual/analyst/champion-selector.md) — the compare → decide → train → promote workflow.
+- [Demand and planning](../manual/analyst/demand-and-planning.md) — the Demand Planner and What-If Planner.
+- [Chat and knowledge](../manual/analyst/chat-and-knowledge.md) — the Chat, Knowledge, and Agent Guide pages.

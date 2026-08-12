@@ -1,5 +1,10 @@
 # Showcase Manual Demo Guide
 
+> **A reviewer QA procedure, not user documentation** — kept here deliberately rather than
+> folded into the [user manual](../manual/README.md). For running the system, see
+> [Quickstart](../manual/operator/quickstart.md); for the dashboard, see the
+> [Dashboard tour](../manual/analyst/dashboard-tour.md).
+
 This guide describes how to manually review the ForecastLabAI `/showcase`
 experience from a clean or controlled local environment. It is intended for
 technical reviewers, maintainers, and users evaluating the product. It focuses
